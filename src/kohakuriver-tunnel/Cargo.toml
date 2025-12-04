@@ -1,0 +1,44 @@
+[package]
+name = "kohakuriver-tunnel"
+version = "0.1.0"
+edition = "2021"
+description = "Tunnel client for KohakuRiver - runs inside containers to enable port forwarding"
+license = "MIT"
+authors = ["KohakuRiver"]
+
+[[bin]]
+name = "tunnel-client"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# WebSocket client
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive", "env"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Byte handling
+bytes = "1"
+
+# URL parsing
+url = "2"
+
+[profile.release]
+# Optimize for size - important for static binary distribution
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
