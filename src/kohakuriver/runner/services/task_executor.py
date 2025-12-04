@@ -19,6 +19,11 @@ from kohakuriver.docker.naming import image_tag, task_container_name
 from kohakuriver.models.requests import TaskStatusUpdate
 from kohakuriver.runner.config import config
 from kohakuriver.runner.numa.detector import get_numa_prefix
+from kohakuriver.runner.services.tunnel_helper import (
+    get_tunnel_env_vars,
+    get_tunnel_mount,
+    wrap_command_with_tunnel,
+)
 from kohakuriver.storage.vault import TaskStateStore
 from kohakuriver.utils.logger import format_traceback, get_logger
 
@@ -88,7 +93,7 @@ async def report_status_to_host(update: TaskStatusUpdate):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{host_url}/update",
+                f"{host_url}/api/update",
                 json=update.model_dump(mode="json"),
                 timeout=15.0,
             )
@@ -270,6 +275,11 @@ def build_docker_run_command(
     for mount_spec in config.ADDITIONAL_MOUNTS:
         mount_dirs.append(mount_spec)
 
+    # Add tunnel-client mount if available
+    tunnel_mount = get_tunnel_mount()
+    if tunnel_mount:
+        mount_dirs.append(tunnel_mount)
+
     for mount in mount_dirs:
         parts = mount.split(":")
         if len(parts) < 2:
@@ -307,6 +317,11 @@ def build_docker_run_command(
     for key, value in env_vars.items():
         docker_cmd.extend(["-e", f"{key}={value}"])
 
+    # Add tunnel environment variables if tunnel is enabled
+    tunnel_env = get_tunnel_env_vars(container_name_full)
+    for key, value in tunnel_env.items():
+        docker_cmd.extend(["-e", f"{key}={value}"])
+
     # Add container image
     docker_cmd.append(docker_image_tag)
 
@@ -327,6 +342,9 @@ def build_docker_run_command(
     # Build shell command with redirection
     # Using 'exec' replaces the shell with our command, ensuring proper signal handling
     shell_cmd = f"exec {inner_cmd} > {quoted_stdout} 2> {quoted_stderr}"
+
+    # Wrap with tunnel-client startup if available
+    shell_cmd = wrap_command_with_tunnel(shell_cmd, container_name_full, use_exec=True)
 
     logger.debug(f"[Task {task_id}] Inner shell command: {shell_cmd}")
 

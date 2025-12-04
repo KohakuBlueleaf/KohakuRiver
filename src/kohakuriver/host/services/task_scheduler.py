@@ -60,7 +60,7 @@ async def send_task_to_runner(
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{runner_url}/execute",
+                f"{runner_url}/api/execute",
                 json=payload,
                 timeout=30.0,
             )
@@ -120,7 +120,7 @@ async def send_vps_task_to_runner(
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{runner_url}/vps/create",
+                f"{runner_url}/api/vps/create",
                 json=payload,
                 timeout=60.0,  # VPS creation may take longer
             )
@@ -168,7 +168,7 @@ async def send_kill_to_runner(
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{runner_url}/kill",
+                f"{runner_url}/api/kill",
                 json={"task_id": task_id, "container_name": container_name},
                 timeout=10.0,
             )
@@ -207,7 +207,7 @@ async def send_pause_to_runner(
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{runner_url}/pause",
+                f"{runner_url}/api/pause",
                 json={"task_id": task_id, "container_name": container_name},
                 timeout=10.0,
             )
@@ -248,7 +248,7 @@ async def send_resume_to_runner(
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{runner_url}/resume",
+                f"{runner_url}/api/resume",
                 json={"task_id": task_id, "container_name": container_name},
                 timeout=10.0,
             )

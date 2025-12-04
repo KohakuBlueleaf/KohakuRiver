@@ -25,6 +25,11 @@ from kohakuriver.runner.services.task_executor import (
     ensure_docker_image_synced,
     report_status_to_host,
 )
+from kohakuriver.runner.services.tunnel_helper import (
+    get_tunnel_env_vars,
+    get_tunnel_mount,
+    wrap_command_with_tunnel,
+)
 from kohakuriver.storage.vault import TaskStateStore
 from kohakuriver.utils.logger import format_traceback, get_logger
 
@@ -370,6 +375,12 @@ def _build_vps_docker_command(
         id_string = ",".join(map(str, gpu_ids))
         docker_cmd.extend(["--gpus", f'"device={id_string}"'])
 
+    # Add tunnel environment variables if tunnel is enabled
+    container_name = vps_container_name(task_id)
+    tunnel_env = get_tunnel_env_vars(container_name)
+    for key, value in tunnel_env.items():
+        docker_cmd.extend(["-e", f"{key}={value}"])
+
     # Build setup command based on SSH key mode
     match ssh_key_mode:
         case "disabled":
@@ -420,6 +431,10 @@ def _build_vps_docker_command(
         case _:
             raise ValueError(f"Invalid ssh_key_mode: {ssh_key_mode}")
 
+    # Wrap with tunnel-client startup if available
+    # VPS uses use_exec=False since the main process (sshd or tail) stays running
+    setup_cmd = wrap_command_with_tunnel(setup_cmd, container_name, use_exec=False)
+
     # Add image and command
     docker_cmd.append(docker_image_tag)
     docker_cmd.extend(["/bin/sh", "-c", setup_cmd])
@@ -445,13 +460,18 @@ async def _find_ssh_port(
     for attempt in range(retries):
         try:
             proc = await asyncio.create_subprocess_exec(
-                "docker", "port", container_name, "22",
+                "docker",
+                "port",
+                container_name,
+                "22",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await proc.communicate()
             if proc.returncode != 0:
-                raise subprocess.CalledProcessError(proc.returncode, "docker port", stderr)
+                raise subprocess.CalledProcessError(
+                    proc.returncode, "docker port", stderr
+                )
             # Parse: "0.0.0.0:32792\n[::]:32792\n"
             port_mapping = stdout.decode().splitlines()[0].strip()
             port = int(port_mapping.split(":")[1])
@@ -580,6 +600,11 @@ async def create_vps(
         f"{config.LOCAL_TEMP_DIR}:/local_temp",
     ]
     mount_dirs.extend(config.ADDITIONAL_MOUNTS)
+
+    # Add tunnel-client mount if available
+    tunnel_mount = get_tunnel_mount()
+    if tunnel_mount:
+        mount_dirs.append(tunnel_mount)
 
     # Get the Docker image tag - use snapshot if available, otherwise base image
     if snapshot_tag:
@@ -748,7 +773,9 @@ async def stop_vps(
 
         # Stop the container
         proc = await asyncio.create_subprocess_exec(
-            "docker", "stop", container_name,
+            "docker",
+            "stop",
+            container_name,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -758,7 +785,9 @@ async def stop_vps(
 
         # Remove the container
         proc = await asyncio.create_subprocess_exec(
-            "docker", "rm", container_name,
+            "docker",
+            "rm",
+            container_name,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -804,7 +833,9 @@ async def pause_vps(
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            "docker", "pause", container_name,
+            "docker",
+            "pause",
+            container_name,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -842,13 +873,17 @@ async def resume_vps(
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            "docker", "unpause", container_name,
+            "docker",
+            "unpause",
+            container_name,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
         if proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, "docker unpause", stderr)
+            raise subprocess.CalledProcessError(
+                proc.returncode, "docker unpause", stderr
+            )
         logger.info(f"Resumed VPS {task_id}")
         return True
 
