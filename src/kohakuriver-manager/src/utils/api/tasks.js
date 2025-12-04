@@ -51,7 +51,7 @@ export const tasksAPI = {
    * @param {number} lines - Number of lines to fetch
    */
   getStdout(taskId, lines = 100) {
-    return logClient.get(`/task/${taskId}/stdout`, { params: { lines } })
+    return logClient.get(`/tasks/${taskId}/stdout`, { params: { lines } })
   },
 
   /**
@@ -60,7 +60,7 @@ export const tasksAPI = {
    * @param {number} lines - Number of lines to fetch
    */
   getStderr(taskId, lines = 100) {
-    return logClient.get(`/task/${taskId}/stderr`, { params: { lines } })
+    return logClient.get(`/tasks/${taskId}/stderr`, { params: { lines } })
   },
 
   /**
@@ -68,7 +68,7 @@ export const tasksAPI = {
    * @param {string|number} taskId
    */
   delete(taskId) {
-    return apiClient.delete(`/task/${taskId}`)
+    return apiClient.delete(`/tasks/${taskId}`)
   },
 }
 

@@ -45,7 +45,8 @@ const logLoading = ref(false)
 // Submit form
 const submitForm = ref({
   command: '',
-  arguments: '',
+  arguments: [],  // Array of argument strings
+  currentArg: '', // Current input for new argument
   env_vars: '',
   required_cores: 0,
   required_memory_bytes: null,
@@ -54,6 +55,73 @@ const submitForm = ref({
   required_gpus: null,
   privileged: false,
 })
+
+// Argument list drag state
+const draggedArgIndex = ref(null)
+
+// Handle argument input keydown
+function handleArgKeydown(event) {
+  if (event.key === 'Enter') {
+    if (event.ctrlKey || event.metaKey || event.shiftKey) {
+      // Ctrl+Enter or Shift+Enter: insert newline in current arg
+      event.preventDefault()
+      const textarea = event.target
+      const start = textarea.selectionStart
+      const end = textarea.selectionEnd
+      const value = submitForm.value.currentArg
+      submitForm.value.currentArg = value.substring(0, start) + '\n' + value.substring(end)
+      // Set cursor position after the newline
+      nextTick(() => {
+        textarea.selectionStart = textarea.selectionEnd = start + 1
+      })
+    } else {
+      // Enter: add current arg to list
+      event.preventDefault()
+      addCurrentArg()
+    }
+  }
+}
+
+// Add current argument to the list
+function addCurrentArg() {
+  const arg = submitForm.value.currentArg.trim()
+  if (arg) {
+    submitForm.value.arguments.push(arg)
+    submitForm.value.currentArg = ''
+  }
+}
+
+// Remove argument at index
+function removeArg(index) {
+  submitForm.value.arguments.splice(index, 1)
+}
+
+// Drag and drop handlers
+function onDragStart(event, index) {
+  draggedArgIndex.value = index
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', index)
+}
+
+function onDragOver(event, index) {
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'move'
+}
+
+function onDrop(event, targetIndex) {
+  event.preventDefault()
+  const sourceIndex = draggedArgIndex.value
+  if (sourceIndex !== null && sourceIndex !== targetIndex) {
+    const args = submitForm.value.arguments
+    const [removed] = args.splice(sourceIndex, 1)
+    args.splice(targetIndex, 0, removed)
+  }
+  draggedArgIndex.value = null
+}
+
+function onDragEnd() {
+  draggedArgIndex.value = null
+}
 
 // Polling
 const { start: startPolling } = usePolling(() => {
@@ -92,10 +160,15 @@ const filteredTasks = computed(() => {
 
 async function handleSubmit() {
   try {
+    // Add any pending argument in the input field
+    if (submitForm.value.currentArg.trim()) {
+      addCurrentArg()
+    }
+
     const data = {
       task_type: 'command',
       command: submitForm.value.command,
-      arguments: submitForm.value.arguments ? submitForm.value.arguments.split(/\s+/).filter(Boolean) : [],
+      arguments: submitForm.value.arguments,
       env_vars: submitForm.value.env_vars
         ? Object.fromEntries(
             submitForm.value.env_vars
@@ -126,7 +199,8 @@ async function handleSubmit() {
 function resetSubmitForm() {
   submitForm.value = {
     command: '',
-    arguments: '',
+    arguments: [],
+    currentArg: '',
     env_vars: '',
     required_cores: 0,
     required_memory_bytes: null,
@@ -215,6 +289,26 @@ watch(detailTab, (newTab) => {
 
 function isActive(status) {
   return ACTIVE_STATUSES.includes(status)
+}
+
+// Format argument for shell display (quote if needed)
+function shellQuote(arg) {
+  // If arg contains spaces, newlines, quotes, or special chars, quote it
+  if (/[\s"'`$\\!*?#~<>|;&(){}[\]]/.test(arg) || arg.includes('\n')) {
+    // Use single quotes, escape any existing single quotes
+    return "'" + arg.replace(/'/g, "'\\''") + "'"
+  }
+  return arg
+}
+
+// Format full command with arguments for display
+function formatFullCommand(task) {
+  if (!task) return ''
+  let cmd = task.command || ''
+  if (task.arguments?.length) {
+    cmd += ' ' + task.arguments.map(shellQuote).join(' ')
+  }
+  return cmd
 }
 
 function getNodeName(node) {
@@ -457,9 +551,57 @@ function getNodeName(node) {
         </el-form-item>
 
         <el-form-item label="Arguments">
-          <el-input
-            v-model="submitForm.arguments"
-            placeholder="Space-separated arguments" />
+          <!-- Argument input area -->
+          <div class="w-full">
+            <div class="flex gap-2">
+              <el-input
+                v-model="submitForm.currentArg"
+                type="textarea"
+                :rows="2"
+                placeholder="Type argument and press Enter to add"
+                @keydown="handleArgKeydown"
+                class="flex-1" />
+              <el-button
+                type="primary"
+                @click="addCurrentArg"
+                :disabled="!submitForm.currentArg.trim()">
+                <span class="i-carbon-add"></span>
+              </el-button>
+            </div>
+            <div class="text-xs text-muted mt-1">
+              Press <kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs">Enter</kbd> to add argument.
+              <kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs">Shift+Enter</kbd> or
+              <kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs">Ctrl+Enter</kbd> for newline.
+            </div>
+
+            <!-- Argument list with drag-and-drop -->
+            <div
+              v-if="submitForm.arguments.length > 0"
+              class="mt-3 space-y-2">
+              <div class="text-xs text-muted mb-1">Arguments (drag to reorder):</div>
+              <div class="flex flex-wrap gap-2">
+                <div
+                  v-for="(arg, index) in submitForm.arguments"
+                  :key="index"
+                  draggable="true"
+                  @dragstart="onDragStart($event, index)"
+                  @dragover="onDragOver($event, index)"
+                  @drop="onDrop($event, index)"
+                  @dragend="onDragEnd"
+                  class="group flex items-start gap-1 px-2 py-1 bg-blue-100 dark:bg-blue-900/40 border border-blue-300 dark:border-blue-700 rounded cursor-move hover:bg-blue-200 dark:hover:bg-blue-900/60 transition-colors"
+                  :class="{ 'opacity-50': draggedArgIndex === index }">
+                  <span class="i-carbon-draggable text-gray-400 mt-0.5 flex-shrink-0"></span>
+                  <span class="font-mono text-sm whitespace-pre-wrap break-all max-w-xs">{{ arg }}</span>
+                  <button
+                    type="button"
+                    @click="removeArg(index)"
+                    class="ml-1 text-gray-400 hover:text-red-500 flex-shrink-0">
+                    <span class="i-carbon-close text-xs"></span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </el-form-item>
 
         <el-form-item label="Environment Variables">
@@ -626,10 +768,7 @@ function getNodeName(node) {
               <!-- Command Section -->
               <div class="p-4 bg-app-surface rounded-lg">
                 <div class="text-sm text-muted mb-2">Command</div>
-                <div class="font-mono text-sm bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">
-                  {{ selectedTask.command }}
-                  <span v-if="selectedTask.arguments?.length">{{ selectedTask.arguments.join(' ') }}</span>
-                </div>
+                <pre class="font-mono text-sm bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto whitespace-pre-wrap">{{ formatFullCommand(selectedTask) }}</pre>
               </div>
 
               <!-- Resources Grid -->
