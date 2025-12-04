@@ -15,8 +15,18 @@ Model Categories:
 """
 
 import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PlainSerializer
+
+
+# =============================================================================
+# Custom Types
+# =============================================================================
+
+# SnowflakeID: 64-bit integer that serializes to string for JavaScript compatibility
+# JavaScript's Number.MAX_SAFE_INTEGER is 2^53-1, snowflake IDs exceed this
+SnowflakeID = Annotated[int, PlainSerializer(lambda x: str(x), return_type=str)]
 
 
 # =============================================================================
@@ -214,9 +224,9 @@ class TaskControlRequest(BaseModel):
 class TaskResponse(BaseModel):
     """Complete task information response."""
 
-    task_id: int
+    task_id: SnowflakeID
     task_type: str
-    batch_id: int | None
+    batch_id: SnowflakeID | None
     command: str
     arguments: list[str]
     env_vars: dict[str, str]
@@ -253,7 +263,7 @@ class TaskListResponse(BaseModel):
 class TaskSubmitResponse(BaseModel):
     """Response after single task submission."""
 
-    task_id: int
+    task_id: SnowflakeID
     status: str
     message: str
 
@@ -261,8 +271,8 @@ class TaskSubmitResponse(BaseModel):
 class BatchSubmitResponse(BaseModel):
     """Response after batch task submission."""
 
-    batch_id: int
-    task_ids: list[int]
+    batch_id: SnowflakeID
+    task_ids: list[SnowflakeID]
     message: str
 
 

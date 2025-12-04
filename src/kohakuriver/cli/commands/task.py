@@ -67,10 +67,12 @@ def task_status(
         raise typer.Exit(1)
 
 
-@app.command("submit")
+@app.command("submit", context_settings={"allow_interspersed_args": False})
 def submit_task(
-    command: Annotated[str, typer.Argument(help="Command to execute")],
-    args: Annotated[list[str] | None, typer.Argument(help="Command arguments")] = None,
+    command: Annotated[
+        list[str],
+        typer.Argument(help="Command to execute (everything after options)"),
+    ],
     target: Annotated[
         str | None,
         typer.Option("--target", "-t", help="Target node[:numa][::gpus]"),
@@ -93,8 +95,23 @@ def submit_task(
         bool, typer.Option("--wait", "-w", help="Wait for completion")
     ] = False,
 ):
-    """Submit a new task."""
+    """
+    Submit a new task.
+
+    The command is everything after the options. Use -- to separate options from command.
+
+    Examples:
+        kohakuriver task submit -t node1 -- echo "hello world"
+        kohakuriver task submit -t node1 -c 4 -- python -c "print('hello')"
+        kohakuriver task submit --container my-env -- python /shared/script.py --arg1 val1
+    """
+    import shlex
+
     from kohakuriver.utils.cli import parse_memory_string
+
+    if not command:
+        print_error("No command provided")
+        raise typer.Exit(1)
 
     try:
         # Parse memory
@@ -114,9 +131,13 @@ def submit_task(
                 gpu_list = [int(g.strip()) for g in gpu_str.split(",") if g.strip()]
                 gpu_ids = [gpu_list]  # One GPU list per target
 
+        # Join command parts back into a single command string
+        # The shell in the container will parse it
+        full_command = " ".join(shlex.quote(part) for part in command)
+
         result = client.submit_task(
-            command=command,
-            args=args or [],
+            command=full_command,
+            args=[],  # Arguments are included in command string
             cores=cores,
             memory_bytes=memory_bytes,
             targets=targets,

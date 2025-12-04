@@ -8,6 +8,7 @@ import asyncio
 import os
 import socket
 
+import docker as docker_lib
 import httpx
 import psutil
 from fastapi import FastAPI, Path, Query, WebSocket
@@ -16,7 +17,8 @@ from kohakuriver.docker.client import DockerManager
 from kohakuriver.runner.background.heartbeat import send_heartbeat
 from kohakuriver.runner.background.startup_check import startup_check
 from kohakuriver.runner.config import config
-from kohakuriver.runner.endpoints import docker, filesystem, tasks, terminal, vps
+from kohakuriver.runner.endpoints import docker as docker_endpoints
+from kohakuriver.runner.endpoints import filesystem, tasks, terminal, vps
 from kohakuriver.runner.services.tunnel_server import (
     handle_container_tunnel,
     handle_port_forward,
@@ -46,7 +48,7 @@ app = FastAPI(
 # Include routers (all under /api prefix)
 app.include_router(tasks.router, prefix="/api", tags=["Tasks"])
 app.include_router(vps.router, prefix="/api", tags=["VPS"])
-app.include_router(docker.router, prefix="/api", tags=["Docker"])
+app.include_router(docker_endpoints.router, prefix="/api", tags=["Docker"])
 app.include_router(filesystem.router, prefix="/api", tags=["Filesystem"])
 
 
@@ -182,15 +184,39 @@ async def startup_event():
         f"({config.RUNNER_BIND_IP}:{config.RUNNER_PORT})"
     )
 
-    # Check Docker access (in executor to avoid blocking)
+    # Check Docker access and ensure network exists (in executor to avoid blocking)
     logger.info("Checking Docker access...")
     try:
 
-        def _check_docker():
+        def _check_docker_and_network():
             dm = DockerManager()
             dm.client.ping()
 
-        await asyncio.to_thread(_check_docker)
+            # Ensure kohakuriver-net network exists
+            network_name = config.DOCKER_NETWORK_NAME
+            try:
+                dm.client.networks.get(network_name)
+                logger.info(f"Docker network '{network_name}' already exists.")
+            except docker_lib.errors.NotFound:
+                logger.info(f"Creating Docker network '{network_name}'...")
+                dm.client.networks.create(
+                    network_name,
+                    driver="bridge",
+                    ipam=docker_lib.types.IPAMConfig(
+                        pool_configs=[
+                            docker_lib.types.IPAMPool(
+                                subnet=config.DOCKER_NETWORK_SUBNET,
+                                gateway=config.DOCKER_NETWORK_GATEWAY,
+                            )
+                        ]
+                    ),
+                )
+                logger.info(
+                    f"Created Docker network '{network_name}' "
+                    f"(subnet={config.DOCKER_NETWORK_SUBNET}, gateway={config.DOCKER_NETWORK_GATEWAY})"
+                )
+
+        await asyncio.to_thread(_check_docker_and_network)
         logger.info("Docker daemon accessible.")
     except Exception as e:
         logger.warning(f"Docker check failed: {e}. Docker tasks may fail.")

@@ -248,7 +248,7 @@ def get_task_stdout(task_id: str, lines: int = 1000) -> str:
 
     Note: Backend returns plain text, not JSON.
     """
-    url = f"{_get_host_url()}/task/{task_id}/stdout"
+    url = f"{_get_host_url()}/tasks/{task_id}/stdout"
 
     try:
         response = httpx.get(url, params={"lines": lines}, timeout=10.0)
@@ -273,7 +273,7 @@ def get_task_stderr(task_id: str, lines: int = 1000) -> str:
 
     Note: Backend returns plain text, not JSON.
     """
-    url = f"{_get_host_url()}/task/{task_id}/stderr"
+    url = f"{_get_host_url()}/tasks/{task_id}/stderr"
 
     try:
         response = httpx.get(url, params={"lines": lines}, timeout=10.0)

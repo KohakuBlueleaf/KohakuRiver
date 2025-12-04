@@ -48,6 +48,11 @@ class RunnerConfig:
         ""  # Path to tunnel-client binary (auto-detected if empty)
     )
 
+    # Docker Network Configuration
+    DOCKER_NETWORK_NAME: str = "kohakuriver-net"  # Custom bridge network for containers
+    DOCKER_NETWORK_SUBNET: str = "172.30.0.0/16"  # Subnet for kohakuriver-net
+    DOCKER_NETWORK_GATEWAY: str = "172.30.0.1"  # Gateway IP (runner reachable at this IP)
+
     # Snapshot Configuration
     AUTO_SNAPSHOT_ON_STOP: bool = True
     MAX_SNAPSHOTS_PER_VPS: int = 3
@@ -144,9 +149,8 @@ class RunnerConfig:
 
     def get_runner_ws_url(self) -> str:
         """Get the WebSocket URL for tunnel client to connect to."""
-        # Containers need to reach the host via Docker bridge gateway
-        # Default Docker bridge gateway is 172.17.0.1
-        return f"ws://172.17.0.1:{self.RUNNER_PORT}"
+        # Containers on kohakuriver-net reach the host via the network gateway
+        return f"ws://{self.DOCKER_NETWORK_GATEWAY}:{self.RUNNER_PORT}"
 
 
 # Global config instance

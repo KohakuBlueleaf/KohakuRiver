@@ -35,7 +35,7 @@ from kohakuriver.host.services.task_scheduler import (
     send_vps_task_to_runner,
     update_task_status,
 )
-from kohakuriver.models.requests import TaskStatusUpdate, TaskSubmission
+from kohakuriver.models.requests import TaskResponse, TaskStatusUpdate, TaskSubmission
 from kohakuriver.utils.logger import get_logger
 from kohakuriver.utils.snowflake import generate_snowflake_id
 
@@ -522,7 +522,7 @@ async def update_task_status_endpoint(update: TaskStatusUpdate):
 # =============================================================================
 
 
-@router.get("/status/{task_id}")
+@router.get("/status/{task_id}", response_model=TaskResponse)
 async def get_task_status(task_id: int):
     """Get status and details of a specific task."""
     logger.debug(f"Getting status for task {task_id}")
@@ -531,10 +531,10 @@ async def get_task_status(task_id: int):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
 
-    return task.to_dict()
+    return TaskResponse(**task.to_dict())
 
 
-@router.get("/tasks")
+@router.get("/tasks", response_model=list[TaskResponse])
 async def list_tasks(
     status: str | None = None,
     limit: int = 100,
@@ -549,7 +549,7 @@ async def list_tasks(
         offset: Number of tasks to skip.
 
     Returns:
-        List of task dictionaries.
+        List of task responses.
     """
     logger.debug(f"Listing tasks: status={status}, limit={limit}, offset={offset}")
 
@@ -564,7 +564,7 @@ async def list_tasks(
 
     query = query.limit(limit).offset(offset)
 
-    return [task.to_dict() for task in query]
+    return [TaskResponse(**task.to_dict()) for task in query]
 
 
 # =============================================================================

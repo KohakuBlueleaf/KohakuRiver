@@ -332,6 +332,10 @@ def _build_vps_docker_command(
     # Container name
     docker_cmd.extend(["--name", vps_container_name(task_id)])
 
+    # Use kohakuriver-net bridge network
+    # Containers on same node can communicate via container name
+    docker_cmd.extend(["--network", "kohakuriver-net"])
+
     # SSH port mapping - only if SSH is enabled
     if ssh_key_mode != "disabled":
         docker_cmd.extend(["-p", "0:22"])

@@ -210,6 +210,31 @@ ADDITIONAL_MOUNTS: list[str] = []
 DOCKER_IMAGE_SYNC_TIMEOUT: int = 600
 
 # =============================================================================
+# Docker Network Configuration
+# =============================================================================
+
+# Docker bridge network name for container communication
+# Containers on same node can communicate via container name
+DOCKER_NETWORK_NAME: str = "kohakuriver-net"
+
+# Subnet for the kohakuriver-net network
+DOCKER_NETWORK_SUBNET: str = "172.30.0.0/16"
+
+# Gateway IP for the kohakuriver-net network
+# Tunnel client uses this to reach the runner
+DOCKER_NETWORK_GATEWAY: str = "172.30.0.1"
+
+# =============================================================================
+# Tunnel Configuration
+# =============================================================================
+
+# Enable tunnel client in containers for port forwarding
+TUNNEL_ENABLED: bool = True
+
+# Path to tunnel-client binary (empty = auto-detect)
+TUNNEL_CLIENT_PATH: str = ""
+
+# =============================================================================
 # Logging Configuration
 # =============================================================================
 

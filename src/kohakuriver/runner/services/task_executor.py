@@ -252,8 +252,10 @@ def build_docker_run_command(
     # Container name
     docker_cmd.extend(["--name", container_name_full])
 
-    # Use host network
-    docker_cmd.extend(["--network", "host"])
+    # Use kohakuriver-net bridge network
+    # Containers on same node can communicate via container name
+    # Network is created on runner startup with known gateway for tunnel access
+    docker_cmd.extend(["--network", "kohakuriver-net"])
 
     # Privileged mode
     if privileged:
