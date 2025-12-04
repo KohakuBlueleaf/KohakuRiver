@@ -245,7 +245,7 @@ class EditorPane(Widget):
     # -------------------------------------------------------------------------
 
     def _get_api_url(self, endpoint: str) -> str:
-        return f"http://{self._host}:{self._port}/fs/{self._task_id}/{endpoint}"
+        return f"http://{self._host}:{self._port}/api/fs/{self._task_id}/{endpoint}"
 
     async def _read_file(self, path: str) -> tuple[str, str, bool]:
         """Read file content. Returns (content, encoding, is_binary)."""

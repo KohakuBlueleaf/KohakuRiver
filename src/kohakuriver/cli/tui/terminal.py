@@ -315,7 +315,7 @@ class TerminalWidget(Widget):
 
     def _get_ws_url(self) -> str:
         """Build WebSocket URL."""
-        return f"ws://{self._host}:{self._port}/task/{self._task_id}/terminal"
+        return f"ws://{self._host}:{self._port}/ws/task/{self._task_id}/terminal"
 
     @work(exclusive=True, group="terminal-connect")
     async def do_connect(self) -> None:

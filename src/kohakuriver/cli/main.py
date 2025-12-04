@@ -23,6 +23,7 @@ from kohakuriver.cli.commands import (
     config_cmd,
     connect,
     docker,
+    forward,
     init,
     node,
     ssh,
@@ -47,6 +48,7 @@ app.add_typer(docker.app, name="docker", help="Docker/container management")
 app.add_typer(ssh.app, name="ssh", help="SSH commands")
 app.add_typer(terminal.app, name="terminal", help="Terminal access (TUI)")
 app.add_typer(connect.app, name="connect", help="Connect to container terminal")
+app.add_typer(forward.app, name="forward", help="Forward local ports to containers")
 app.add_typer(config_cmd.app, name="config", help="Configuration")
 app.add_typer(init.app, name="init", help="Initialize config and services")
 

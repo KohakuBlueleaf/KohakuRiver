@@ -996,6 +996,7 @@ class VPSDetailScreen(Screen):
     BINDINGS = [
         Binding("escape", "go_back", "Back"),
         Binding("k", "stop_vps", "Stop"),
+        Binding("p", "port_forward", "Port Forward"),
     ]
 
     DEFAULT_CSS = """
@@ -1120,7 +1121,7 @@ class VPSDetailScreen(Screen):
                 )
 
         yield Static(
-            "[bold]Esc[/bold]-Back  [bold]k[/bold]-Stop VPS",
+            "[bold]Esc[/bold]-Back  [bold]k[/bold]-Stop VPS  [bold]p[/bold]-Port Forward",
             id="actions-bar",
         )
 
@@ -1133,3 +1134,11 @@ class VPSDetailScreen(Screen):
         if self._vps.get("status") == "running":
             self._stop_fn(str(self._vps.get("task_id", "")))
             self.app.pop_screen()
+
+    def action_port_forward(self) -> None:
+        """Show port forward dialog."""
+        from kohakuriver.cli.tui.dashboard.modals import PortForwardModal
+
+        if self._vps.get("status") == "running":
+            task_id = self._vps.get("task_id", "")
+            self.app.push_screen(PortForwardModal(task_id))

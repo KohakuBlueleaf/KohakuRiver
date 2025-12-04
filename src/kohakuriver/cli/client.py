@@ -25,8 +25,8 @@ class APIError(Exception):
 
 
 def _get_host_url() -> str:
-    """Get the host URL from config."""
-    return f"http://{cli_config.HOST_ADDRESS}:{cli_config.HOST_PORT}"
+    """Get the host API URL from config."""
+    return f"http://{cli_config.HOST_ADDRESS}:{cli_config.HOST_PORT}/api"
 
 
 def _handle_http_error(e: httpx.HTTPStatusError, context: str = "request") -> None:

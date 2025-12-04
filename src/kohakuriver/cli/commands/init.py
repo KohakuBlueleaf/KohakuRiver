@@ -356,9 +356,12 @@ def init_service(
         typer.Option("--runner-config", help="Path to runner config file for service"),
     ] = None,
     working_dir: Annotated[
-        str,
-        typer.Option("--working-dir", help="Working directory for services"),
-    ] = "/mnt/cluster-share",
+        str | None,
+        typer.Option(
+            "--working-dir",
+            help="Working directory for services (default: ~/.kohakuriver)",
+        ),
+    ] = None,
     no_install: Annotated[
         bool,
         typer.Option(
@@ -382,6 +385,13 @@ def init_service(
     venv_path = os.environ.get("VIRTUAL_ENV")
     env_path_base = os.environ.get("PATH", "")
     env_path_addition = f"{venv_path}/bin:" if venv_path else ""
+
+    # Default working directory to ~/.kohakuriver
+    if working_dir is None:
+        working_dir = os.path.expanduser("~/.kohakuriver")
+
+    # Ensure working directory exists
+    os.makedirs(working_dir, exist_ok=True)
 
     # Use temp directory for service files
     import tempfile

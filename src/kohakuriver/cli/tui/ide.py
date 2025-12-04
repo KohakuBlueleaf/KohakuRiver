@@ -835,12 +835,12 @@ class IdeApp(App):
             try:
                 if item_type == "folder":
                     response = await client.post(
-                        f"http://{self._host}:{self._port}/fs/{self._task_id}/mkdir",
+                        f"http://{self._host}:{self._port}/api/fs/{self._task_id}/mkdir",
                         json={"path": full_path, "parents": True},
                     )
                 else:
                     response = await client.post(
-                        f"http://{self._host}:{self._port}/fs/{self._task_id}/write",
+                        f"http://{self._host}:{self._port}/api/fs/{self._task_id}/write",
                         json={"path": full_path, "content": "", "encoding": "utf-8"},
                     )
 
@@ -873,7 +873,7 @@ class IdeApp(App):
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.delete(
-                    f"http://{self._host}:{self._port}/fs/{self._task_id}/delete",
+                    f"http://{self._host}:{self._port}/api/fs/{self._task_id}/delete",
                     params={"path": path, "recursive": "true" if is_dir else "false"},
                 )
                 response.raise_for_status()

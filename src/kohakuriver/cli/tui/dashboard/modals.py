@@ -618,3 +618,164 @@ class ConfirmModal(ModalScreen[bool]):
     def action_cancel(self) -> None:
         """Cancel action."""
         self.dismiss(False)
+
+
+class PortForwardModal(ModalScreen[dict | None]):
+    """Modal showing port forwarding command information."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Close"),
+    ]
+
+    DEFAULT_CSS = """
+    PortForwardModal {
+        align: center middle;
+    }
+
+    #forward-dialog {
+        width: 65;
+        height: auto;
+        border: thick #00ff88;
+        background: #1a1a2e;
+        padding: 1 2;
+    }
+
+    #forward-dialog .title {
+        text-style: bold;
+        text-align: center;
+        width: 100%;
+        padding-bottom: 1;
+        color: #00ff88;
+    }
+
+    #forward-dialog .info-text {
+        color: #888;
+        padding: 1 0;
+    }
+
+    #forward-dialog .field-label {
+        margin-top: 1;
+        color: #888;
+    }
+
+    #forward-dialog Input {
+        width: 100%;
+    }
+
+    #forward-dialog .command-box {
+        background: #0a0a1a;
+        border: solid #444;
+        padding: 1;
+        margin: 1 0;
+    }
+
+    #forward-dialog .command-text {
+        color: #4ec9b0;
+    }
+
+    #forward-dialog .buttons {
+        height: 3;
+        align: center middle;
+        margin-top: 1;
+    }
+
+    #forward-dialog Button {
+        margin: 0 1;
+    }
+
+    #forward-dialog .protocol-row {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #forward-dialog .hint {
+        color: #666;
+        text-style: italic;
+    }
+    """
+
+    def __init__(self, task_id: str | int) -> None:
+        super().__init__()
+        self._task_id = task_id
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="forward-dialog"):
+            yield Static("Port Forwarding", classes="title")
+
+            yield Static(
+                "Forward a container port to your local machine using the CLI.",
+                classes="info-text",
+            )
+
+            yield Label("Container Port", classes="field-label")
+            yield Input(placeholder="e.g., 8080", id="port-input", value="8080")
+
+            yield Label("Local Port (optional)", classes="field-label")
+            yield Input(placeholder="Same as container port", id="local-port-input")
+
+            with Horizontal(classes="protocol-row"):
+                yield Label("Protocol: ", classes="field-label")
+                yield RadioSet(
+                    RadioButton("TCP", value=True, id="proto-tcp"),
+                    RadioButton("UDP", id="proto-udp"),
+                    id="protocol-set",
+                )
+
+            yield Static("CLI Command:", classes="field-label")
+            with Vertical(classes="command-box"):
+                yield Static(
+                    f"kohakuriver forward {self._task_id} 8080",
+                    id="command-display",
+                    classes="command-text",
+                )
+
+            yield Static(
+                "Run this command in your terminal to start forwarding.",
+                classes="hint",
+            )
+
+            with Horizontal(classes="buttons"):
+                yield Button("Copy Command", variant="primary", id="copy-btn")
+                yield Button("Close", variant="default", id="close-btn")
+
+    def _update_command(self) -> None:
+        """Update the displayed command based on inputs."""
+        port = self.query_one("#port-input", Input).value.strip() or "8080"
+        local_port = self.query_one("#local-port-input", Input).value.strip()
+        proto_udp = self.query_one("#proto-udp", RadioButton).value
+
+        cmd_parts = ["kohakuriver", "forward", str(self._task_id), port]
+        if local_port and local_port != port:
+            cmd_parts.extend(["-l", local_port])
+        if proto_udp:
+            cmd_parts.extend(["--proto", "udp"])
+
+        cmd = " ".join(cmd_parts)
+        self.query_one("#command-display", Static).update(cmd)
+
+    @on(Input.Changed)
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Update command when inputs change."""
+        self._update_command()
+
+    @on(RadioButton.Changed)
+    def on_radio_changed(self, event: RadioButton.Changed) -> None:
+        """Update command when protocol changes."""
+        self._update_command()
+
+    @on(Button.Pressed, "#copy-btn")
+    def on_copy(self) -> None:
+        """Copy command to clipboard."""
+        cmd = self.query_one("#command-display", Static).renderable
+        # Note: Textual doesn't have direct clipboard access,
+        # so we just show a notification
+        self.notify(f"Command: {cmd}", title="Copy this command")
+
+    @on(Button.Pressed, "#close-btn")
+    def on_close(self) -> None:
+        """Close the modal."""
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        """Cancel action."""
+        self.dismiss(None)

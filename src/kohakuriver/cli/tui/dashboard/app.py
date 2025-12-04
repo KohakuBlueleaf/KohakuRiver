@@ -205,7 +205,7 @@ class DashboardApp(App):
 
     def _get_api_url(self, endpoint: str) -> str:
         """Build API URL."""
-        return f"http://{self._host}:{self._port}/{endpoint}"
+        return f"http://{self._host}:{self._port}/api/{endpoint}"
 
     async def _fetch_data(self) -> None:
         """Fetch all data from API."""

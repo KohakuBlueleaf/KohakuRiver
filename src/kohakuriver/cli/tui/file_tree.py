@@ -310,7 +310,7 @@ class FileTreeWidget(Tree[FileEntry]):
 
     def _get_api_url(self, endpoint: str) -> str:
         """Build API URL for filesystem endpoint."""
-        return f"http://{self._host}:{self._port}/fs/{self._task_id}/{endpoint}"
+        return f"http://{self._host}:{self._port}/api/fs/{self._task_id}/{endpoint}"
 
     async def _list_directory(self, path: str) -> list[FileEntry]:
         """
