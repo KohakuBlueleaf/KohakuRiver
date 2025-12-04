@@ -15,7 +15,7 @@ Responsibilities:
 import asyncio
 import os
 
-from fastapi import FastAPI, Path, WebSocket
+from fastapi import FastAPI, Path, Query, WebSocket
 
 from kohakuriver.db.base import db, initialize_database
 from kohakuriver.docker.client import DockerManager
@@ -33,7 +33,10 @@ from kohakuriver.host.endpoints import (
     vps,
 )
 from kohakuriver.host.endpoints.docker_terminal import terminal_websocket_endpoint
+from kohakuriver.host.endpoints.filesystem import watch_filesystem_proxy
 from kohakuriver.host.endpoints.task_terminal import task_terminal_proxy_endpoint
+from kohakuriver.host.services.tunnel_proxy import forward_port_proxy
+from kohakuriver.tunnel.protocol import PROTO_TCP, PROTO_UDP
 from kohakuriver.models.enums import LogLevel
 from kohakuriver.ssh_proxy.server import start_server
 from kohakuriver.utils.logger import configure_logging, get_logger
@@ -55,14 +58,16 @@ app = FastAPI(
     version="0.4.0",
 )
 
-# Include API routers
-app.include_router(tasks.router, tags=["Tasks"])
-app.include_router(nodes.router, tags=["Nodes"])
-app.include_router(vps.router, tags=["VPS"])
-app.include_router(docker.router, prefix="/docker", tags=["Docker"])
-app.include_router(health.router, tags=["Health"])
-app.include_router(filesystem.router, tags=["Filesystem"])
-app.include_router(container_filesystem.router, tags=["Container Filesystem"])
+# Include API routers (all under /api prefix)
+app.include_router(tasks.router, prefix="/api", tags=["Tasks"])
+app.include_router(nodes.router, prefix="/api", tags=["Nodes"])
+app.include_router(vps.router, prefix="/api", tags=["VPS"])
+app.include_router(docker.router, prefix="/api/docker", tags=["Docker"])
+app.include_router(health.router, prefix="/api", tags=["Health"])
+app.include_router(filesystem.router, prefix="/api", tags=["Filesystem"])
+app.include_router(
+    container_filesystem.router, prefix="/api", tags=["Container Filesystem"]
+)
 
 
 # =============================================================================
@@ -70,7 +75,7 @@ app.include_router(container_filesystem.router, tags=["Container Filesystem"])
 # =============================================================================
 
 
-@app.websocket("/docker/host/containers/{container_name}/terminal")
+@app.websocket("/ws/docker/host/containers/{container_name}/terminal")
 async def websocket_terminal_endpoint(
     websocket: WebSocket,
     container_name: str = Path(...),
@@ -83,7 +88,7 @@ async def websocket_terminal_endpoint(
     await terminal_websocket_endpoint(websocket, container_name=container_name)
 
 
-@app.websocket("/task/{task_id}/terminal")
+@app.websocket("/ws/task/{task_id}/terminal")
 async def websocket_task_terminal_proxy(
     websocket: WebSocket,
     task_id: int = Path(...),
@@ -94,6 +99,39 @@ async def websocket_task_terminal_proxy(
     Proxies terminal requests from clients to the appropriate runner node.
     """
     await task_terminal_proxy_endpoint(websocket, task_id=task_id)
+
+
+@app.websocket("/ws/fs/{task_id}/watch")
+async def websocket_filesystem_watch(
+    websocket: WebSocket,
+    task_id: int = Path(...),
+    paths: str = Query(
+        "/shared,/local_temp", description="Comma-separated paths to watch"
+    ),
+):
+    """
+    WebSocket proxy for real-time filesystem change notifications.
+
+    Proxies the connection to the runner hosting the task.
+    """
+    await watch_filesystem_proxy(websocket, task_id=task_id, paths=paths)
+
+
+@app.websocket("/ws/forward/{task_id}/{port}")
+async def websocket_forward_port(
+    websocket: WebSocket,
+    task_id: int = Path(..., description="Task ID of the container"),
+    port: int = Path(..., description="Target port in the container"),
+    proto: str = Query("tcp", description="Protocol: tcp or udp"),
+):
+    """
+    WebSocket proxy for port forwarding to containers.
+
+    Proxies TCP/UDP connections through the tunnel system to reach services
+    running inside Docker containers without port mapping.
+    """
+    proto_type = PROTO_UDP if proto.lower() == "udp" else PROTO_TCP
+    await forward_port_proxy(websocket, task_id, port, proto_type)
 
 
 # =============================================================================

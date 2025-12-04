@@ -124,7 +124,7 @@ async def _proxy_get(
     """Proxy a GET request to the runner."""
     runner_url = await _get_runner_url(task_id)
 
-    url = f"{runner_url}/fs/{task_id}/{endpoint}"
+    url = f"{runner_url}/api/fs/{task_id}/{endpoint}"
     if params:
         url += "?" + urlencode(params)
 
@@ -151,7 +151,7 @@ async def _proxy_post(
     """Proxy a POST request to the runner."""
     runner_url = await _get_runner_url(task_id)
 
-    url = f"{runner_url}/fs/{task_id}/{endpoint}"
+    url = f"{runner_url}/api/fs/{task_id}/{endpoint}"
 
     logger.debug(f"Proxying POST to {url}")
 
@@ -176,7 +176,7 @@ async def _proxy_delete(
     """Proxy a DELETE request to the runner."""
     runner_url = await _get_runner_url(task_id)
 
-    url = f"{runner_url}/fs/{task_id}/{endpoint}"
+    url = f"{runner_url}/api/fs/{task_id}/{endpoint}"
     if params:
         url += "?" + urlencode(params)
 
@@ -274,22 +274,20 @@ async def stat_file(
 
 
 # =============================================================================
-# WebSocket Proxy Endpoint for File Watching
+# WebSocket Proxy Function for File Watching
 # =============================================================================
 
 
-@router.websocket("/fs/{task_id}/watch")
-async def watch_filesystem(
+async def watch_filesystem_proxy(
     websocket: WebSocket,
     task_id: int,
-    paths: str = Query(
-        "/shared,/local_temp", description="Comma-separated paths to watch"
-    ),
+    paths: str = "/shared,/local_temp",
 ):
     """
     WebSocket proxy for real-time filesystem change notifications.
 
     Proxies the connection to the runner hosting the task.
+    Called from main app.py with /ws prefix.
     """
     await websocket.accept()
 
@@ -301,10 +299,10 @@ async def watch_filesystem(
         await websocket.close()
         return
 
-    # Convert HTTP URL to WebSocket URL
+    # Convert HTTP URL to WebSocket URL (runner uses /ws prefix)
     parsed = urlparse(runner_url)
     ws_scheme = "wss" if parsed.scheme == "https" else "ws"
-    runner_ws_url = f"{ws_scheme}://{parsed.netloc}/fs/{task_id}/watch?paths={paths}"
+    runner_ws_url = f"{ws_scheme}://{parsed.netloc}/ws/fs/{task_id}/watch?paths={paths}"
 
     logger.info(f"[FS Watch Proxy] Connecting to runner: {runner_ws_url}")
 

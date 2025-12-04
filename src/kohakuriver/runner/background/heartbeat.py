@@ -83,7 +83,7 @@ async def send_heartbeat(
             async with httpx.AsyncClient() as client:
                 # Use PUT /heartbeat/{hostname} to match old API
                 response = await client.put(
-                    f"{host_url}/heartbeat/{hostname}",
+                    f"{host_url}/api/heartbeat/{hostname}",
                     json=payload.model_dump(mode="json"),
                     timeout=10.0,
                 )

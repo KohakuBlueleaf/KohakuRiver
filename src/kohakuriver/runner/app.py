@@ -10,13 +10,18 @@ import socket
 
 import httpx
 import psutil
-from fastapi import FastAPI, Path, WebSocket
+from fastapi import FastAPI, Path, Query, WebSocket
 
 from kohakuriver.docker.client import DockerManager
 from kohakuriver.runner.background.heartbeat import send_heartbeat
 from kohakuriver.runner.background.startup_check import startup_check
 from kohakuriver.runner.config import config
 from kohakuriver.runner.endpoints import docker, filesystem, tasks, terminal, vps
+from kohakuriver.runner.services.tunnel_server import (
+    handle_container_tunnel,
+    handle_port_forward,
+)
+from kohakuriver.tunnel.protocol import PROTO_TCP, PROTO_UDP
 from kohakuriver.runner.numa.detector import detect_numa_topology
 from kohakuriver.runner.services.resource_monitor import get_gpu_stats, get_total_cores
 from kohakuriver.storage.vault import TaskStateStore
@@ -38,18 +43,57 @@ app = FastAPI(
     version="0.2.0",
 )
 
-# Include routers
-app.include_router(tasks.router, tags=["Tasks"])
-app.include_router(vps.router, tags=["VPS"])
-app.include_router(docker.router, tags=["Docker"])
-app.include_router(filesystem.router, tags=["Filesystem"])
+# Include routers (all under /api prefix)
+app.include_router(tasks.router, prefix="/api", tags=["Tasks"])
+app.include_router(vps.router, prefix="/api", tags=["VPS"])
+app.include_router(docker.router, prefix="/api", tags=["Docker"])
+app.include_router(filesystem.router, prefix="/api", tags=["Filesystem"])
 
 
 # WebSocket endpoint for task/VPS terminal access
-@app.websocket("/task/{task_id}/terminal")
+@app.websocket("/ws/task/{task_id}/terminal")
 async def websocket_task_terminal(websocket: WebSocket, task_id: int = Path(...)):
     """WebSocket endpoint for interactive terminal access to task/VPS containers."""
     await terminal.task_terminal_websocket_endpoint(websocket, task_id=task_id)
+
+
+# WebSocket endpoint for filesystem watching
+@app.websocket("/ws/fs/{task_id}/watch")
+async def websocket_filesystem_watch(
+    websocket: WebSocket,
+    task_id: int = Path(...),
+    paths: str = Query(
+        "/shared,/local_temp", description="Comma-separated paths to watch"
+    ),
+):
+    """WebSocket endpoint for real-time filesystem change notifications."""
+    await filesystem.watch_filesystem_handler(websocket, task_id=task_id, paths=paths)
+
+
+# WebSocket endpoint for container tunnel connections (tunnel-client connects here)
+@app.websocket("/ws/tunnel/{container_id}")
+async def websocket_container_tunnel(
+    websocket: WebSocket,
+    container_id: str = Path(..., description="Container ID or name"),
+):
+    """WebSocket endpoint for container tunnel-client connections."""
+    await handle_container_tunnel(websocket, container_id)
+
+
+# WebSocket endpoint for port forwarding (user requests forwarded to container)
+@app.websocket("/ws/forward/{container_id}/{port}")
+async def websocket_port_forward(
+    websocket: WebSocket,
+    container_id: str = Path(..., description="Container ID or name"),
+    port: int = Path(..., description="Target port in container"),
+    proto: str = Query("tcp", description="Protocol: tcp or udp"),
+):
+    """WebSocket endpoint for port forwarding to containers."""
+    logger.info(
+        f"[Runner] Port forward WebSocket request: container={container_id}, port={port}, proto={proto}"
+    )
+    proto_type = PROTO_UDP if proto.lower() == "udp" else PROTO_TCP
+    await handle_port_forward(websocket, container_id, port, proto_type)
 
 
 def get_hostname() -> str:
@@ -106,7 +150,7 @@ async def register_with_host() -> bool:
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{host_url}/register",
+                f"{host_url}/api/register",
                 json=register_data,
                 timeout=15.0,
             )

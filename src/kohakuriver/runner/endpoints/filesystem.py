@@ -805,16 +805,15 @@ async def stat_file(
 # =============================================================================
 
 
-@router.websocket("/fs/{task_id}/watch")
-async def watch_filesystem(
+async def watch_filesystem_handler(
     websocket: WebSocket,
     task_id: int,
-    paths: str = Query(
-        "/shared,/local_temp", description="Comma-separated paths to watch"
-    ),
+    paths: str = "/shared,/local_temp",
 ):
     """
-    WebSocket endpoint for real-time filesystem change notifications.
+    WebSocket handler for real-time filesystem change notifications.
+
+    Called from main app.py with /ws prefix.
 
     Uses inotifywait inside the container to monitor file changes.
     Falls back to polling if inotifywait is not available.

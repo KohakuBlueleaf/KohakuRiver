@@ -108,7 +108,7 @@ async def task_terminal_proxy_endpoint(
         # 4. Build runner WebSocket URL from node.url
         # node.url format: "http://192.168.1.101:8001"
         parsed = urlparse(node.url)
-        runner_ws_url = f"ws://{parsed.netloc}/task/{task_id}/terminal"
+        runner_ws_url = f"ws://{parsed.netloc}/ws/task/{task_id}/terminal"
 
         logger.info(f"Proxying terminal for task {task_id} to {runner_ws_url}")
 

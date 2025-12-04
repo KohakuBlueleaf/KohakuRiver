@@ -122,7 +122,7 @@ async def send_vps_to_runner(
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{runner_url}/vps/create",
+                f"{runner_url}/api/vps/create",
                 json=payload,
                 timeout=None,  # No timeout - VPS creation can take a long time
             )
@@ -630,7 +630,7 @@ async def list_vps_snapshots(task_id: int):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{runner_url}/vps/snapshots/{task_id}",
+                f"{runner_url}/api/vps/snapshots/{task_id}",
                 timeout=30.0,
             )
             response.raise_for_status()
@@ -671,7 +671,7 @@ async def create_vps_snapshot(task_id: int, message: str = None):
         payload = {"message": message} if message else {}
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{runner_url}/vps/snapshots/{task_id}",
+                f"{runner_url}/api/vps/snapshots/{task_id}",
                 json=payload,
                 timeout=120.0,  # Snapshots can take time
             )
@@ -704,7 +704,7 @@ async def delete_vps_snapshot(task_id: int, timestamp: int):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.delete(
-                f"{runner_url}/vps/snapshots/{task_id}/{timestamp}",
+                f"{runner_url}/api/vps/snapshots/{task_id}/{timestamp}",
                 timeout=60.0,
             )
             response.raise_for_status()
@@ -736,7 +736,7 @@ async def delete_all_vps_snapshots(task_id: int):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.delete(
-                f"{runner_url}/vps/snapshots/{task_id}",
+                f"{runner_url}/api/vps/snapshots/{task_id}",
                 timeout=120.0,  # Multiple deletions may take time
             )
             response.raise_for_status()
@@ -768,7 +768,7 @@ async def get_latest_vps_snapshot(task_id: int):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{runner_url}/vps/snapshots/{task_id}/latest",
+                f"{runner_url}/api/vps/snapshots/{task_id}/latest",
                 timeout=30.0,
             )
             response.raise_for_status()
