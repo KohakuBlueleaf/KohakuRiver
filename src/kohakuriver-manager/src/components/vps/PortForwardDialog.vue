@@ -113,11 +113,10 @@ function handleClose() {
         type="info"
         :closable="false"
         show-icon>
-        <template #title>
-          Forward container ports to your local machine
-        </template>
+        <template #title>Forward container ports to your local machine</template>
         <p class="text-sm mt-1">
-          Use the KohakuRiver CLI to create a local proxy that forwards traffic to services running inside your container.
+          Use the KohakuRiver CLI to create a local proxy that forwards traffic to services running inside your
+          container.
         </p>
       </el-alert>
 
@@ -189,18 +188,32 @@ function handleClose() {
 
       <!-- Usage instructions -->
       <el-collapse>
-        <el-collapse-item title="How to use" name="instructions">
+        <el-collapse-item
+          title="How to use"
+          name="instructions">
           <div class="text-sm space-y-2 text-muted">
             <p>1. Open a terminal on your local machine</p>
             <p>2. Run the command above (keep it running)</p>
-            <p>3. Access the forwarded port at <code>localhost:{{ forwardForm.localPort || forwardForm.remotePort }}</code></p>
+            <p>
+              3. Access the forwarded port at
+              <code>localhost:{{ forwardForm.localPort || forwardForm.remotePort }}</code>
+            </p>
             <p>4. Press Ctrl+C to stop forwarding</p>
             <el-divider />
             <p><strong>Examples:</strong></p>
             <ul class="list-disc list-inside">
-              <li>Forward web server: <code>kohakuriver forward {{ taskId }} 80 -l 8080</code></li>
-              <li>Forward database: <code>kohakuriver forward {{ taskId }} 5432</code></li>
-              <li>Forward UDP (e.g., DNS): <code>kohakuriver forward {{ taskId }} 53 --proto udp</code></li>
+              <li>
+                Forward web server:
+                <code>kohakuriver forward {{ taskId }} 80 -l 8080</code>
+              </li>
+              <li>
+                Forward database:
+                <code>kohakuriver forward {{ taskId }} 5432</code>
+              </li>
+              <li>
+                Forward UDP (e.g., DNS):
+                <code>kohakuriver forward {{ taskId }} 53 --proto udp</code>
+              </li>
             </ul>
           </div>
         </el-collapse-item>

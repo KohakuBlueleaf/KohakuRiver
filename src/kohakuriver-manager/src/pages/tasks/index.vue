@@ -45,7 +45,7 @@ const logLoading = ref(false)
 // Submit form
 const submitForm = ref({
   command: '',
-  arguments: [],  // Array of argument strings
+  arguments: [], // Array of argument strings
   currentArg: '', // Current input for new argument
   env_vars: '',
   required_cores: 0,
@@ -569,9 +569,13 @@ function getNodeName(node) {
               </el-button>
             </div>
             <div class="text-xs text-muted mt-1">
-              Press <kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs">Enter</kbd> to add argument.
-              <kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs">Shift+Enter</kbd> or
-              <kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs">Ctrl+Enter</kbd> for newline.
+              Press
+              <kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs">Enter</kbd>
+              to add argument.
+              <kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs">Shift+Enter</kbd>
+              or
+              <kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs">Ctrl+Enter</kbd>
+              for newline.
             </div>
 
             <!-- Argument list with drag-and-drop -->
@@ -768,7 +772,10 @@ function getNodeName(node) {
               <!-- Command Section -->
               <div class="p-4 bg-app-surface rounded-lg">
                 <div class="text-sm text-muted mb-2">Command</div>
-                <pre class="font-mono text-sm bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto whitespace-pre-wrap">{{ formatFullCommand(selectedTask) }}</pre>
+                <pre
+                  class="font-mono text-sm bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto whitespace-pre-wrap"
+                  >{{ formatFullCommand(selectedTask) }}</pre
+                >
               </div>
 
               <!-- Resources Grid -->

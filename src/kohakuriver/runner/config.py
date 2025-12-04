@@ -51,7 +51,9 @@ class RunnerConfig:
     # Docker Network Configuration
     DOCKER_NETWORK_NAME: str = "kohakuriver-net"  # Custom bridge network for containers
     DOCKER_NETWORK_SUBNET: str = "172.30.0.0/16"  # Subnet for kohakuriver-net
-    DOCKER_NETWORK_GATEWAY: str = "172.30.0.1"  # Gateway IP (runner reachable at this IP)
+    DOCKER_NETWORK_GATEWAY: str = (
+        "172.30.0.1"  # Gateway IP (runner reachable at this IP)
+    )
 
     # Snapshot Configuration
     AUTO_SNAPSHOT_ON_STOP: bool = True
