@@ -4,6 +4,14 @@ Welcome to the KohakuRiver documentation!
 
 KohakuRiver is a lightweight, self-hosted cluster manager designed for distributing command-line tasks and launching persistent interactive sessions (VPS Tasks) across compute nodes. It leverages Docker containers as portable virtual environments for reproducible execution.
 
+## Key Features
+
+- **Container as Portable Environment** - Docker containers auto-sync across nodes as versioned tarballs
+- **Task/VPS System** - Batch tasks and persistent interactive sessions for R&D workflows
+- **TTY Forwarding** - WebSocket terminal access without Docker port mapping
+- **Port Forwarding** - Dynamic TCP/UDP tunneling to container services
+- **Web UI & Terminal TUI** - Visual dashboard and VSCode-like terminal interface
+
 This documentation is organized into several sections to help you get started, administer your cluster, use its features, and find reference information.
 
 ## Documentation Structure
@@ -77,6 +85,17 @@ kohakuriver task status <task_id>
 # VPS management
 kohakuriver vps create -t node1 -c 4 -m 8G
 kohakuriver vps connect <task_id>
+
+# Terminal access (without Docker port mapping)
+kohakuriver connect <task_id>           # WebSocket terminal
+kohakuriver connect <task_id> --ide     # TUI IDE mode
+
+# Port forwarding (without Docker port mapping)
+kohakuriver forward <task_id> 8888      # Forward port 8888
+kohakuriver forward <task_id> 80 -l 3000  # Forward 80 to local 3000
+
+# Terminal TUI dashboard
+kohakuriver terminal
 
 # Docker management
 kohakuriver docker container create ubuntu:22.04 my-env
