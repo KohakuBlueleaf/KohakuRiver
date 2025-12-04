@@ -52,6 +52,7 @@ declare module 'vue' {
     IdeOverlay: typeof import('./components/ide/IdeOverlay.vue')['default']
     IdeStatusBar: typeof import('./components/ide/common/IdeStatusBar.vue')['default']
     MonacoEditor: typeof import('./components/ide/editor/MonacoEditor.vue')['default']
+    PortForwardDialog: typeof import('./components/vps/PortForwardDialog.vue')['default']
     ResourceBar: typeof import('./components/common/ResourceBar.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

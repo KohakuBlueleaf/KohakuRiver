@@ -21,6 +21,7 @@ import { formatBytes, formatRelativeTime } from '@/utils/format'
 
 import IdeContent from '@/components/ide/IdeContent.vue'
 import IdeOverlay from '@/components/ide/IdeOverlay.vue'
+import PortForwardDialog from '@/components/vps/PortForwardDialog.vue'
 
 const vpsStore = useVpsStore()
 const clusterStore = useClusterStore()
@@ -37,6 +38,7 @@ const ideTaskId = ref(null)
 // Dialogs
 const createDialogVisible = ref(false)
 const sshInfoDialogVisible = ref(false)
+const portForwardDialogVisible = ref(false)
 const selectedVps = ref(null)
 
 // Create form
@@ -242,6 +244,11 @@ function closeIde() {
 function showSshInfo(vps) {
   selectedVps.value = vps
   sshInfoDialogVisible.value = true
+}
+
+function showPortForward(vps) {
+  selectedVps.value = vps
+  portForwardDialogVisible.value = true
 }
 
 async function copyToClipboard(text, successMsg) {
@@ -482,6 +489,22 @@ function copyVpsId(taskId) {
                     class="flex-1">
                     <span class="i-carbon-copy mr-1"></span>
                     Terminal
+                  </el-button>
+                </el-tooltip>
+              </div>
+
+              <!-- Port forwarding row -->
+              <div class="flex gap-2">
+                <el-tooltip
+                  content="Forward container ports to local machine"
+                  placement="top">
+                  <el-button
+                    size="small"
+                    type="success"
+                    @click="showPortForward(vps)"
+                    class="flex-1">
+                    <span class="i-carbon-arrows-horizontal mr-1"></span>
+                    Port Forward
                   </el-button>
                 </el-tooltip>
               </div>
@@ -849,6 +872,13 @@ function copyVpsId(taskId) {
         </div>
       </template>
     </el-dialog>
+
+    <!-- Port Forward Dialog -->
+    <PortForwardDialog
+      v-if="selectedVps"
+      v-model:visible="portForwardDialogVisible"
+      :task-id="selectedVps.task_id"
+      :status="selectedVps.status" />
   </div>
 </template>
 

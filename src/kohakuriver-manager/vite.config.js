@@ -46,18 +46,16 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     proxy: {
-      // API proxy to backend
+      // API proxy to backend (backend now uses /api prefix natively)
       '/api': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
       },
-      // WebSocket proxy for terminal
+      // WebSocket proxy (backend now uses /ws prefix natively)
       '/ws': {
         target: 'ws://127.0.0.1:8000',
         ws: true,
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/ws/, ''),
       },
     },
   },
