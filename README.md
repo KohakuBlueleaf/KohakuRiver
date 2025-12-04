@@ -2,6 +2,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![en](https://img.shields.io/badge/lang-en-red.svg)](./README.md)
+[![中文](https://img.shields.io/badge/lang-中文-green.svg)](./README.zh.md)
 
 ![KohakuRiver logo svg](image/logo.svg)
 
