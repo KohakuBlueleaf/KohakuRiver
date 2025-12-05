@@ -92,6 +92,32 @@ class HostConfig:
 
     LOG_LEVEL: LogLevel = LogLevel.INFO
 
+    # -------------------------------------------------------------------------
+    # Overlay Network Configuration (VXLAN Hub)
+    # -------------------------------------------------------------------------
+
+    # Enable VXLAN overlay network for cross-node container communication
+    # When disabled, containers use isolated per-node bridge networks
+    OVERLAY_ENABLED: bool = False
+
+    # Bridge name for overlay network on Host
+    OVERLAY_BRIDGE_NAME: str = "kohaku-overlay"
+
+    # Host's IP address on the overlay network (containers reach Host here)
+    OVERLAY_HOST_IP: str = "10.0.0.1"
+
+    # Network prefix for Host's overlay IP (covers all runner subnets)
+    OVERLAY_HOST_PREFIX: int = 8
+
+    # Base VXLAN ID (each runner gets base_id + runner_id)
+    OVERLAY_VXLAN_ID: int = 100
+
+    # VXLAN UDP port (must be open in firewall between Host and Runners)
+    OVERLAY_VXLAN_PORT: int = 4789
+
+    # MTU for overlay network (1500 - 50 bytes VXLAN overhead)
+    OVERLAY_MTU: int = 1450
+
     # =========================================================================
     # Helper Methods
     # =========================================================================

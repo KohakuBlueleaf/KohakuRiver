@@ -7,8 +7,10 @@ Provides the core functionality for cluster node lifecycle management.
 
 import datetime
 import json
+import re
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path
 
 from kohakuriver.db.node import Node
 from kohakuriver.db.task import Task
@@ -20,6 +22,12 @@ from kohakuriver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+def _extract_ip_from_url(url: str) -> str:
+    """Extract IP address from a runner URL."""
+    parsed = urlparse(url)
+    return parsed.hostname or "127.0.0.1"
 
 
 # =============================================================================
@@ -34,6 +42,8 @@ async def register_node(request: RegisterRequest):
 
     Creates a new node record or updates an existing one.
     Called by runners on startup to join the cluster.
+
+    Returns overlay network configuration if overlay is enabled.
     """
     hostname = request.hostname
     url = request.url
@@ -71,10 +81,51 @@ async def register_node(request: RegisterRequest):
     else:
         logger.info(f"Created new node: {hostname}")
 
+    # Handle overlay network allocation if enabled
+    overlay_info = None
+    if config.OVERLAY_ENABLED:
+        overlay_info = await _allocate_overlay_for_runner(hostname, url)
+
     return {
         "message": f"Node {hostname} registered successfully.",
         "created": created,
+        "overlay": overlay_info,
     }
+
+
+async def _allocate_overlay_for_runner(hostname: str, url: str) -> dict | None:
+    """
+    Allocate overlay network configuration for a runner.
+
+    Returns overlay info dict or None if overlay manager is not available.
+    """
+    from kohakuriver.host.app import get_overlay_manager
+
+    overlay_manager = get_overlay_manager()
+    if not overlay_manager:
+        return None
+
+    try:
+        physical_ip = _extract_ip_from_url(url)
+        allocation = await overlay_manager.allocate_for_runner(hostname, physical_ip)
+
+        overlay_info = {
+            "runner_id": allocation.runner_id,
+            "overlay_subnet": allocation.subnet,
+            "overlay_gateway": allocation.gateway,
+            "host_overlay_ip": config.OVERLAY_HOST_IP,
+            "host_physical_ip": config.HOST_REACHABLE_ADDRESS,
+        }
+
+        logger.info(
+            f"Overlay allocated for {hostname}: runner_id={allocation.runner_id}, "
+            f"subnet={allocation.subnet}"
+        )
+        return overlay_info
+
+    except Exception as e:
+        logger.error(f"Failed to allocate overlay for {hostname}: {e}")
+        return None
 
 
 # =============================================================================
@@ -107,7 +158,20 @@ async def heartbeat(hostname: str, request: HeartbeatRequest):
     _process_killed_tasks(request.killed_tasks, hostname, now)
     _reconcile_assigning_tasks(request.running_tasks, hostname, now)
 
+    # Mark overlay allocation as active on heartbeat
+    if config.OVERLAY_ENABLED:
+        await _mark_overlay_active(hostname)
+
     return {"message": "Heartbeat received"}
+
+
+async def _mark_overlay_active(hostname: str) -> None:
+    """Mark runner's overlay allocation as active on heartbeat."""
+    from kohakuriver.host.app import get_overlay_manager
+
+    overlay_manager = get_overlay_manager()
+    if overlay_manager:
+        await overlay_manager.mark_runner_active(hostname)
 
 
 def _update_node_metrics(
@@ -269,3 +333,101 @@ def _check_task_assignment_timeout(
 async def get_nodes_status():
     """Get status of all registered nodes."""
     return get_all_nodes_status()
+
+
+# =============================================================================
+# Overlay Network Status
+# =============================================================================
+
+
+@router.get("/overlay/status")
+async def get_overlay_status():
+    """
+    Get overlay network status and allocations.
+
+    Returns:
+        - enabled: Whether overlay network is enabled
+        - host_ip: Host's IP on the overlay network
+        - bridge: Bridge name
+        - allocations: List of runner allocations
+        - stats: Overlay network statistics
+    """
+    if not config.OVERLAY_ENABLED:
+        return {"enabled": False}
+
+    from kohakuriver.host.app import get_overlay_manager
+
+    overlay_manager = get_overlay_manager()
+    if not overlay_manager:
+        return {"enabled": True, "error": "Overlay manager not initialized"}
+
+    allocations = await overlay_manager.get_all_allocations()
+    stats = await overlay_manager.get_stats()
+
+    return {
+        "enabled": True,
+        "host_ip": f"{config.OVERLAY_HOST_IP}/{config.OVERLAY_HOST_PREFIX}",
+        "bridge": config.OVERLAY_BRIDGE_NAME,
+        "allocations": [
+            {
+                "runner_name": a.runner_name,
+                "runner_id": a.runner_id,
+                "subnet": a.subnet,
+                "gateway": a.gateway,
+                "physical_ip": a.physical_ip,
+                "is_active": a.is_active,
+                "last_used": a.last_used.isoformat(),
+                "vxlan_device": a.vxlan_device,
+            }
+            for a in allocations
+        ],
+        "stats": stats,
+    }
+
+
+@router.post("/overlay/release/{runner_name}")
+async def release_overlay_allocation(runner_name: str = Path(...)):
+    """
+    Manually release an overlay allocation for a runner.
+
+    WARNING: This will disconnect the runner from the overlay network.
+    Use with caution - running containers may lose connectivity.
+    """
+    if not config.OVERLAY_ENABLED:
+        raise HTTPException(status_code=400, detail="Overlay network is not enabled")
+
+    from kohakuriver.host.app import get_overlay_manager
+
+    overlay_manager = get_overlay_manager()
+    if not overlay_manager:
+        raise HTTPException(status_code=500, detail="Overlay manager not initialized")
+
+    released = await overlay_manager.release_runner(runner_name)
+    if released:
+        logger.info(f"Released overlay allocation for {runner_name}")
+        return {"released": True, "runner_name": runner_name}
+    else:
+        return {"released": False, "reason": f"No allocation found for {runner_name}"}
+
+
+@router.post("/overlay/cleanup")
+async def cleanup_overlay():
+    """
+    Force cleanup of all inactive overlay allocations.
+
+    This removes VXLAN tunnels for runners that are not currently active.
+    Use with caution - only do this when you're sure no containers need
+    the overlay network.
+    """
+    if not config.OVERLAY_ENABLED:
+        raise HTTPException(status_code=400, detail="Overlay network is not enabled")
+
+    from kohakuriver.host.app import get_overlay_manager
+
+    overlay_manager = get_overlay_manager()
+    if not overlay_manager:
+        raise HTTPException(status_code=500, detail="Overlay manager not initialized")
+
+    cleaned_count = await overlay_manager.cleanup_inactive()
+    logger.info(f"Cleaned up {cleaned_count} inactive overlay allocations")
+    return {"cleaned_count": cleaned_count}

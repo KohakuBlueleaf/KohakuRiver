@@ -35,6 +35,8 @@ async def check_dead_runners() -> None:
             for node in dead_nodes:
                 _mark_node_offline(node)
                 _mark_node_tasks_lost(node)
+                # Mark overlay allocation as inactive (not deleted)
+                await _mark_overlay_inactive(node.hostname)
 
         except Exception as e:
             logger.error(f"Error checking dead runners: {e}")
@@ -87,3 +89,22 @@ def _mark_node_tasks_lost(node: Node) -> None:
         task.completed_at = datetime.datetime.now()
         task.exit_code = -1
         task.save()
+
+
+async def _mark_overlay_inactive(hostname: str) -> None:
+    """
+    Mark overlay allocation as inactive when runner goes offline.
+
+    Note: We don't delete the allocation - the runner may come back
+    and containers may still be running. LRU cleanup happens only
+    when all 255 IPs are exhausted.
+    """
+    if not config.OVERLAY_ENABLED:
+        return
+
+    from kohakuriver.host.app import get_overlay_manager
+
+    overlay_manager = get_overlay_manager()
+    if overlay_manager:
+        await overlay_manager.mark_runner_inactive(hostname)
+        logger.info(f"Marked overlay allocation inactive for offline runner: {hostname}")

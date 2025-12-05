@@ -252,10 +252,11 @@ def build_docker_run_command(
     # Container name
     docker_cmd.extend(["--name", container_name_full])
 
-    # Use kohakuriver-net bridge network
+    # Use overlay network if configured, otherwise kohakuriver-net bridge
     # Containers on same node can communicate via container name
-    # Network is created on runner startup with known gateway for tunnel access
-    docker_cmd.extend(["--network", "kohakuriver-net"])
+    # With overlay, containers across nodes can communicate via overlay IPs
+    container_network = config.get_container_network()
+    docker_cmd.extend(["--network", container_network])
 
     # Privileged mode
     if privileged:

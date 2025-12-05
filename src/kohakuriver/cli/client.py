@@ -676,3 +676,56 @@ def get_vps_list_sync(active_only: bool = True) -> list[dict]:
         return get_vps_list(active_only=active_only)
     except Exception:
         return []
+
+
+# =============================================================================
+# Overlay Network Operations
+# =============================================================================
+
+
+def get_overlay_status() -> dict:
+    """Get overlay network status and allocations."""
+    url = f"{_get_host_url()}/overlay/status"
+
+    try:
+        response = httpx.get(url, timeout=10.0)
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        _handle_http_error(e, "get overlay status")
+    except httpx.RequestError as e:
+        logger.error(f"Request error: {e}")
+        raise APIError(f"Network error: {e}")
+    return {}
+
+
+def release_overlay(runner_name: str) -> dict:
+    """Release overlay allocation for a runner."""
+    url = f"{_get_host_url()}/overlay/release/{runner_name}"
+
+    try:
+        response = httpx.post(url, timeout=10.0)
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        _handle_http_error(e, f"release overlay for {runner_name}")
+    except httpx.RequestError as e:
+        logger.error(f"Request error: {e}")
+        raise APIError(f"Network error: {e}")
+    return {}
+
+
+def cleanup_overlay() -> dict:
+    """Cleanup inactive overlay allocations."""
+    url = f"{_get_host_url()}/overlay/cleanup"
+
+    try:
+        response = httpx.post(url, timeout=30.0)
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        _handle_http_error(e, "cleanup overlay")
+    except httpx.RequestError as e:
+        logger.error(f"Request error: {e}")
+        raise APIError(f"Network error: {e}")
+    return {}

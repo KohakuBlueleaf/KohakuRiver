@@ -63,6 +63,26 @@ class RunnerConfig:
     # Logging Configuration
     LOG_LEVEL: LogLevel = LogLevel.INFO
 
+    # -------------------------------------------------------------------------
+    # Overlay Network Configuration (VXLAN Hub)
+    # -------------------------------------------------------------------------
+
+    # Enable VXLAN overlay network for cross-node container communication
+    # Must match Host's OVERLAY_ENABLED setting
+    OVERLAY_ENABLED: bool = False
+
+    # Docker network name for overlay (used when overlay is enabled)
+    OVERLAY_NETWORK_NAME: str = "kohakuriver-overlay"
+
+    # Base VXLAN ID (must match Host's OVERLAY_VXLAN_ID)
+    OVERLAY_VXLAN_ID: int = 100
+
+    # VXLAN UDP port (must match Host's OVERLAY_VXLAN_PORT)
+    OVERLAY_VXLAN_PORT: int = 4789
+
+    # MTU for overlay network (must match Host's OVERLAY_MTU)
+    OVERLAY_MTU: int = 1450
+
     def get_hostname(self) -> str:
         """Get this runner's hostname."""
         return socket.gethostname()
@@ -151,8 +171,36 @@ class RunnerConfig:
 
     def get_runner_ws_url(self) -> str:
         """Get the WebSocket URL for tunnel client to connect to."""
-        # Containers on kohakuriver-net reach the host via the network gateway
-        return f"ws://{self.DOCKER_NETWORK_GATEWAY}:{self.RUNNER_PORT}"
+        # Containers reach the runner via the network gateway
+        # Uses overlay gateway if configured, otherwise default gateway
+        return f"ws://{self.get_container_gateway()}:{self.RUNNER_PORT}"
+
+    def get_container_network(self) -> str:
+        """
+        Get the Docker network name for containers.
+
+        Returns overlay network if overlay is enabled and configured,
+        otherwise returns the default kohakuriver-net.
+        """
+        if self.OVERLAY_ENABLED and hasattr(self, "_overlay_configured") and self._overlay_configured:
+            return self.OVERLAY_NETWORK_NAME
+        return self.DOCKER_NETWORK_NAME
+
+    def get_container_gateway(self) -> str:
+        """
+        Get the gateway IP for containers to reach the runner.
+
+        Returns overlay gateway if overlay is enabled and configured,
+        otherwise returns the default gateway.
+        """
+        if self.OVERLAY_ENABLED and hasattr(self, "_overlay_gateway") and self._overlay_gateway:
+            return self._overlay_gateway
+        return self.DOCKER_NETWORK_GATEWAY
+
+    def set_overlay_configured(self, gateway: str) -> None:
+        """Mark overlay as configured with the given gateway IP."""
+        self._overlay_configured = True
+        self._overlay_gateway = gateway
 
 
 # Global config instance

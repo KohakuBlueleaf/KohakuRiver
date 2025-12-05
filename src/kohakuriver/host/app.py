@@ -158,6 +158,10 @@ async def startup_event():
     # Initialize default container environment
     await _ensure_default_container(container_tar_dir)
 
+    # Initialize overlay network manager if enabled
+    if config.OVERLAY_ENABLED:
+        await _initialize_overlay_network()
+
     # Start background tasks
     _start_background_tasks()
 
@@ -173,6 +177,11 @@ async def shutdown_event():
     # Wait for tasks to complete
     if background_tasks:
         await asyncio.gather(*background_tasks, return_exceptions=True)
+
+    # Close overlay manager if active
+    if hasattr(app.state, "overlay_manager") and app.state.overlay_manager:
+        app.state.overlay_manager.close()
+        logger.info("Overlay network manager closed")
 
     # Close database connection
     if not db.is_closed():
@@ -231,6 +240,45 @@ def _start_background_tasks():
         task.add_done_callback(background_tasks.discard)
 
     logger.debug(f"Started {len(tasks_to_start)} background tasks")
+
+
+async def _initialize_overlay_network():
+    """
+    Initialize the VXLAN overlay network manager.
+
+    Creates the overlay bridge and recovers state from existing VXLAN interfaces.
+    """
+    from kohakuriver.host.services.overlay_manager import OverlayNetworkManager
+
+    logger.info("Initializing VXLAN overlay network...")
+
+    try:
+        overlay_manager = OverlayNetworkManager(config)
+        await overlay_manager.initialize()
+
+        # Store in app.state for access from endpoints
+        app.state.overlay_manager = overlay_manager
+
+        logger.info(
+            f"Overlay network initialized: bridge={config.OVERLAY_BRIDGE_NAME}, "
+            f"host_ip={config.OVERLAY_HOST_IP}/{config.OVERLAY_HOST_PREFIX}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize overlay network: {e}")
+        logger.warning("Overlay network disabled due to initialization failure")
+        app.state.overlay_manager = None
+
+
+def get_overlay_manager():
+    """
+    Get the overlay network manager instance.
+
+    Returns:
+        OverlayNetworkManager or None if overlay is disabled or not initialized.
+    """
+    if not config.OVERLAY_ENABLED:
+        return None
+    return getattr(app.state, "overlay_manager", None)
 
 
 # =============================================================================

@@ -332,9 +332,11 @@ def _build_vps_docker_command(
     # Container name
     docker_cmd.extend(["--name", vps_container_name(task_id)])
 
-    # Use kohakuriver-net bridge network
+    # Use overlay network if configured, otherwise kohakuriver-net bridge
     # Containers on same node can communicate via container name
-    docker_cmd.extend(["--network", "kohakuriver-net"])
+    # With overlay, containers across nodes can communicate via overlay IPs
+    container_network = config.get_container_network()
+    docker_cmd.extend(["--network", container_network])
 
     # SSH port mapping - only if SSH is enabled
     if ssh_key_mode != "disabled":

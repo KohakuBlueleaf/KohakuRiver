@@ -118,8 +118,14 @@ def get_runner_url() -> str:
     return f"http://{ip}:{config.RUNNER_PORT}"
 
 
-async def register_with_host() -> bool:
-    """Register this runner with the host."""
+async def register_with_host() -> tuple[bool, dict | None]:
+    """
+    Register this runner with the host.
+
+    Returns:
+        Tuple of (success, overlay_info). overlay_info is the overlay network
+        configuration from Host if overlay is enabled, otherwise None.
+    """
     global numa_topology
 
     # Detect NUMA topology if not done
@@ -157,21 +163,33 @@ async def register_with_host() -> bool:
                 timeout=15.0,
             )
             response.raise_for_status()
-        logger.info("Successfully registered with host.")
-        return True
+
+        data = response.json()
+        overlay_info = data.get("overlay")
+
+        if overlay_info:
+            logger.info(
+                f"Successfully registered with host. "
+                f"Overlay: runner_id={overlay_info.get('runner_id')}, "
+                f"subnet={overlay_info.get('overlay_subnet')}"
+            )
+        else:
+            logger.info("Successfully registered with host (no overlay).")
+
+        return True, overlay_info
 
     except httpx.RequestError as e:
         logger.error(f"Failed to register with host: {e}")
-        return False
+        return False, None
     except httpx.HTTPStatusError as e:
         logger.error(
             f"Host rejected registration: {e.response.status_code} - "
             f"{e.response.text}"
         )
-        return False
+        return False, None
     except Exception as e:
         logger.exception(f"Unexpected error during registration: {e}")
-        return False
+        return False, None
 
 
 async def startup_event():
@@ -255,8 +273,9 @@ async def startup_event():
 
     # Register with host
     registered = False
+    overlay_info = None
     for attempt in range(5):
-        registered = await register_with_host()
+        registered, overlay_info = await register_with_host()
         if registered:
             break
         wait_time = 5 * (attempt + 1)
@@ -272,22 +291,90 @@ async def startup_event():
             "Runner may not function correctly."
         )
     else:
+        # Set up overlay network if configured
+        if overlay_info and config.OVERLAY_ENABLED:
+            await _setup_overlay_network(overlay_info)
+
         # Run startup check
         logger.info("Running startup check...")
         await startup_check(task_store)
 
-        # Start heartbeat
+        # Start heartbeat (with modified callback that ignores overlay_info return)
         logger.info("Starting heartbeat background task.")
+
+        async def register_callback():
+            success, _ = await register_with_host()
+            return success
+
         heartbeat_task = asyncio.create_task(
             send_heartbeat(
                 hostname=hostname,
                 numa_topology=numa_topology,
                 task_store=task_store,
-                register_callback=register_with_host,
+                register_callback=register_callback,
             )
         )
         background_tasks.add(heartbeat_task)
         heartbeat_task.add_done_callback(background_tasks.discard)
+
+
+async def _setup_overlay_network(overlay_info: dict) -> None:
+    """
+    Set up the VXLAN overlay network on this runner.
+
+    Args:
+        overlay_info: Overlay configuration from Host registration response
+    """
+    from kohakuriver.runner.services.overlay_manager import (
+        OverlayConfig,
+        RunnerOverlayManager,
+    )
+
+    logger.info("Setting up VXLAN overlay network...")
+
+    # Get runner's physical IP (same logic as get_runner_url)
+    runner_ip = config.RUNNER_BIND_IP
+    if runner_ip == "0.0.0.0":
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((config.HOST_ADDRESS, config.HOST_PORT))
+            runner_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            runner_ip = "127.0.0.1"
+
+    try:
+        overlay_config = OverlayConfig(
+            runner_id=overlay_info["runner_id"],
+            subnet=overlay_info["overlay_subnet"],
+            gateway=overlay_info["overlay_gateway"],
+            host_overlay_ip=overlay_info["host_overlay_ip"],
+            host_physical_ip=overlay_info["host_physical_ip"],
+            runner_physical_ip=runner_ip,
+        )
+
+        overlay_manager = RunnerOverlayManager(
+            base_vxlan_id=config.OVERLAY_VXLAN_ID,
+            vxlan_port=config.OVERLAY_VXLAN_PORT,
+            mtu=config.OVERLAY_MTU,
+        )
+
+        await overlay_manager.setup(overlay_config)
+
+        # Store manager in app.state
+        app.state.overlay_manager = overlay_manager
+
+        # Mark overlay as configured in config so containers use overlay network
+        config.set_overlay_configured(overlay_config.gateway)
+
+        logger.info(
+            f"Overlay network setup complete: "
+            f"subnet={overlay_config.subnet}, gateway={overlay_config.gateway}"
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to set up overlay network: {e}")
+        logger.warning("Containers will use default kohakuriver-net network")
 
 
 async def shutdown_event():
@@ -297,6 +384,11 @@ async def shutdown_event():
     # Cancel background tasks
     for task in background_tasks:
         task.cancel()
+
+    # Close overlay manager if active
+    if hasattr(app.state, "overlay_manager") and app.state.overlay_manager:
+        app.state.overlay_manager.close()
+        logger.info("Overlay network manager closed")
 
     # Don't stop containers on shutdown - VPS containers have --restart unless-stopped
     # and should persist. Task containers will be cleaned up on next startup.
