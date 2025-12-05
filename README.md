@@ -16,6 +16,7 @@ It provides resource allocation (CPU/memory/GPU limits), multi-node/NUMA/GPU tas
 |---------|-------------|
 | **Container as Portable Environment** | Docker containers function as auto-synced virtual environments. Set up once on Host, package as tarball, and use across all nodes automatically. |
 | **Task/VPS System** | **Tasks** for batch command execution, **VPS** for persistent interactive sessions. VPS is crucial for R&D workflows where you can't create a complete Docker image upfront. |
+| **VXLAN Overlay Network** | Cross-node container networking with minimal setup. Just set Host IP and open UDP 4789 - automatic VXLAN tunnels, IP allocation, and firewall configuration. |
 | **TTY Forwarding** | WebSocket-based terminal access (`kohakuriver connect`) without Docker port mapping. Supports full TTY (vim, htop, etc.) and works even after system restarts. |
 | **Port Forwarding** | Dynamic port forwarding (`kohakuriver forward`) through tunnel proxy. Access container services without Docker port mapping, avoiding port conflicts on runner nodes. |
 | **Web UI & Terminal TUI** | Web dashboard for visual management, Terminal TUI (`kohakuriver terminal`) with VSCode-like layout, and IDE mode with file tree and integrated terminal. |
@@ -99,6 +100,14 @@ By focusing on these practical realities of small-scale computing, KohakuRiver p
 - **CPU/Memory Allocation:** Request specific cores (`-c/--cores`) and memory limits (`-m/--memory`).
 - **GPU Allocation:** Target specific GPUs (`--target node::gpu_id1,gpu_id2`).
 - **NUMA Binding:** Bind tasks to NUMA nodes (`--target node:numa_id`).
+
+### Cross-Node Networking (VXLAN Overlay)
+- **Automatic Setup:** Just set `HOST_REACHABLE_ADDRESS` and open UDP port 4789 - KohakuRiver handles the rest.
+- **L3 Routed Topology:** Host acts as central router with VXLAN tunnels to each runner.
+- **Automatic IP Allocation:** Each runner gets a /16 subnet (10.X.0.0/16) with up to 65,532 container IPs.
+- **Firewall Auto-Configuration:** iptables rules and firewalld trusted zones configured automatically.
+- **State Recovery:** VXLAN tunnels persist through Host/Runner restarts.
+- **Cross-Node Communication:** Containers on different runners can communicate directly via overlay IPs.
 
 ### Monitoring & UI
 - **Web Dashboard:** Vue.js frontend with cluster overview, task/VPS submission, Docker management, and web-based terminal.
@@ -347,6 +356,7 @@ kohakuriver terminal                       # Launch Terminal TUI dashboard
 ### Node Management
 ```bash
 kohakuriver node list                      # List registered nodes
+kohakuriver node overlay                   # View overlay network status
 kohakuriver status                         # Quick cluster overview
 ```
 
@@ -386,10 +396,11 @@ Configuration files use Python with KohakuEngine. They are auto-loaded from `~/.
 | `HOST_BIND_IP` | str | `"0.0.0.0"` | IP address the Host server binds to |
 | `HOST_PORT` | int | `8000` | API server port |
 | `HOST_SSH_PROXY_PORT` | int | `8002` | SSH proxy port for VPS access |
-| `HOST_REACHABLE_ADDRESS` | str | `"127.0.0.1"` | **CRITICAL**: IP/hostname runners use to reach Host |
+| `HOST_REACHABLE_ADDRESS` | str | `"127.0.0.1"` | **CRITICAL**: IP/hostname runners use to reach Host (and VXLAN local IP) |
 | `SHARED_DIR` | str | `"/mnt/cluster-share"` | Shared storage path (must match on all nodes) |
 | `DB_FILE` | str | `"/var/lib/kohakuriver/kohakuriver.db"` | SQLite database path |
 | `DEFAULT_CONTAINER_NAME` | str | `"kohakuriver-base"` | Default environment for tasks |
+| `OVERLAY_ENABLED` | bool | `False` | Enable VXLAN overlay networking |
 
 ### Runner Configuration (`~/.kohakuriver/runner_config.py`)
 
@@ -401,6 +412,7 @@ Configuration files use Python with KohakuEngine. They are auto-loaded from `~/.
 | `HOST_PORT` | int | `8000` | Host server port |
 | `SHARED_DIR` | str | `"/mnt/cluster-share"` | Shared storage path (must match Host) |
 | `LOCAL_TEMP_DIR` | str | `"/tmp/kohakuriver"` | Local temporary storage |
+| `OVERLAY_ENABLED` | bool | `False` | Enable VXLAN overlay networking |
 
 ### Environment Variables
 
