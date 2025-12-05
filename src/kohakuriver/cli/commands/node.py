@@ -163,7 +163,9 @@ def overlay_status():
             f"Inactive: [yellow]{stats.get('inactive_allocations', 0)}[/yellow]\n"
             f"Available IDs: [cyan]{stats.get('available_ids', 0)}[/cyan]/255"
         )
-        console.print(Panel(stats_text, title="Overlay Network Status", border_style="blue"))
+        console.print(
+            Panel(stats_text, title="Overlay Network Status", border_style="blue")
+        )
 
         # Allocations table
         allocations = status.get("allocations", [])

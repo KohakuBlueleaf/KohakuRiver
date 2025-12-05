@@ -107,4 +107,6 @@ async def _mark_overlay_inactive(hostname: str) -> None:
     overlay_manager = get_overlay_manager()
     if overlay_manager:
         await overlay_manager.mark_runner_inactive(hostname)
-        logger.info(f"Marked overlay allocation inactive for offline runner: {hostname}")
+        logger.info(
+            f"Marked overlay allocation inactive for offline runner: {hostname}"
+        )

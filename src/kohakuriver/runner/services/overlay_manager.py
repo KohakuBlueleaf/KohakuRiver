@@ -100,7 +100,9 @@ class RunnerOverlayManager:
         await asyncio.to_thread(self._setup_docker_network_sync)
 
         self._setup_complete = True
-        logger.info(f"Overlay network setup complete: Docker network={self.DOCKER_NETWORK_NAME}")
+        logger.info(
+            f"Overlay network setup complete: Docker network={self.DOCKER_NETWORK_NAME}"
+        )
 
     def _setup_network_sync(self) -> None:
         """Set up VXLAN and bridge (synchronous)."""
@@ -267,8 +269,14 @@ class RunnerOverlayManager:
 
         for rule in forward_rules:
             # Check if rule exists (convert -I to -C for checking)
-            check_rule = ["-C", "FORWARD", "-s" if "-s" in rule else "-d",
-                          "10.0.0.0/8", "-j", "ACCEPT"]
+            check_rule = [
+                "-C",
+                "FORWARD",
+                "-s" if "-s" in rule else "-d",
+                "10.0.0.0/8",
+                "-j",
+                "ACCEPT",
+            ]
             check_cmd = ["iptables"] + check_rule
             try:
                 subprocess.run(check_cmd, check=True, capture_output=True)
@@ -285,12 +293,32 @@ class RunnerOverlayManager:
         # Set up NAT/masquerade for external network access
         # This allows containers to reach the internet through the Runner
         # Only masquerade traffic going to non-overlay destinations
-        nat_rule = ["-t", "nat", "-A", "POSTROUTING",
-                    "-s", "10.0.0.0/8", "!", "-d", "10.0.0.0/8",
-                    "-j", "MASQUERADE"]
-        nat_check = ["-t", "nat", "-C", "POSTROUTING",
-                     "-s", "10.0.0.0/8", "!", "-d", "10.0.0.0/8",
-                     "-j", "MASQUERADE"]
+        nat_rule = [
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            "10.0.0.0/8",
+            "!",
+            "-d",
+            "10.0.0.0/8",
+            "-j",
+            "MASQUERADE",
+        ]
+        nat_check = [
+            "-t",
+            "nat",
+            "-C",
+            "POSTROUTING",
+            "-s",
+            "10.0.0.0/8",
+            "!",
+            "-d",
+            "10.0.0.0/8",
+            "-j",
+            "MASQUERADE",
+        ]
 
         try:
             subprocess.run(["iptables"] + nat_check, check=True, capture_output=True)
@@ -315,7 +343,9 @@ class RunnerOverlayManager:
                 timeout=5,
             )
             if result.returncode != 0 or "running" not in result.stdout:
-                logger.debug("firewalld is not running, skipping firewalld configuration")
+                logger.debug(
+                    "firewalld is not running, skipping firewalld configuration"
+                )
                 return
         except (subprocess.TimeoutExpired, FileNotFoundError):
             logger.debug("Could not check firewalld state, skipping")

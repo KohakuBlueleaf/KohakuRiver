@@ -182,7 +182,11 @@ class RunnerConfig:
         Returns overlay network if overlay is enabled and configured,
         otherwise returns the default kohakuriver-net.
         """
-        if self.OVERLAY_ENABLED and hasattr(self, "_overlay_configured") and self._overlay_configured:
+        if (
+            self.OVERLAY_ENABLED
+            and hasattr(self, "_overlay_configured")
+            and self._overlay_configured
+        ):
             return self.OVERLAY_NETWORK_NAME
         return self.DOCKER_NETWORK_NAME
 
@@ -193,7 +197,11 @@ class RunnerConfig:
         Returns overlay gateway if overlay is enabled and configured,
         otherwise returns the default gateway.
         """
-        if self.OVERLAY_ENABLED and hasattr(self, "_overlay_gateway") and self._overlay_gateway:
+        if (
+            self.OVERLAY_ENABLED
+            and hasattr(self, "_overlay_gateway")
+            and self._overlay_gateway
+        ):
             return self._overlay_gateway
         return self.DOCKER_NETWORK_GATEWAY
 

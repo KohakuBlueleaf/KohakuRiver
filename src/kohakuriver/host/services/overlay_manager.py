@@ -186,7 +186,7 @@ class OverlayNetworkManager:
         """
         if not device_name.startswith(self.VXLAN_PREFIX):
             return None
-        encoded = device_name[len(self.VXLAN_PREFIX):]
+        encoded = device_name[len(self.VXLAN_PREFIX) :]
         runner_id = self._decode_runner_id(encoded)
         if runner_id is None or runner_id < 1 or runner_id > 255:
             return None
@@ -272,9 +272,13 @@ class OverlayNetworkManager:
         if not has_ip:
             # Use /8 prefix so host can receive packets for any 10.x.x.x
             logger.info(f"Adding IP {self.host_ip}/{self.host_prefix} to {dummy_name}")
-            ipr.addr("add", index=dummy_idx, address=self.host_ip, prefixlen=self.host_prefix)
+            ipr.addr(
+                "add", index=dummy_idx, address=self.host_ip, prefixlen=self.host_prefix
+            )
 
-        logger.info(f"Host routing ready: {dummy_name} has {self.host_ip}/{self.host_prefix}")
+        logger.info(
+            f"Host routing ready: {dummy_name} has {self.host_ip}/{self.host_prefix}"
+        )
 
         # Set up iptables rules for overlay forwarding
         self._setup_iptables_rules_sync()
@@ -455,13 +459,18 @@ class OverlayNetworkManager:
                         f"Updated VXLAN remote for {runner_name}: {physical_ip}"
                     )
 
-                logger.info(f"Reusing existing allocation for {runner_name}: {alloc.subnet}")
+                logger.info(
+                    f"Reusing existing allocation for {runner_name}: {alloc.subnet}"
+                )
                 return alloc
 
             # Check if there's a recovered allocation (placeholder name) matching physical_ip
             # This handles the case where runner re-registers after host restart
             for existing_name, alloc in list(self._allocations.items()):
-                if existing_name.startswith("runner_") and alloc.physical_ip == physical_ip:
+                if (
+                    existing_name.startswith("runner_")
+                    and alloc.physical_ip == physical_ip
+                ):
                     # Found matching recovered allocation, update runner_name
                     del self._allocations[existing_name]
                     alloc.runner_name = runner_name
@@ -540,7 +549,9 @@ class OverlayNetworkManager:
 
         device_name = self._get_vxlan_device_name(runner_id)
         vni = self.base_vxlan_id + runner_id  # Unique VNI per runner
-        host_ip_on_runner_subnet = f"10.{runner_id}.0.254"  # Host's IP on this runner's subnet
+        host_ip_on_runner_subnet = (
+            f"10.{runner_id}.0.254"  # Host's IP on this runner's subnet
+        )
 
         # Check if device already exists
         existing_link = None
@@ -647,7 +658,9 @@ class OverlayNetworkManager:
                 timeout=5,
             )
             if result.returncode != 0 or "running" not in result.stdout:
-                logger.debug("firewalld is not running, skipping firewalld configuration")
+                logger.debug(
+                    "firewalld is not running, skipping firewalld configuration"
+                )
                 return
         except (subprocess.TimeoutExpired, FileNotFoundError):
             logger.debug("Could not check firewalld state, skipping")
@@ -726,7 +739,9 @@ class OverlayNetworkManager:
         if alloc.runner_id in self._id_to_runner:
             del self._id_to_runner[alloc.runner_id]
 
-        logger.info(f"Released overlay allocation: {runner_name} (runner_id={alloc.runner_id})")
+        logger.info(
+            f"Released overlay allocation: {runner_name} (runner_id={alloc.runner_id})"
+        )
         return True
 
     def _delete_vxlan_sync(self, device_name: str) -> None:
