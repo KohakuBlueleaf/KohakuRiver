@@ -155,13 +155,14 @@ def overlay_status():
 
         # Stats panel
         stats = status.get("stats", {})
+        max_runners = stats.get("max_runners", 63)
         stats_text = (
+            f"Subnet Config: [cyan]{status.get('subnet_config', 'N/A')}[/cyan]\n"
             f"Host IP: [cyan]{status.get('host_ip')}[/cyan]\n"
-            f"Bridge: [cyan]{status.get('bridge')}[/cyan]\n"
             f"Total Allocations: [green]{stats.get('total_allocations', 0)}[/green]\n"
             f"Active: [green]{stats.get('active_allocations', 0)}[/green] | "
             f"Inactive: [yellow]{stats.get('inactive_allocations', 0)}[/yellow]\n"
-            f"Available IDs: [cyan]{stats.get('available_ids', 0)}[/cyan]/255"
+            f"Available IDs: [cyan]{stats.get('available_ids', 0)}[/cyan]/{max_runners}"
         )
         console.print(
             Panel(stats_text, title="Overlay Network Status", border_style="blue")
@@ -174,9 +175,9 @@ def overlay_status():
             table.add_column("Runner", style="cyan")
             table.add_column("ID", justify="right")
             table.add_column("Subnet")
+            table.add_column("Gateway")
             table.add_column("Physical IP")
             table.add_column("Status")
-            table.add_column("Last Used")
 
             for alloc in allocations:
                 status_str = (
@@ -188,9 +189,9 @@ def overlay_status():
                     alloc.get("runner_name", ""),
                     str(alloc.get("runner_id", "")),
                     alloc.get("subnet", ""),
+                    alloc.get("gateway", ""),
                     alloc.get("physical_ip", ""),
                     status_str,
-                    alloc.get("last_used", "")[:19],  # Truncate timestamp
                 )
 
             console.print(table)
@@ -266,6 +267,176 @@ def overlay_cleanup(
             console.print(f"[green]Cleaned up {count} inactive allocation(s).[/green]")
         else:
             console.print("[dim]No inactive allocations to clean up.[/dim]")
+
+    except client.APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+# =============================================================================
+# IP Reservation Commands
+# =============================================================================
+
+
+@app.command("ip-reserve")
+def ip_reserve(
+    runner: Annotated[str, typer.Argument(help="Runner hostname to reserve IP on")],
+    ip: Annotated[
+        str | None,
+        typer.Option("--ip", "-i", help="Specific IP to reserve (optional)"),
+    ] = None,
+    ttl: Annotated[
+        int,
+        typer.Option("--ttl", "-t", help="Reservation time-to-live in seconds"),
+    ] = 300,
+):
+    """
+    Reserve an IP address on a runner for use in task submission.
+
+    Use this for distributed training where you need to know the master IP
+    before launching workers. The returned token is used with --ip-token
+    when submitting tasks.
+    """
+    try:
+        result = client.reserve_ip(runner, ip=ip, ttl=ttl)
+
+        console.print(f"[green]IP reserved successfully![/green]")
+        console.print(f"  IP: [cyan]{result.get('ip')}[/cyan]")
+        console.print(f"  Runner: [cyan]{result.get('runner')}[/cyan]")
+        console.print(f"  Token: [yellow]{result.get('token')}[/yellow]")
+        console.print(f"  Expires: {result.get('expires_at')}")
+        console.print()
+        console.print(
+            "[dim]Use the token with: kohakuriver task submit --ip-token TOKEN ...[/dim]"
+        )
+
+    except client.APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@app.command("ip-release")
+def ip_release(
+    token: Annotated[str, typer.Argument(help="Reservation token to release")],
+):
+    """Release an IP reservation by token."""
+    try:
+        result = client.release_ip_reservation(token)
+
+        if result.get("released"):
+            console.print("[green]IP reservation released.[/green]")
+        else:
+            console.print("[yellow]Failed to release reservation.[/yellow]")
+
+    except client.APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@app.command("ip-list")
+def ip_list(
+    runner: Annotated[
+        str | None,
+        typer.Option("--runner", "-r", help="Filter by runner"),
+    ] = None,
+):
+    """List active IP reservations."""
+    try:
+        from rich.table import Table
+
+        result = client.list_ip_reservations(runner)
+        reservations = result.get("reservations", [])
+
+        if not reservations:
+            console.print("[dim]No active IP reservations.[/dim]")
+            return
+
+        table = Table(title="IP Reservations")
+        table.add_column("IP", style="cyan")
+        table.add_column("Runner")
+        table.add_column("Token (truncated)")
+        table.add_column("Expires")
+        table.add_column("Status")
+
+        for r in reservations:
+            status = (
+                f"[green]In use ({r.get('container_id', '')[:12]})[/green]"
+                if r.get("is_used")
+                else "[yellow]Pending[/yellow]"
+            )
+            table.add_row(
+                r.get("ip", ""),
+                r.get("runner", ""),
+                r.get("token", "")[:20] + "...",
+                r.get("expires_at", "")[:19],
+                status,
+            )
+
+        console.print(table)
+
+    except client.APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@app.command("ip-info")
+def ip_info(
+    runner: Annotated[str, typer.Argument(help="Runner hostname")],
+):
+    """Show IP allocation info for a runner."""
+    try:
+        from rich.panel import Panel
+
+        info = client.get_runner_ip_info(runner)
+
+        info_text = (
+            f"Runner: [cyan]{info.get('runner_name')}[/cyan] (ID: {info.get('runner_id')})\n"
+            f"Subnet: [cyan]{info.get('subnet')}[/cyan]\n"
+            f"Gateway: [cyan]{info.get('gateway')}[/cyan]\n"
+            f"IP Range: {info.get('ip_range', {}).get('first')} - {info.get('ip_range', {}).get('last')}\n"
+            f"\nTotal IPs: [green]{info.get('total_ips')}[/green]\n"
+            f"Available: [green]{info.get('available')}[/green]\n"
+            f"Reserved: [yellow]{info.get('reserved')}[/yellow]\n"
+            f"Used: [red]{info.get('used')}[/red]"
+        )
+
+        console.print(Panel(info_text, title=f"IP Info: {runner}", border_style="blue"))
+
+    except client.APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@app.command("ip-available")
+def ip_available(
+    runner: Annotated[
+        str | None,
+        typer.Option("--runner", "-r", help="Filter by runner"),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-l", help="Max IPs to show per runner"),
+    ] = 20,
+):
+    """Show available IPs for reservation."""
+    try:
+        result = client.get_available_ips(runner, limit=limit)
+        available = result.get("available_ips", {})
+
+        if not available:
+            console.print("[dim]No available IPs (check overlay status).[/dim]")
+            return
+
+        for runner_name, ips in available.items():
+            console.print(f"\n[cyan]{runner_name}[/cyan] ({len(ips)} IPs):")
+            if ips:
+                # Show first few and last few
+                if len(ips) <= 10:
+                    console.print(f"  {', '.join(ips)}")
+                else:
+                    first_5 = ", ".join(ips[:5])
+                    last_3 = ", ".join(ips[-3:])
+                    console.print(f"  {first_5}, ..., {last_3}")
 
     except client.APIError as e:
         print_error(str(e))

@@ -7,10 +7,8 @@ Usage:
     kohakuriver init service --all       # Generate systemd service files
 """
 
-import getpass
 import os
 import subprocess
-import sys
 from typing import Annotated
 
 import typer
@@ -387,6 +385,20 @@ def init_service(
             help="Working directory for services (default: ~/.kohakuriver)",
         ),
     ] = None,
+    python_path: Annotated[
+        str | None,
+        typer.Option(
+            "--python-path",
+            help="Python executable path (default: current interpreter)",
+        ),
+    ] = None,
+    capture_env: Annotated[
+        bool,
+        typer.Option(
+            "--capture-env",
+            help="Capture current PATH environment variable for service",
+        ),
+    ] = True,
     no_install: Annotated[
         bool,
         typer.Option(
@@ -399,24 +411,30 @@ def init_service(
     By default, this command creates the service files, copies them to
     /etc/systemd/system/, and reloads the systemd daemon.
 
+    Services run as root for network interface management (VXLAN, bridges).
+
     Use --no-install to only generate the files without registering.
     """
+    import sys
+
     if not any([host, runner, all_services]):
         print_error("You must specify --host, --runner, or --all")
         raise typer.Exit(1)
 
-    username = getpass.getuser()
-    python_path = sys.executable
-    venv_path = os.environ.get("VIRTUAL_ENV")
-    env_path_base = os.environ.get("PATH", "")
-    env_path_addition = f"{venv_path}/bin:" if venv_path else ""
-
-    # Default working directory to ~/.kohakuriver
+    # Default working directory - use user's kohakuriver directory
     if working_dir is None:
-        working_dir = os.path.expanduser("~/.kohakuriver")
+        working_dir = get_default_config_dir()
 
-    # Ensure working directory exists
-    os.makedirs(working_dir, exist_ok=True)
+    # Resolve to absolute path
+    working_dir = os.path.abspath(os.path.expanduser(working_dir))
+
+    # Get Python executable path
+    if python_path is None:
+        python_path = sys.executable
+    python_path = os.path.abspath(os.path.expanduser(python_path))
+
+    # Get PATH environment variable
+    env_path = os.environ.get("PATH", "") if capture_env else ""
 
     # Use temp directory for service files
     import tempfile
@@ -430,21 +448,28 @@ def init_service(
 
     if host or all_services:
         console.print("Creating host service file...")
-        config_arg = f" --config {host_config}" if host_config else ""
+        # Use provided config or default to working_dir/host_config.py
+        if host_config:
+            config_path = os.path.abspath(os.path.expanduser(host_config))
+        else:
+            config_path = os.path.join(working_dir, "host_config.py")
+        config_arg = f" --config {config_path}"
 
+        # Build environment line
+        env_line = f'Environment="PATH={env_path}"' if env_path else ""
+
+        # Service runs as root for network interface management
         host_service = f"""[Unit]
 Description=KohakuRiver Host Server
 After=network.target
 
 [Service]
 Type=simple
-User={username}
-Group={username}
 WorkingDirectory={working_dir}
 ExecStart={python_path} -m kohakuriver.cli.host{config_arg}
 Restart=on-failure
 RestartSec=5
-Environment="PATH={env_path_addition}{env_path_base}"
+{env_line}
 
 [Install]
 WantedBy=multi-user.target
@@ -457,8 +482,17 @@ WantedBy=multi-user.target
 
     if runner or all_services:
         console.print("Creating runner service file...")
-        config_arg = f" --config {runner_config}" if runner_config else ""
+        # Use provided config or default to working_dir/runner_config.py
+        if runner_config:
+            config_path = os.path.abspath(os.path.expanduser(runner_config))
+        else:
+            config_path = os.path.join(working_dir, "runner_config.py")
+        config_arg = f" --config {config_path}"
 
+        # Build environment line
+        env_line = f'Environment="PATH={env_path}"' if env_path else ""
+
+        # Service runs as root for network interface and Docker management
         runner_service = f"""[Unit]
 Description=KohakuRiver Runner Agent
 After=network.target docker.service
@@ -466,13 +500,11 @@ Wants=docker.service
 
 [Service]
 Type=simple
-User={username}
-Group={username}
 WorkingDirectory={working_dir}
 ExecStart={python_path} -m kohakuriver.cli.runner{config_arg}
 Restart=on-failure
 RestartSec=5
-Environment="PATH={env_path_addition}{env_path_base}"
+{env_line}
 
 [Install]
 WantedBy=multi-user.target
@@ -482,11 +514,6 @@ WantedBy=multi-user.target
             f.write(runner_service)
         console.print(f"  Created: {output_path}")
         created_files.append(("kohakuriver-runner", output_path))
-
-        # Runner sudo warning
-        print_warning("The runner may require passwordless sudo for Docker commands.")
-        console.print("[dim]If needed, add to /etc/sudoers using visudo:[/dim]")
-        console.print(f"[dim]  {username} ALL=(ALL) NOPASSWD: /usr/bin/docker[/dim]")
 
     if not created_files:
         console.print("No service files created.")
