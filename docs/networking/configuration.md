@@ -39,9 +39,7 @@ Add these to `~/.kohakuriver/host_config.py`:
 |--------|------|---------|-------------|
 | `HOST_REACHABLE_ADDRESS` | str | `"127.0.0.1"` | **Must set to Host's actual IP!** |
 | `OVERLAY_ENABLED` | bool | `False` | Enable VXLAN overlay networking |
-| `OVERLAY_BRIDGE_NAME` | str | `"kohaku-overlay"` | Name for VXLAN interfaces (prefix) |
-| `OVERLAY_HOST_IP` | str | `"10.0.0.1"` | Host's IP on overlay network |
-| `OVERLAY_HOST_PREFIX` | int | `8` | Network prefix for host IP |
+| `OVERLAY_SUBNET` | str | `"10.128.0.0/12/6/14"` | Subnet configuration (see below) |
 | `OVERLAY_VXLAN_ID` | int | `100` | Base VXLAN ID (runners get 100+id) |
 | `OVERLAY_VXLAN_PORT` | int | `4789` | UDP port for VXLAN traffic |
 | `OVERLAY_MTU` | int | `1450` | MTU for overlay network |
@@ -66,14 +64,10 @@ HOST_REACHABLE_ADDRESS: str = "192.168.88.53"
 # When disabled, containers use isolated per-node bridge networks
 OVERLAY_ENABLED: bool = True
 
-# Bridge name (used for interface naming - vxkr1, vxkr2, etc.)
-OVERLAY_BRIDGE_NAME: str = "kohaku-overlay"
-
-# Host's IP address on the overlay network (containers reach Host here)
-OVERLAY_HOST_IP: str = "10.0.0.1"
-
-# Network prefix for Host's overlay IP (covers all runner subnets)
-OVERLAY_HOST_PREFIX: int = 8
+# Overlay subnet configuration
+# Format: BASE_IP/NETWORK_PREFIX/NODE_BITS/SUBNET_BITS (must sum to 32)
+# Default uses 10.128-143.x.x range to avoid conflicts with common networks
+OVERLAY_SUBNET: str = "10.128.0.0/12/6/14"
 
 # Base VXLAN ID (each runner gets base_id + runner_id)
 OVERLAY_VXLAN_ID: int = 100
@@ -104,6 +98,7 @@ Add these to `~/.kohakuriver/runner_config.py` (used when overlay is disabled):
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `OVERLAY_ENABLED` | bool | `False` | Enable VXLAN overlay networking |
+| `OVERLAY_SUBNET` | str | `"10.128.0.0/12/6/14"` | Subnet config (must match Host) |
 | `OVERLAY_NETWORK_NAME` | str | `"kohakuriver-overlay"` | Docker network for overlay |
 | `OVERLAY_VXLAN_ID` | int | `100` | Base VXLAN ID (must match Host) |
 | `OVERLAY_VXLAN_PORT` | int | `4789` | UDP port (must match Host) |
@@ -128,6 +123,10 @@ DOCKER_NETWORK_GATEWAY: str = "172.30.0.1"
 # Must match Host's OVERLAY_ENABLED setting
 OVERLAY_ENABLED: bool = True
 
+# Overlay subnet configuration (must match Host's OVERLAY_SUBNET)
+# Format: BASE_IP/NETWORK_PREFIX/NODE_BITS/SUBNET_BITS (must sum to 32)
+OVERLAY_SUBNET: str = "10.128.0.0/12/6/14"
+
 # Docker network name for overlay (used when overlay is enabled)
 OVERLAY_NETWORK_NAME: str = "kohakuriver-overlay"
 
@@ -149,6 +148,7 @@ These settings MUST be identical on Host and all Runners:
 
 | Setting | Why |
 |---------|-----|
+| `OVERLAY_SUBNET` | IP addressing must be consistent across cluster |
 | `OVERLAY_VXLAN_ID` | VXLAN tunnels won't connect if VNI base differs |
 | `OVERLAY_VXLAN_PORT` | Packets won't reach correct port |
 | `OVERLAY_MTU` | MTU mismatch causes fragmentation/drops |
@@ -157,29 +157,57 @@ These settings MUST be identical on Host and all Runners:
 
 ## IP Address Allocation
 
-### Overlay IP Scheme
+### OVERLAY_SUBNET Format
+
+The `OVERLAY_SUBNET` setting controls how IPs are allocated:
+
+```
+BASE_IP/NETWORK_PREFIX/NODE_BITS/SUBNET_BITS
+```
+
+- **NETWORK_PREFIX + NODE_BITS + SUBNET_BITS = 32** (must sum to 32)
+- **NETWORK_PREFIX**: Fixed bits defining the overlay network
+- **NODE_BITS**: Bits for runner/node identification (determines max runners)
+- **SUBNET_BITS**: Bits for container IPs within each runner
+
+### Default: `10.128.0.0/12/6/14`
+
+Uses the 10.128.x.x - 10.143.x.x range to avoid conflicts with common private networks.
 
 | Entity | IP Range | Description |
 |--------|----------|-------------|
-| Host (dummy) | 10.0.0.1/8 | Consistent IP for containers to reach Host |
-| Host on Runner 1's VXLAN | 10.1.0.254 | Host's IP on vxkr1 interface |
-| Host on Runner N's VXLAN | 10.N.0.254 | Host's IP on vxkrN interface |
-| Runner 1 gateway | 10.1.0.1 | Gateway on Runner 1's bridge |
-| Runner 1 containers | 10.1.0.2 - 10.1.255.254 | Container IPs (excluding 10.1.0.254) |
-| Runner N containers | 10.N.0.2 - 10.N.255.254 | Container IPs (excluding 10.N.0.254) |
+| Network range | 10.128.0.0 - 10.143.255.255 | /12 prefix |
+| Host (dummy) | 10.128.0.1/12 | Consistent IP for containers to reach Host |
+| Max runners | 63 | 6 bits = 2^6 - 1 |
+| IPs per runner | 16,380 | 14 bits = 2^14 - 4 reserved |
+| Runner 1 subnet | 10.128.64.0/18 | gateway 10.128.64.1, host 10.128.64.254 |
+| Runner 2 subnet | 10.128.128.0/18 | gateway 10.128.128.1, host 10.128.128.254 |
 
 Each runner gets:
-- A /16 subnet (65,532 usable container IPs)
-- Gateway at 10.X.0.1
-- Host reachable at 10.X.0.254
-- Containers from 10.X.0.2 to 10.X.255.254 (excluding 10.X.0.254)
+- A /18 subnet (~16,380 usable container IPs)
+- Gateway at first IP + 1 (e.g., 10.128.64.1)
+- Host reachable at .254 offset (e.g., 10.128.64.254)
+
+### Alternative: `10.0.0.0/8/8/16`
+
+Full 10.x.x.x range with more runners and IPs:
+
+| Entity | IP Range | Description |
+|--------|----------|-------------|
+| Network range | 10.0.0.0 - 10.255.255.255 | /8 prefix |
+| Max runners | 255 | 8 bits = 2^8 - 1 |
+| IPs per runner | 65,532 | 16 bits = 2^16 - 4 reserved |
+| Host | 10.0.0.1 | First IP in network |
+| Runner 1 subnet | 10.1.0.0/16 | gateway 10.1.0.1, host 10.1.0.254 |
+| Runner N subnet | 10.N.0.0/16 | gateway 10.N.0.1, host 10.N.0.254 |
 
 ### Runner ID Assignment
 
-- Runner IDs range from 1-255 (max 255 runners)
+- Runner IDs range from 1 to max_runners (based on NODE_BITS)
+- Default max: 63 runners (6 bits = 2^6 - 1)
 - IDs are assigned in order on first registration
 - **Preserved on reconnection**: Runner gets same ID/subnet when reconnecting
-- **LRU cleanup**: Only freed when pool is exhausted (all 255 used)
+- **LRU cleanup**: Only freed when pool is exhausted
 
 ### VXLAN ID Calculation
 
@@ -222,17 +250,18 @@ sudo ufw allow 4789/udp
 
 ### Automatic Firewall Configuration
 
-KohakuRiver automatically configures these rules when overlay starts:
+KohakuRiver automatically configures these rules when overlay starts.
+The `OVERLAY_CIDR` is derived from `OVERLAY_SUBNET` (e.g., `10.0.0.0/8` for default).
 
 **iptables FORWARD (on Host and Runner):**
 ```bash
-iptables -I FORWARD 1 -s 10.0.0.0/8 -j ACCEPT
-iptables -I FORWARD 2 -d 10.0.0.0/8 -j ACCEPT
+iptables -I FORWARD 1 -s OVERLAY_CIDR -j ACCEPT
+iptables -I FORWARD 2 -d OVERLAY_CIDR -j ACCEPT
 ```
 
 **iptables NAT (on Runner only):**
 ```bash
-iptables -t nat -A POSTROUTING -s 10.0.0.0/8 ! -d 10.0.0.0/8 -j MASQUERADE
+iptables -t nat -A POSTROUTING -s OVERLAY_CIDR ! -d OVERLAY_CIDR -j MASQUERADE
 ```
 This enables containers to access external networks (internet).
 
@@ -334,15 +363,35 @@ docker network inspect kohakuriver-overlay
 
 ### Custom IP Scheme
 
-To use a different IP scheme (e.g., 172.16.x.x):
-
-**Host:**
-```python
-OVERLAY_HOST_IP: str = "172.16.0.1"
-OVERLAY_HOST_PREFIX: int = 12  # Covers 172.16.0.0/12
+Use `OVERLAY_SUBNET` to customize the IP addressing scheme. The format is:
+```
+BASE_IP/NETWORK_PREFIX/NODE_BITS/SUBNET_BITS
 ```
 
-Note: The runner subnet calculation (10.{runner_id}.0.0/16) is currently hardcoded. Custom schemes require code changes.
+**Example: Use 172.16.x.x range:**
+```python
+# Host and Runner config (must match!)
+OVERLAY_SUBNET: str = "172.16.0.0/12/8/12"
+```
+
+This gives:
+- Network: 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
+- Max runners: 255 (8 bits)
+- IPs per runner: 4,092 (12 bits)
+- Host: 172.16.0.1
+- Runner 1: 172.16.16.0/20, gateway 172.16.16.1
+
+**Example: Smaller network for testing:**
+```python
+OVERLAY_SUBNET: str = "192.168.0.0/16/8/8"
+```
+
+This gives:
+- Network: 192.168.0.0/16 (192.168.0.0 - 192.168.255.255)
+- Max runners: 255 (8 bits)
+- IPs per runner: 252 (8 bits)
+- Host: 192.168.0.1
+- Runner 1: 192.168.1.0/24, gateway 192.168.1.1
 
 ### High Availability Considerations
 

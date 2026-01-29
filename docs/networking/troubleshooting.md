@@ -500,6 +500,150 @@ sudo systemctl start kohakuriver-runner
 
 ---
 
+## Migration Guide
+
+### Migrating to a Different OVERLAY_SUBNET
+
+When changing `OVERLAY_SUBNET` configuration (e.g., from `10.0.0.0/8/8/16` to `10.128.0.0/12/6/14`), you must manually clean up existing VXLAN interfaces because the IP scheme changes completely.
+
+**Why manual cleanup is required:**
+- Existing VXLAN interfaces have IPs from the old scheme
+- Kernel routes point to old subnets
+- Docker networks use old IP ranges
+- Simply restarting services won't clean up stale interfaces
+
+### Step-by-Step Migration
+
+**1. Stop all services (on all nodes):**
+
+```bash
+# On Host
+sudo systemctl stop kohakuriver-host
+
+# On all Runners
+sudo systemctl stop kohakuriver-runner
+```
+
+**2. Clean up Host node:**
+
+```bash
+# Remove all VXLAN interfaces
+for iface in $(ip link show | grep vxkr | cut -d: -f2 | cut -d@ -f1 | tr -d ' '); do
+    sudo ip link delete "$iface" 2>/dev/null
+    echo "Deleted $iface"
+done
+
+# Remove host dummy interface
+sudo ip link delete kohaku-host 2>/dev/null
+
+# Remove old iptables rules (if using old 10.0.0.0/8 default)
+sudo iptables -D FORWARD -s 10.0.0.0/8 -j ACCEPT 2>/dev/null
+sudo iptables -D FORWARD -d 10.0.0.0/8 -j ACCEPT 2>/dev/null
+
+# Verify cleanup
+ip link show | grep -E "vxkr|kohaku"  # Should show nothing
+```
+
+**3. Clean up each Runner node:**
+
+```bash
+# Remove Docker overlay network
+docker network rm kohakuriver-overlay 2>/dev/null
+
+# Remove VXLAN interface
+sudo ip link delete vxlan0 2>/dev/null
+
+# Remove overlay bridge
+sudo ip link delete kohaku-overlay 2>/dev/null
+
+# Remove old iptables/NAT rules
+sudo iptables -D FORWARD -s 10.0.0.0/8 -j ACCEPT 2>/dev/null
+sudo iptables -D FORWARD -d 10.0.0.0/8 -j ACCEPT 2>/dev/null
+sudo iptables -t nat -D POSTROUTING -s 10.0.0.0/8 ! -d 10.0.0.0/8 -j MASQUERADE 2>/dev/null
+
+# Verify cleanup
+ip link show | grep -E "vxlan|kohaku"  # Should show nothing
+docker network ls | grep overlay  # Should show nothing
+```
+
+**4. Update configuration files:**
+
+```bash
+# On Host (~/.kohakuriver/host_config.py)
+OVERLAY_SUBNET: str = "10.128.0.0/12/6/14"  # New subnet
+
+# On all Runners (~/.kohakuriver/runner_config.py)
+OVERLAY_SUBNET: str = "10.128.0.0/12/6/14"  # Must match Host!
+```
+
+**5. Restart services:**
+
+```bash
+# Start Host first
+sudo systemctl start kohakuriver-host
+
+# Then start all Runners
+sudo systemctl start kohakuriver-runner
+```
+
+**6. Verify new configuration:**
+
+```bash
+# On Host
+kohakuriver node overlay
+ip addr show kohaku-host  # Should show new host IP (e.g., 10.128.0.1)
+
+# On Runner
+ip addr show kohaku-overlay  # Should show new gateway IP
+docker network inspect kohakuriver-overlay  # Should show new subnet
+```
+
+### Quick Cleanup Script
+
+Save this as `cleanup-overlay.sh` and run on each node:
+
+```bash
+#!/bin/bash
+# Cleanup overlay network for migration
+set -e
+
+echo "Stopping services..."
+sudo systemctl stop kohakuriver-host 2>/dev/null || true
+sudo systemctl stop kohakuriver-runner 2>/dev/null || true
+
+echo "Removing Docker overlay network..."
+docker network rm kohakuriver-overlay 2>/dev/null || true
+
+echo "Removing network interfaces..."
+for iface in $(ip link show | grep -E "vxkr|vxlan0|kohaku" | cut -d: -f2 | cut -d@ -f1 | tr -d ' '); do
+    sudo ip link delete "$iface" 2>/dev/null || true
+    echo "  Deleted $iface"
+done
+
+echo "Removing iptables rules..."
+sudo iptables -D FORWARD -s 10.0.0.0/8 -j ACCEPT 2>/dev/null || true
+sudo iptables -D FORWARD -d 10.0.0.0/8 -j ACCEPT 2>/dev/null || true
+sudo iptables -t nat -D POSTROUTING -s 10.0.0.0/8 ! -d 10.0.0.0/8 -j MASQUERADE 2>/dev/null || true
+
+echo "Cleanup complete. Update config and restart services."
+```
+
+### Impact on Running Containers
+
+**Warning:** Migrating overlay configuration will:
+- Disconnect all containers from the overlay network
+- Break cross-node container communication
+- Require containers to be restarted to get new IPs
+
+For VPS containers, after migration:
+```bash
+# Stop and restart each VPS to get new overlay IPs
+kohakuriver vps stop <task-id>
+kohakuriver vps start <task-id>
+```
+
+---
+
 ## Getting Help
 
 If issues persist:
