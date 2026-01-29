@@ -7,6 +7,7 @@ test/
 .codex
 .gemini
 *_old/
+planning/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
