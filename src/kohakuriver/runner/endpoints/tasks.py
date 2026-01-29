@@ -75,6 +75,7 @@ async def execute_task_endpoint(
         required_memory_bytes=request.required_memory_bytes,
         target_numa_node_id=request.target_numa_node_id,
         container_name=request.container_name,
+        registry_image=request.registry_image,
         working_dir=request.working_dir or "/shared",
         stdout_path=request.stdout_path,
         stderr_path=request.stderr_path,

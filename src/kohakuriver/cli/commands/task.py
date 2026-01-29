@@ -84,6 +84,10 @@ def submit_task(
     container: Annotated[
         str | None, typer.Option("--container", help="Container environment")
     ] = None,
+    image: Annotated[
+        str | None,
+        typer.Option("--image", help="Docker registry image (e.g. ubuntu:22.04)"),
+    ] = None,
     privileged: Annotated[
         bool, typer.Option("--privileged", help="Run with --privileged")
     ] = False,
@@ -111,6 +115,10 @@ def submit_task(
 
     if not command:
         print_error("No command provided")
+        raise typer.Exit(1)
+
+    if image and container:
+        print_error("--image and --container are mutually exclusive")
         raise typer.Exit(1)
 
     try:
@@ -142,6 +150,7 @@ def submit_task(
             memory_bytes=memory_bytes,
             targets=targets,
             container_name=container,
+            registry_image=image,
             privileged=privileged if privileged else None,
             additional_mounts=mount,
             gpu_ids=gpu_ids,

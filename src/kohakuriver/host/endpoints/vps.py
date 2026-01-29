@@ -89,6 +89,7 @@ async def send_vps_to_runner(
     container_name: str,
     ssh_key_mode: str,
     ssh_public_key: str | None,
+    registry_image: str | None = None,
 ) -> dict | None:
     """
     Send VPS creation request to a runner.
@@ -110,6 +111,7 @@ async def send_vps_to_runner(
         "required_memory_bytes": task.required_memory_bytes,
         "target_numa_node_id": task.target_numa_node_id,
         "container_name": container_name,
+        "registry_image": registry_image,
         "ssh_key_mode": ssh_key_mode,
         "ssh_public_key": ssh_public_key,
         "ssh_port": task.ssh_port,
@@ -211,8 +213,11 @@ async def submit_vps(submission: VPSSubmission):
     task_id = generate_snowflake_id()
     ssh_port = allocate_ssh_port()
 
-    # Get container name
-    container_name = submission.container_name or config.DEFAULT_CONTAINER_NAME
+    # Get container name (registry_image overrides container_name)
+    if submission.registry_image:
+        container_name = None
+    else:
+        container_name = submission.container_name or config.DEFAULT_CONTAINER_NAME
 
     # Handle SSH key based on mode
     ssh_public_key = None
@@ -260,6 +265,10 @@ async def submit_vps(submission: VPSSubmission):
         status="assigning",
         ssh_port=ssh_port,
         submitted_at=datetime.datetime.now(),
+        container_name=container_name,
+        registry_image=submission.registry_image,
+        docker_image_name=submission.registry_image
+        or (f"kohakuriver/{container_name}:base" if container_name else None),
     )
 
     logger.info(f"Created VPS task {task_id} assigned to {node.hostname}")
@@ -268,9 +277,10 @@ async def submit_vps(submission: VPSSubmission):
     result = await send_vps_to_runner(
         runner_url=node.url,
         task=task,
-        container_name=container_name,
+        container_name=container_name or "",
         ssh_key_mode=ssh_key_mode,
         ssh_public_key=ssh_public_key,
+        registry_image=submission.registry_image,
     )
 
     if result is None:
@@ -546,6 +556,7 @@ async def restart_vps(task_id: int):
         container_name=base_container_name,
         ssh_key_mode="none",  # Restart uses existing container, SSH should already be set up
         ssh_public_key=None,
+        registry_image=task.registry_image,
     )
 
     if result is None:

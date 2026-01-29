@@ -219,20 +219,26 @@ def _validate_submission(req: TaskSubmission) -> None:
 
 def _prepare_task_config(req: TaskSubmission) -> dict:
     """Prepare task configuration from request and defaults."""
-    # Determine container name
-    if req.container_name == "NULL":
+    # Registry image takes precedence over container_name
+    if req.registry_image:
+        container_name = None
+        image_tag = req.registry_image
+    elif req.container_name == "NULL":
         if req.task_type == "vps":
             raise HTTPException(
                 status_code=400,
                 detail="VPS tasks require a Docker container.",
             )
         container_name = None
+        image_tag = None
     else:
         container_name = req.container_name or config.DEFAULT_CONTAINER_NAME
+        image_tag = f"kohakuriver/{container_name}:base"
 
     return {
         "container_name": container_name,
-        "image_tag": f"kohakuriver/{container_name}:base" if container_name else None,
+        "registry_image": req.registry_image,
+        "image_tag": image_tag,
         "privileged": (
             config.TASKS_PRIVILEGED if req.privileged is None else req.privileged
         ),
@@ -475,6 +481,7 @@ def _create_task_record(
             submitted_at=datetime.datetime.now(),
             target_numa_node_id=target_numa_id,
             container_name=task_config["container_name"],
+            registry_image=task_config.get("registry_image"),
             docker_image_name=task_config["image_tag"],
             docker_privileged=task_config["privileged"],
             docker_mount_dirs=(
@@ -502,6 +509,7 @@ async def _dispatch_task(
             container_name=task_config["container_name"],
             ssh_public_key=req.command,
             reserved_ip=reserved_ip,
+            registry_image=task_config.get("registry_image"),
         )
         if result is None:
             task.status = "failed"
@@ -519,6 +527,7 @@ async def _dispatch_task(
                 container_name=task_config["container_name"],
                 working_dir="/shared",
                 reserved_ip=reserved_ip,
+                registry_image=task_config.get("registry_image"),
             )
         )
         background_tasks.add(dispatch_task)

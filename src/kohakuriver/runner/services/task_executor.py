@@ -115,6 +115,42 @@ async def report_status_to_host(update: TaskStatusUpdate):
         )
 
 
+async def docker_pull(image: str, timeout: int = 600) -> bool:
+    """
+    Pull a Docker image from a registry.
+
+    Args:
+        image: Image name (e.g. 'ubuntu:22.04').
+        timeout: Timeout in seconds.
+
+    Returns:
+        True if pull succeeded, False otherwise.
+    """
+    logger.info(f"Pulling Docker image: {image}")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "docker",
+            "pull",
+            image,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        if process.returncode != 0:
+            logger.error(
+                f"docker pull failed for {image}: {stderr.decode(errors='replace').strip()}"
+            )
+            return False
+        logger.info(f"Successfully pulled image: {image}")
+        return True
+    except asyncio.TimeoutError:
+        logger.error(f"docker pull timed out for {image} after {timeout}s")
+        return False
+    except Exception as e:
+        logger.error(f"docker pull failed for {image}: {e}")
+        return False
+
+
 async def ensure_docker_image_synced(task_id: int, container_name: str) -> bool:
     """
     Ensure the Docker image is synced from shared storage before running a task.
@@ -382,6 +418,7 @@ async def execute_task(
     numa_topology: dict | None,
     task_store: TaskStateStore,
     reserved_ip: str | None = None,
+    registry_image: str | None = None,
 ):
     """
     Execute a task in a Docker container using subprocess.
@@ -426,27 +463,46 @@ async def execute_task(
     os.makedirs(os.path.dirname(stderr_path), exist_ok=True)
 
     # =========================================================================
-    # Step 1: Ensure Docker image is synced from shared storage
+    # Step 1: Ensure Docker image is available
     # =========================================================================
-    logger.info(
-        f"[Task {task_id}] Step 1: Checking Docker image sync status for '{container_name}'"
-    )
-
-    if not await ensure_docker_image_synced(task_id, container_name):
-        error_message = f"Docker image sync failed for container '{container_name}'"
-        logger.error(f"[Task {task_id}] {error_message}")
-        await report_status_to_host(
-            TaskStatusUpdate(
-                task_id=task_id,
-                status="failed",
-                message=error_message,
-                completed_at=datetime.datetime.now(),
-            )
-        )
+    if registry_image:
         logger.info(
-            f"[Task {task_id}] ========== TASK EXECUTION FAILED (image sync) =========="
+            f"[Task {task_id}] Step 1: Pulling registry image '{registry_image}'"
         )
-        return
+        if not await docker_pull(registry_image):
+            error_message = f"Failed to pull registry image '{registry_image}'"
+            logger.error(f"[Task {task_id}] {error_message}")
+            await report_status_to_host(
+                TaskStatusUpdate(
+                    task_id=task_id,
+                    status="failed",
+                    message=error_message,
+                    completed_at=datetime.datetime.now(),
+                )
+            )
+            logger.info(
+                f"[Task {task_id}] ========== TASK EXECUTION FAILED (image pull) =========="
+            )
+            return
+    else:
+        logger.info(
+            f"[Task {task_id}] Step 1: Checking Docker image sync status for '{container_name}'"
+        )
+        if not await ensure_docker_image_synced(task_id, container_name):
+            error_message = f"Docker image sync failed for container '{container_name}'"
+            logger.error(f"[Task {task_id}] {error_message}")
+            await report_status_to_host(
+                TaskStatusUpdate(
+                    task_id=task_id,
+                    status="failed",
+                    message=error_message,
+                    completed_at=datetime.datetime.now(),
+                )
+            )
+            logger.info(
+                f"[Task {task_id}] ========== TASK EXECUTION FAILED (image sync) =========="
+            )
+            return
 
     logger.info(f"[Task {task_id}] Step 1 complete: Docker image ready")
 
@@ -479,7 +535,10 @@ async def execute_task(
     logger.debug(f"[Task {task_id}] Container stderr path: {container_stderr_path}")
 
     # Get the full Docker image tag
-    docker_image_tag = image_tag(container_name)
+    if registry_image:
+        docker_image_tag = registry_image
+    else:
+        docker_image_tag = image_tag(container_name)
     logger.debug(f"[Task {task_id}] Docker image tag: {docker_image_tag}")
 
     # Build the docker run command

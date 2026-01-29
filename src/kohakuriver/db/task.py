@@ -73,6 +73,9 @@ class Task(BaseModel):
     # -------------------------------------------------------------------------
 
     container_name = peewee.CharField(null=True)  # HakuRiver environment name
+    registry_image = peewee.CharField(
+        null=True
+    )  # Docker registry image (e.g. ubuntu:22.04)
     docker_image_name = peewee.CharField(null=True)  # Full image tag
     docker_privileged = peewee.BooleanField(default=False)
     docker_mount_dirs = peewee.TextField(null=True)  # JSON array of mounts

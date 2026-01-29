@@ -71,6 +71,10 @@ def create_vps(
     container: Annotated[
         str | None, typer.Option("--container", help="Container environment")
     ] = None,
+    image: Annotated[
+        str | None,
+        typer.Option("--image", help="Docker registry image (e.g. ubuntu:22.04)"),
+    ] = None,
     privileged: Annotated[
         bool, typer.Option("--privileged", help="Run with --privileged")
     ] = False,
@@ -114,6 +118,10 @@ def create_vps(
         get_default_key_output_path,
         read_public_key_file,
     )
+
+    if image and container:
+        print_error("--image and --container are mutually exclusive")
+        raise typer.Exit(1)
 
     try:
         # Validate mutually exclusive SSH options
@@ -168,6 +176,7 @@ def create_vps(
             memory_bytes=memory_bytes,
             target=target_str,
             container_name=container,
+            registry_image=image,
             privileged=privileged if privileged else None,
             additional_mounts=mount,
             gpu_ids=gpu_ids,

@@ -530,6 +530,7 @@ async def create_vps(
     task_store: TaskStateStore,
     restore_from_snapshot: bool | None = None,
     reserved_ip: str | None = None,
+    registry_image: str | None = None,
 ) -> dict:
     """
     Create a VPS container with SSH access using subprocess.
@@ -582,29 +583,51 @@ async def create_vps(
             logger.debug(f"VPS {task_id}: No existing snapshots found, starting fresh")
 
     # =========================================================================
-    # Step 2: Ensure Docker image is synced from shared storage
+    # Step 2: Ensure Docker image is available
     # (Skip if restoring from snapshot - we already have the image)
     # =========================================================================
     if not snapshot_tag:
-        logger.info(
-            f"VPS {task_id}: Checking Docker image sync status for '{container_name}'"
-        )
+        if registry_image:
+            logger.info(f"VPS {task_id}: Pulling registry image '{registry_image}'")
+            from kohakuriver.runner.services.task_executor import docker_pull
 
-        if not await ensure_docker_image_synced(task_id, container_name):
-            error_message = f"Docker image sync failed for container '{container_name}'"
-            logger.error(f"VPS {task_id}: {error_message}")
-            await report_status_to_host(
-                TaskStatusUpdate(
-                    task_id=task_id,
-                    status="failed",
-                    message=error_message,
-                    completed_at=datetime.datetime.now(),
+            if not await docker_pull(registry_image):
+                error_message = f"Failed to pull registry image '{registry_image}'"
+                logger.error(f"VPS {task_id}: {error_message}")
+                await report_status_to_host(
+                    TaskStatusUpdate(
+                        task_id=task_id,
+                        status="failed",
+                        message=error_message,
+                        completed_at=datetime.datetime.now(),
+                    )
                 )
+                return {
+                    "success": False,
+                    "error": error_message,
+                }
+        else:
+            logger.info(
+                f"VPS {task_id}: Checking Docker image sync status for '{container_name}'"
             )
-            return {
-                "success": False,
-                "error": error_message,
-            }
+
+            if not await ensure_docker_image_synced(task_id, container_name):
+                error_message = (
+                    f"Docker image sync failed for container '{container_name}'"
+                )
+                logger.error(f"VPS {task_id}: {error_message}")
+                await report_status_to_host(
+                    TaskStatusUpdate(
+                        task_id=task_id,
+                        status="failed",
+                        message=error_message,
+                        completed_at=datetime.datetime.now(),
+                    )
+                )
+                return {
+                    "success": False,
+                    "error": error_message,
+                }
 
     # =========================================================================
     # Step 3: Build mount directories
@@ -621,10 +644,13 @@ async def create_vps(
     if tunnel_mount:
         mount_dirs.append(tunnel_mount)
 
-    # Get the Docker image tag - use snapshot if available, otherwise base image
+    # Get the Docker image tag - use snapshot if available, then registry image, then base image
     if snapshot_tag:
         docker_image_tag = snapshot_tag
         logger.info(f"VPS {task_id}: Using snapshot image: {docker_image_tag}")
+    elif registry_image:
+        docker_image_tag = registry_image
+        logger.info(f"VPS {task_id}: Using registry image: {docker_image_tag}")
     else:
         docker_image_tag = image_tag(container_name)
         logger.info(f"VPS {task_id}: Using base image: {docker_image_tag}")

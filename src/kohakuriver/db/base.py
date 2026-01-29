@@ -69,6 +69,10 @@ def initialize_database(db_path: str) -> None:
         db.init(db_path)
         db.connect()
         db.create_tables([Node, Task], safe=True)
+
+        # Run migrations for new columns
+        _run_migrations(Task)
+
         logger.info(f"Database initialized: {db_path}")
 
         # Log initial stats
@@ -79,6 +83,34 @@ def initialize_database(db_path: str) -> None:
     except peewee.OperationalError as e:
         logger.error(f"Failed to initialize database '{db_path}': {e}")
         raise
+
+
+def _run_migrations(Task) -> None:
+    """Add any missing columns to existing tables."""
+    # Check if table exists first
+    cursor = db.execute_sql(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'"
+    )
+    if not cursor.fetchone():
+        return  # Table doesn't exist yet (fresh DB, create_tables handles it)
+
+    from playhouse.migrate import SqliteMigrator, migrate
+
+    migrator = SqliteMigrator(db)
+
+    # Get existing columns
+    cursor = db.execute_sql("PRAGMA table_info(tasks)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+
+    migrations = []
+    if "registry_image" not in existing_columns:
+        migrations.append(
+            migrator.add_column("tasks", "registry_image", peewee.CharField(null=True))
+        )
+
+    if migrations:
+        migrate(*migrations)
+        logger.info(f"Ran {len(migrations)} database migration(s)")
 
 
 def close_database() -> None:

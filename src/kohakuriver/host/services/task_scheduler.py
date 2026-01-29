@@ -27,6 +27,7 @@ async def send_task_to_runner(
     container_name: str,
     working_dir: str,
     reserved_ip: str | None = None,
+    registry_image: str | None = None,
 ) -> dict | None:
     """
     Send task execution request to a runner.
@@ -51,6 +52,7 @@ async def send_task_to_runner(
         "required_memory_bytes": task.required_memory_bytes,
         "target_numa_node_id": task.target_numa_node_id,
         "container_name": container_name,
+        "registry_image": registry_image,
         "working_dir": working_dir,
         "stdout_path": task.stdout_path,
         "stderr_path": task.stderr_path,
@@ -94,6 +96,7 @@ async def send_vps_task_to_runner(
     container_name: str,
     ssh_public_key: str,
     reserved_ip: str | None = None,
+    registry_image: str | None = None,
 ) -> dict | None:
     """
     Send VPS creation request to a runner.
@@ -115,6 +118,7 @@ async def send_vps_task_to_runner(
         "required_memory_bytes": task.required_memory_bytes,
         "target_numa_node_id": task.target_numa_node_id,
         "container_name": container_name,
+        "registry_image": registry_image,
         "ssh_public_key": ssh_public_key,
         "ssh_port": task.ssh_port,
         "reserved_ip": reserved_ip,

@@ -77,6 +77,10 @@ class TaskSubmitRequest(BaseModel):
         default=None,
         description="Container environment name",
     )
+    registry_image: str | None = Field(
+        default=None,
+        description="Docker registry image (e.g. 'ubuntu:22.04'). Overrides container_name.",
+    )
     docker_privileged: bool = Field(
         default=False,
         description="Run container with --privileged flag",
@@ -137,6 +141,10 @@ class TaskSubmission(BaseModel):
         default=None,
         description="Override default container name",
     )
+    registry_image: str | None = Field(
+        default=None,
+        description="Docker registry image (e.g. 'ubuntu:22.04'). Overrides container_name.",
+    )
     privileged: bool | None = Field(
         default=None,
         description="Override default privileged setting",
@@ -168,6 +176,7 @@ class TaskExecuteRequest(BaseModel):
     required_memory_bytes: int | None = None
     target_numa_node_id: int | None = None
     container_name: str
+    registry_image: str | None = None
     working_dir: str = "/shared"
     stdout_path: str
     stderr_path: str
@@ -191,6 +200,7 @@ class VPSSubmission(BaseModel):
     target_hostname: str | None = None
     target_numa_node_id: int | None = None
     container_name: str | None = None
+    registry_image: str | None = None
     ssh_key_mode: str = "disabled"
     ssh_public_key: str | None = None
     ip_reservation_token: str | None = None
@@ -205,6 +215,7 @@ class VPSCreateRequest(BaseModel):
     required_memory_bytes: int | None = None
     target_numa_node_id: int | None = None
     container_name: str
+    registry_image: str | None = None
     ssh_key_mode: str = "disabled"
     ssh_public_key: str | None = None
     ssh_port: int

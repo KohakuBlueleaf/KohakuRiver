@@ -71,6 +71,7 @@ async def create_vps_endpoint(request: VPSCreateRequest):
         required_memory_bytes=request.required_memory_bytes,
         target_numa_node_id=request.target_numa_node_id,
         container_name=request.container_name,
+        registry_image=request.registry_image,
         ssh_key_mode=ssh_key_mode,
         ssh_public_key=request.ssh_public_key,
         ssh_port=request.ssh_port,

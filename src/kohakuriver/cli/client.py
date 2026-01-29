@@ -157,6 +157,7 @@ def submit_task(
     memory_bytes: int | None = None,
     targets: list[str] | None = None,
     container_name: str | None = None,
+    registry_image: str | None = None,
     privileged: bool | None = None,
     additional_mounts: list[str] | None = None,
     gpu_ids: list[list[int]] | None = None,
@@ -191,6 +192,7 @@ def submit_task(
         "required_memory_bytes": memory_bytes,
         "targets": targets,
         "container_name": container_name,
+        "registry_image": registry_image,
         "privileged": privileged,
         "additional_mounts": additional_mounts,
         "required_gpus": gpu_ids,
@@ -305,6 +307,7 @@ def create_vps(
     memory_bytes: int | None = None,
     target: str | None = None,
     container_name: str | None = None,
+    registry_image: str | None = None,
     privileged: bool | None = None,
     additional_mounts: list[str] | None = None,
     gpu_ids: list[int] | None = None,
@@ -350,6 +353,7 @@ def create_vps(
         "target_hostname": target_hostname,
         "target_numa_node_id": target_numa_id,
         "container_name": container_name,
+        "registry_image": registry_image,
         "required_gpus": gpu_ids if gpu_ids else None,
     }
 
