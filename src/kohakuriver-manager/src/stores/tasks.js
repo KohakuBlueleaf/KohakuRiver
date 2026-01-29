@@ -34,7 +34,10 @@ export const useTasksStore = defineStore('tasks', () => {
 
   // Actions
   async function fetchTasks(params = {}) {
-    loading.value = true
+    const isInitialLoad = tasks.value.length === 0
+    if (isInitialLoad) {
+      loading.value = true
+    }
     error.value = null
     try {
       const { data } = await tasksAPI.list(params)
@@ -43,7 +46,9 @@ export const useTasksStore = defineStore('tasks', () => {
       error.value = e.response?.data?.detail || e.message
       console.error('Failed to fetch tasks:', e)
     } finally {
-      loading.value = false
+      if (isInitialLoad) {
+        loading.value = false
+      }
     }
   }
 

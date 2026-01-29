@@ -31,7 +31,10 @@ export const useVpsStore = defineStore('vps', () => {
 
   // Actions
   async function fetchVpsList(activeOnly = false) {
-    loading.value = true
+    const isInitialLoad = vpsList.value.length === 0
+    if (isInitialLoad) {
+      loading.value = true
+    }
     error.value = null
     try {
       const { data } = activeOnly ? await vpsAPI.listActive() : await vpsAPI.list()
@@ -40,7 +43,9 @@ export const useVpsStore = defineStore('vps', () => {
       error.value = e.response?.data?.detail || e.message
       console.error('Failed to fetch VPS list:', e)
     } finally {
-      loading.value = false
+      if (isInitialLoad) {
+        loading.value = false
+      }
     }
   }
 

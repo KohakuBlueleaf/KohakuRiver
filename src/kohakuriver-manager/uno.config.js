@@ -48,7 +48,7 @@ export default defineConfig({
     'section-title': 'text-lg font-semibold mb-4 text-gray-700 dark:text-gray-200',
 
     // Cards
-    'card': 'bg-app-card rounded-lg shadow-md p-4 border border-gray-200 dark:border-gray-600',
+    'card': 'bg-app-card rounded-lg shadow-md p-2 border border-gray-200 dark:border-gray-600',
     'card-hover': 'card hover:shadow-lg transition-shadow duration-200',
     'card-header': 'flex items-center justify-between mb-4',
     'card-title': 'font-semibold text-gray-800 dark:text-gray-200',
@@ -73,6 +73,7 @@ export default defineConfig({
 
     // Grid layouts
     'grid-cards': 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4',
+    'grid-cards-fixed': 'flex flex-wrap gap-4',
     'grid-stats': 'grid grid-cols-2 md:grid-cols-4 gap-4',
     'grid-2': 'grid grid-cols-1 md:grid-cols-2 gap-4',
     'grid-3': 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4',

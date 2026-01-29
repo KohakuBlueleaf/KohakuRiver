@@ -45,7 +45,10 @@ export const useClusterStore = defineStore('cluster', () => {
 
   // Actions
   async function fetchNodes() {
-    loading.value = true
+    const isInitialLoad = nodes.value.length === 0
+    if (isInitialLoad) {
+      loading.value = true
+    }
     error.value = null
     try {
       const { data } = await nodesAPI.getAll()
@@ -54,7 +57,9 @@ export const useClusterStore = defineStore('cluster', () => {
       error.value = e.response?.data?.detail || e.message
       console.error('Failed to fetch nodes:', e)
     } finally {
-      loading.value = false
+      if (isInitialLoad) {
+        loading.value = false
+      }
     }
   }
 

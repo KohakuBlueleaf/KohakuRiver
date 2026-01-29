@@ -30,7 +30,10 @@ export const useDockerStore = defineStore('docker', () => {
 
   // Actions
   async function fetchContainers() {
-    loading.value = true
+    const isInitialLoad = containers.value.length === 0
+    if (isInitialLoad) {
+      loading.value = true
+    }
     error.value = null
     try {
       const { data } = await dockerAPI.listContainers()
@@ -39,7 +42,9 @@ export const useDockerStore = defineStore('docker', () => {
       error.value = e.response?.data?.detail || e.message
       console.error('Failed to fetch containers:', e)
     } finally {
-      loading.value = false
+      if (isInitialLoad) {
+        loading.value = false
+      }
     }
   }
 

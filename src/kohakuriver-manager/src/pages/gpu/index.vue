@@ -261,29 +261,31 @@ const viewMode = ref('cards') // 'cards' or 'table'
           <span class="text-sm text-muted font-normal">({{ gpus.length }} GPU{{ gpus.length !== 1 ? 's' : '' }})</span>
         </h3>
 
-        <div class="grid-cards">
+        <div class="grid-cards-fixed">
           <div
             v-for="gpu in gpus"
             :key="`${hostname}-${gpu.gpu_id}`"
-            class="card">
+            class="card w-62 flex-shrink-0">
             <!-- Header -->
-            <div class="flex items-center justify-between mb-4">
-              <div class="flex items-center gap-3">
-                <span class="i-carbon-chip text-2xl text-purple-500"></span>
-                <div>
-                  <h4 class="font-semibold text-gray-800 dark:text-white">{{ gpu.name || `GPU ${gpu.gpu_id}` }}</h4>
-                  <p class="text-xs text-muted">GPU {{ gpu.gpu_id }} • {{ gpu.pci_bus_id || 'N/A' }}</p>
-                </div>
+            <div class="flex items-center gap-2 mb-3 mt-3">
+              <span class="i-carbon-chip text-xl text-purple-500 flex-shrink-0 self-center"></span>
+              <div class="overflow-hidden min-w-0">
+                <h4
+                  class="font-semibold text-sm text-gray-800 dark:text-white whitespace-nowrap overflow-hidden leading-tight !m-0 !mb-0.5">
+                  <span class="marquee-text">{{ gpu.name || `GPU ${gpu.gpu_id}` }}</span>
+                </h4>
+                <p class="text-xs text-muted leading-tight !m-0">GPU {{ gpu.gpu_id }}</p>
               </div>
             </div>
 
-            <!-- GPU Core Utilization -->
-            <div class="space-y-3">
+            <div class="space-y-2">
+              <!-- GPU Core Utilization -->
               <div>
                 <div class="flex justify-between text-sm mb-1">
                   <span class="text-muted">GPU Core</span>
                   <span :class="getUtilizationColor(gpu.gpu_utilization)">
                     {{ gpu.gpu_utilization >= 0 ? formatPercent(gpu.gpu_utilization) : '-' }}
+                    <span class="text-xs text-muted ml-1">{{ formatClock(gpu.graphics_clock_mhz) }}</span>
                   </span>
                 </div>
                 <ResourceBar
@@ -291,7 +293,6 @@ const viewMode = ref('cards') // 'cards' or 'table'
                   :max="100"
                   color="auto"
                   :show-percent="false" />
-                <p class="text-xs text-muted mt-1">Clock: {{ formatClock(gpu.graphics_clock_mhz) }}</p>
               </div>
 
               <!-- Memory Utilization -->
@@ -300,6 +301,7 @@ const viewMode = ref('cards') // 'cards' or 'table'
                   <span class="text-muted">Memory</span>
                   <span :class="getUtilizationColor(gpu.mem_utilization)">
                     {{ gpu.mem_utilization >= 0 ? formatPercent(gpu.mem_utilization) : '-' }}
+                    <span class="text-xs text-muted ml-1">{{ formatClock(gpu.mem_clock_mhz) }}</span>
                   </span>
                 </div>
                 <ResourceBar
@@ -309,43 +311,29 @@ const viewMode = ref('cards') // 'cards' or 'table'
                   :show-percent="false" />
                 <p class="text-xs text-muted mt-1">
                   {{ formatMiB(gpu.memory_used_mib || 0) }} / {{ formatMiB(gpu.memory_total_mib || 0) }}
-                  <span class="ml-2">Clock: {{ formatClock(gpu.mem_clock_mhz) }}</span>
                 </p>
               </div>
 
-              <!-- Temperature & Fan -->
-              <div class="grid grid-cols-2 gap-4 pt-2 border-t border-gray-200 dark:border-gray-700">
+              <!-- Temp / Fan / Power -->
+              <div class="grid grid-cols-3 gap-2 border-t border-gray-200 dark:border-gray-700 text-center">
                 <div>
-                  <p class="text-xs text-muted mb-1">Temperature</p>
+                  <p class="text-xs text-muted">Temp</p>
                   <p
-                    class="font-semibold"
+                    class="text-sm font-semibold"
                     :class="getTempColor(gpu.temperature)">
                     {{ gpu.temperature >= 0 ? `${gpu.temperature}°C` : '-' }}
                   </p>
                 </div>
                 <div>
-                  <p class="text-xs text-muted mb-1">Fan Speed</p>
-                  <p class="font-semibold">
+                  <p class="text-xs text-muted">Fan</p>
+                  <p class="text-sm font-semibold">
                     {{ gpu.fan_speed >= 0 ? `${gpu.fan_speed}%` : '-' }}
                   </p>
                 </div>
-              </div>
-
-              <!-- Power -->
-              <div class="grid grid-cols-2 gap-4">
                 <div>
-                  <p class="text-xs text-muted mb-1">Power Usage</p>
-                  <p class="font-semibold">{{ formatPower(gpu.power_usage_mw) }}</p>
+                  <p class="text-xs text-muted">Power</p>
+                  <p class="text-sm font-semibold">{{ formatPower(gpu.power_usage_mw) }}</p>
                 </div>
-                <div>
-                  <p class="text-xs text-muted mb-1">Power Limit</p>
-                  <p class="font-semibold">{{ formatPower(gpu.power_limit_mw) }}</p>
-                </div>
-              </div>
-
-              <!-- Driver Version -->
-              <div class="pt-2 border-t border-gray-200 dark:border-gray-700">
-                <p class="text-xs text-muted">Driver: {{ gpu.driver_version || 'N/A' }}</p>
               </div>
             </div>
           </div>
@@ -430,3 +418,21 @@ const viewMode = ref('cards') // 'cards' or 'table'
     </div>
   </div>
 </template>
+
+<style scoped>
+.marquee-text {
+  display: inline-block;
+  white-space: nowrap;
+}
+.marquee-text:hover {
+  animation: marquee 4s linear infinite;
+}
+@keyframes marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+</style>
