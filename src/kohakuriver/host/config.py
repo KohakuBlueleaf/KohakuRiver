@@ -100,14 +100,11 @@ class HostConfig:
     # When disabled, containers use isolated per-node bridge networks
     OVERLAY_ENABLED: bool = False
 
-    # Bridge name for overlay network on Host
-    OVERLAY_BRIDGE_NAME: str = "kohaku-overlay"
-
-    # Host's IP address on the overlay network (containers reach Host here)
-    OVERLAY_HOST_IP: str = "10.0.0.1"
-
-    # Network prefix for Host's overlay IP (covers all runner subnets)
-    OVERLAY_HOST_PREFIX: int = 8
+    # Overlay subnet configuration
+    # Format: BASE_IP/NETWORK_PREFIX/NODE_BITS/SUBNET_BITS (must sum to 32)
+    # Default: 10.128.0.0/12/6/14 = 10.128-143.x.x range, avoids common 10.x.x.x
+    # Example: 10.0.0.0/8/8/16 = full 10.x.x.x range, 255 runners, 64K IPs each
+    OVERLAY_SUBNET: str = "10.128.0.0/12/6/14"
 
     # Base VXLAN ID (each runner gets base_id + runner_id)
     OVERLAY_VXLAN_ID: int = 100

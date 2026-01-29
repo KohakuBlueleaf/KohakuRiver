@@ -26,6 +26,7 @@ async def send_task_to_runner(
     task: Task,
     container_name: str,
     working_dir: str,
+    reserved_ip: str | None = None,
 ) -> dict | None:
     """
     Send task execution request to a runner.
@@ -35,6 +36,7 @@ async def send_task_to_runner(
         task: Task to execute.
         container_name: Docker container to use.
         working_dir: Working directory inside container.
+        reserved_ip: Pre-reserved IP address for the container (optional).
 
     Returns:
         Runner response dict or None on failure.
@@ -52,6 +54,7 @@ async def send_task_to_runner(
         "working_dir": working_dir,
         "stdout_path": task.stdout_path,
         "stderr_path": task.stderr_path,
+        "reserved_ip": reserved_ip,
     }
 
     logger.info(f"Sending task {task.task_id} to runner at {runner_url}")
@@ -90,6 +93,7 @@ async def send_vps_task_to_runner(
     task: Task,
     container_name: str,
     ssh_public_key: str,
+    reserved_ip: str | None = None,
 ) -> dict | None:
     """
     Send VPS creation request to a runner.
@@ -99,6 +103,7 @@ async def send_vps_task_to_runner(
         task: Task record for the VPS.
         container_name: Docker container base image.
         ssh_public_key: SSH public key for VPS access.
+        reserved_ip: Pre-reserved IP address for the container (optional).
 
     Returns:
         Runner response dict or None on failure.
@@ -112,6 +117,7 @@ async def send_vps_task_to_runner(
         "container_name": container_name,
         "ssh_public_key": ssh_public_key,
         "ssh_port": task.ssh_port,
+        "reserved_ip": reserved_ip,
     }
 
     logger.info(f"Sending VPS {task.task_id} to runner at {runner_url}")

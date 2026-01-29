@@ -81,6 +81,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from kohakuriver.models.overlay_subnet import OverlaySubnetConfig
 from kohakuriver.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -125,10 +126,12 @@ class OverlayNetworkManager:
         """Initialize overlay manager with configuration."""
         self.config = config
 
+        # Parse subnet configuration
+        self.subnet_config = OverlaySubnetConfig.parse(config.OVERLAY_SUBNET)
+
         # Configuration from HostConfig
-        self.bridge_name = config.OVERLAY_BRIDGE_NAME
-        self.host_ip = config.OVERLAY_HOST_IP
-        self.host_prefix = config.OVERLAY_HOST_PREFIX
+        self.host_ip = self.subnet_config.get_host_ip()
+        self.host_prefix = self.subnet_config.overlay_prefix
         self.base_vxlan_id = config.OVERLAY_VXLAN_ID
         self.vxlan_port = config.OVERLAY_VXLAN_PORT
         self.mtu = config.OVERLAY_MTU
@@ -141,6 +144,11 @@ class OverlayNetworkManager:
 
         # Lazy-loaded pyroute2 IPRoute instance
         self._ipr = None
+
+        logger.info(
+            f"Overlay subnet config: {self.subnet_config}, "
+            f"max_runners={self.subnet_config.max_runners}"
+        )
 
     def _get_ipr(self):
         """Get or create IPRoute instance."""
@@ -188,7 +196,11 @@ class OverlayNetworkManager:
             return None
         encoded = device_name[len(self.VXLAN_PREFIX) :]
         runner_id = self._decode_runner_id(encoded)
-        if runner_id is None or runner_id < 1 or runner_id > 255:
+        if (
+            runner_id is None
+            or runner_id < 1
+            or runner_id > self.subnet_config.max_runners
+        ):
             return None
         return runner_id
 
@@ -292,13 +304,15 @@ class OverlayNetworkManager:
         """
         import subprocess
 
+        overlay_cidr = self.subnet_config.get_overlay_network_cidr()
+
         # Rules to add:
-        # 1. Allow forwarding from/to 10.0.0.0/8 (overlay subnet)
+        # 1. Allow forwarding from/to overlay subnet
         # 2. Allow forwarding between vxkr interfaces
         rules = [
             # Allow all traffic from overlay subnet to be forwarded
-            ["-A", "FORWARD", "-s", "10.0.0.0/8", "-j", "ACCEPT"],
-            ["-A", "FORWARD", "-d", "10.0.0.0/8", "-j", "ACCEPT"],
+            ["-A", "FORWARD", "-s", overlay_cidr, "-j", "ACCEPT"],
+            ["-A", "FORWARD", "-d", overlay_cidr, "-j", "ACCEPT"],
         ]
 
         for rule in rules:
@@ -398,8 +412,8 @@ class OverlayNetworkManager:
                 runner_name=runner_name_placeholder,
                 runner_id=runner_id,
                 physical_ip=remote_ip or "unknown",
-                subnet=f"10.{runner_id}.0.0/16",
-                gateway=f"10.{runner_id}.0.1",
+                subnet=self.subnet_config.get_runner_subnet(runner_id),
+                gateway=self.subnet_config.get_runner_gateway(runner_id),
                 vxlan_device=name,
                 last_used=datetime.now(),
                 is_active=False,  # Runner must re-register to become active
@@ -486,19 +500,22 @@ class OverlayNetworkManager:
                     return alloc
 
             # New runner - find available runner_id
+            max_id = self.subnet_config.max_runners
             used_ids = set(self._id_to_runner.keys())
-            available_ids = set(range(1, 256)) - used_ids
+            available_ids = set(range(1, max_id + 1)) - used_ids
 
             if not available_ids:
                 # Pool exhausted - cleanup LRU inactive allocation
                 lru_runner = self._find_lru_inactive()
                 if lru_runner:
                     await self._release_runner_internal(lru_runner)
-                    available_ids = set(range(1, 256)) - set(self._id_to_runner.keys())
+                    available_ids = set(range(1, max_id + 1)) - set(
+                        self._id_to_runner.keys()
+                    )
 
                 if not available_ids:
                     raise RuntimeError(
-                        "No available runner IDs (1-255) and no inactive allocations to cleanup"
+                        f"No available runner IDs (1-{max_id}) and no inactive allocations to cleanup"
                     )
 
             runner_id = min(available_ids)
@@ -513,8 +530,8 @@ class OverlayNetworkManager:
                 runner_name=runner_name,
                 runner_id=runner_id,
                 physical_ip=physical_ip,
-                subnet=f"10.{runner_id}.0.0/16",
-                gateway=f"10.{runner_id}.0.1",
+                subnet=self.subnet_config.get_runner_subnet(runner_id),
+                gateway=self.subnet_config.get_runner_gateway(runner_id),
                 vxlan_device=vxlan_device,
                 last_used=datetime.now(),
                 is_active=True,
@@ -549,9 +566,10 @@ class OverlayNetworkManager:
 
         device_name = self._get_vxlan_device_name(runner_id)
         vni = self.base_vxlan_id + runner_id  # Unique VNI per runner
-        host_ip_on_runner_subnet = (
-            f"10.{runner_id}.0.254"  # Host's IP on this runner's subnet
+        host_ip_on_runner_subnet = self.subnet_config.get_host_ip_on_runner_subnet(
+            runner_id
         )
+        runner_prefix = self.subnet_config.runner_prefix
 
         # Check if device already exists
         existing_link = None
@@ -582,7 +600,9 @@ class OverlayNetworkManager:
                     f"VXLAN {device_name} already exists with correct config, reusing"
                 )
                 ipr.link("set", index=vxlan_idx, mtu=self.mtu, state="up")
-                self._ensure_vxlan_ip_sync(ipr, vxlan_idx, host_ip_on_runner_subnet)
+                self._ensure_vxlan_ip_sync(
+                    ipr, vxlan_idx, host_ip_on_runner_subnet, runner_prefix
+                )
                 return device_name
             else:
                 # Case 3: Wrong config - delete and recreate
@@ -623,14 +643,16 @@ class OverlayNetworkManager:
         # Set MTU and bring up
         ipr.link("set", index=vxlan_idx, mtu=self.mtu, state="up")
 
-        # Assign IP to interface (this also adds route for 10.{runner_id}.0.0/16)
-        self._ensure_vxlan_ip_sync(ipr, vxlan_idx, host_ip_on_runner_subnet)
+        # Assign IP to interface (this also adds route for runner subnet)
+        self._ensure_vxlan_ip_sync(
+            ipr, vxlan_idx, host_ip_on_runner_subnet, runner_prefix
+        )
 
         # Add to firewalld trusted zone if firewalld is running
         self._add_interface_to_trusted_zone(device_name)
 
         logger.info(
-            f"Created VXLAN {device_name} with IP {host_ip_on_runner_subnet}/16"
+            f"Created VXLAN {device_name} with IP {host_ip_on_runner_subnet}/{runner_prefix}"
         )
         return device_name
 
@@ -684,7 +706,9 @@ class OverlayNetworkManager:
         except Exception as e:
             logger.warning(f"Failed to add {interface_name} to firewalld: {e}")
 
-    def _ensure_vxlan_ip_sync(self, ipr, vxlan_idx: int, ip_addr: str) -> None:
+    def _ensure_vxlan_ip_sync(
+        self, ipr, vxlan_idx: int, ip_addr: str, prefixlen: int
+    ) -> None:
         """Ensure VXLAN interface has the correct IP assigned."""
         # Check existing addresses
         existing_addrs = list(ipr.get_addr(index=vxlan_idx))
@@ -695,9 +719,9 @@ class OverlayNetworkManager:
                 break
 
         if not has_ip:
-            # Add IP with /16 prefix - kernel will auto-add route
-            logger.info(f"Adding IP {ip_addr}/16 to VXLAN interface")
-            ipr.addr("add", index=vxlan_idx, address=ip_addr, prefixlen=16)
+            # Add IP with configured prefix - kernel will auto-add route
+            logger.info(f"Adding IP {ip_addr}/{prefixlen} to VXLAN interface")
+            ipr.addr("add", index=vxlan_idx, address=ip_addr, prefixlen=prefixlen)
 
     async def mark_runner_inactive(self, runner_name: str) -> None:
         """Mark a runner's overlay allocation as inactive."""
@@ -800,8 +824,11 @@ class OverlayNetworkManager:
                 "total_allocations": len(self._allocations),
                 "active_allocations": active_count,
                 "inactive_allocations": inactive_count,
-                "available_ids": 255 - len(self._allocations),
-                "bridge_name": self.bridge_name,
+                "available_ids": self.subnet_config.max_runners
+                - len(self._allocations),
+                "max_runners": self.subnet_config.max_runners,
+                "subnet_config": str(self.subnet_config),
+                "overlay_network": self.subnet_config.get_overlay_network_cidr(),
                 "host_ip": f"{self.host_ip}/{self.host_prefix}",
                 "base_vxlan_id": self.base_vxlan_id,
                 "vxlan_port": self.vxlan_port,

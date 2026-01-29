@@ -10,7 +10,7 @@ import json
 import re
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Query
 
 from kohakuriver.db.node import Node
 from kohakuriver.db.task import Task
@@ -113,8 +113,12 @@ async def _allocate_overlay_for_runner(hostname: str, url: str) -> dict | None:
             "runner_id": allocation.runner_id,
             "overlay_subnet": allocation.subnet,
             "overlay_gateway": allocation.gateway,
-            "host_overlay_ip": config.OVERLAY_HOST_IP,
+            "host_overlay_ip": overlay_manager.host_ip,
             "host_physical_ip": config.HOST_REACHABLE_ADDRESS,
+            "overlay_network_cidr": overlay_manager.subnet_config.get_overlay_network_cidr(),
+            "host_ip_on_runner_subnet": overlay_manager.subnet_config.get_host_ip_on_runner_subnet(
+                allocation.runner_id
+            ),
         }
 
         logger.info(
@@ -366,8 +370,8 @@ async def get_overlay_status():
 
     return {
         "enabled": True,
-        "host_ip": f"{config.OVERLAY_HOST_IP}/{config.OVERLAY_HOST_PREFIX}",
-        "bridge": config.OVERLAY_BRIDGE_NAME,
+        "subnet_config": config.OVERLAY_SUBNET,
+        "host_ip": f"{overlay_manager.host_ip}/{overlay_manager.host_prefix}",
         "allocations": [
             {
                 "runner_name": a.runner_name,
@@ -431,3 +435,228 @@ async def cleanup_overlay():
     cleaned_count = await overlay_manager.cleanup_inactive()
     logger.info(f"Cleaned up {cleaned_count} inactive overlay allocations")
     return {"cleaned_count": cleaned_count}
+
+
+# =============================================================================
+# IP Reservation Endpoints
+# =============================================================================
+
+
+@router.get("/overlay/ip/available")
+async def get_available_ips(
+    runner: str | None = Query(None, description="Filter by runner name"),
+    limit: int = Query(100, description="Max IPs per runner", ge=1, le=1000),
+):
+    """
+    Get available IPs for reservation.
+
+    Returns a dict of runner_name -> list of available IP addresses.
+    """
+    if not config.OVERLAY_ENABLED:
+        raise HTTPException(status_code=400, detail="Overlay network is not enabled")
+
+    from kohakuriver.host.app import get_ip_reservation_manager
+
+    ip_manager = get_ip_reservation_manager()
+    if not ip_manager:
+        raise HTTPException(
+            status_code=500, detail="IP reservation manager not initialized"
+        )
+
+    available = await ip_manager.get_available_ips(runner_name=runner, limit=limit)
+    return {"available_ips": available}
+
+
+@router.get("/overlay/ip/info/{runner_name}")
+async def get_runner_ip_info(runner_name: str = Path(...)):
+    """
+    Get IP allocation info for a specific runner.
+
+    Returns subnet, IP range, and usage statistics.
+    """
+    if not config.OVERLAY_ENABLED:
+        raise HTTPException(status_code=400, detail="Overlay network is not enabled")
+
+    from kohakuriver.host.app import get_ip_reservation_manager
+
+    ip_manager = get_ip_reservation_manager()
+    if not ip_manager:
+        raise HTTPException(
+            status_code=500, detail="IP reservation manager not initialized"
+        )
+
+    info = await ip_manager.get_ip_info(runner_name)
+    if "error" in info:
+        raise HTTPException(status_code=404, detail=info["error"])
+
+    return info
+
+
+@router.post("/overlay/ip/reserve")
+async def reserve_ip(
+    runner: str = Query(..., description="Runner to reserve IP on"),
+    ip: str | None = Query(None, description="Specific IP to reserve (optional)"),
+    ttl: int = Query(300, description="Time-to-live in seconds", ge=60, le=1800),
+):
+    """
+    Reserve an IP address on a runner.
+
+    If ip is not specified, a random available IP will be chosen.
+
+    Returns a token that must be used when submitting tasks to claim the IP.
+    The token expires after the specified TTL (default 5 minutes).
+
+    Use case: Multi-node distributed training where master address must be
+    known before launching worker tasks.
+    """
+    if not config.OVERLAY_ENABLED:
+        raise HTTPException(status_code=400, detail="Overlay network is not enabled")
+
+    from kohakuriver.host.app import get_ip_reservation_manager
+
+    ip_manager = get_ip_reservation_manager()
+    if not ip_manager:
+        raise HTTPException(
+            status_code=500, detail="IP reservation manager not initialized"
+        )
+
+    reservation = await ip_manager.reserve_ip(runner_name=runner, ip=ip, ttl=ttl)
+    if not reservation:
+        raise HTTPException(
+            status_code=409,
+            detail=f"IP unavailable or runner '{runner}' not found",
+        )
+
+    return {
+        "ip": reservation.ip,
+        "runner": reservation.runner_name,
+        "token": reservation.token,
+        "expires_at": reservation.expires_at.isoformat(),
+        "ttl_seconds": ttl,
+    }
+
+
+@router.post("/overlay/ip/release")
+async def release_ip_reservation(
+    token: str = Query(..., description="Reservation token to release"),
+):
+    """
+    Release an IP reservation by token.
+
+    Cannot release reservations that are currently in use by a container.
+    """
+    if not config.OVERLAY_ENABLED:
+        raise HTTPException(status_code=400, detail="Overlay network is not enabled")
+
+    from kohakuriver.host.app import get_ip_reservation_manager
+
+    ip_manager = get_ip_reservation_manager()
+    if not ip_manager:
+        raise HTTPException(
+            status_code=500, detail="IP reservation manager not initialized"
+        )
+
+    released = await ip_manager.release_by_token(token)
+    if not released:
+        raise HTTPException(
+            status_code=404,
+            detail="Reservation not found, expired, or in use",
+        )
+
+    return {"released": True}
+
+
+@router.get("/overlay/ip/reservations")
+async def list_ip_reservations(
+    runner: str | None = Query(None, description="Filter by runner name"),
+    include_used: bool = Query(True, description="Include reservations in use"),
+):
+    """
+    List active IP reservations.
+    """
+    if not config.OVERLAY_ENABLED:
+        raise HTTPException(status_code=400, detail="Overlay network is not enabled")
+
+    from kohakuriver.host.app import get_ip_reservation_manager
+
+    ip_manager = get_ip_reservation_manager()
+    if not ip_manager:
+        raise HTTPException(
+            status_code=500, detail="IP reservation manager not initialized"
+        )
+
+    reservations = await ip_manager.get_reservations(
+        runner_name=runner, include_used=include_used
+    )
+
+    return {
+        "reservations": [
+            {
+                "ip": r.ip,
+                "runner": r.runner_name,
+                "token": r.token[:20] + "..." if len(r.token) > 20 else r.token,
+                "created_at": r.created_at.isoformat(),
+                "expires_at": r.expires_at.isoformat(),
+                "is_used": r.is_used(),
+                "container_id": r.container_id,
+            }
+            for r in reservations
+        ]
+    }
+
+
+@router.post("/overlay/ip/validate")
+async def validate_ip_token(
+    token: str = Query(..., description="Reservation token to validate"),
+    runner: str | None = Query(None, description="Expected runner (optional)"),
+):
+    """
+    Validate an IP reservation token.
+
+    Returns the reservation details if valid and not expired.
+    """
+    if not config.OVERLAY_ENABLED:
+        raise HTTPException(status_code=400, detail="Overlay network is not enabled")
+
+    from kohakuriver.host.app import get_ip_reservation_manager
+
+    ip_manager = get_ip_reservation_manager()
+    if not ip_manager:
+        raise HTTPException(
+            status_code=500, detail="IP reservation manager not initialized"
+        )
+
+    reservation = await ip_manager.validate_token(token, expected_runner=runner)
+    if not reservation:
+        raise HTTPException(
+            status_code=404,
+            detail="Token invalid, expired, or runner mismatch",
+        )
+
+    return {
+        "valid": True,
+        "ip": reservation.ip,
+        "runner": reservation.runner_name,
+        "expires_at": reservation.expires_at.isoformat(),
+        "is_used": reservation.is_used(),
+    }
+
+
+@router.get("/overlay/ip/stats")
+async def get_ip_reservation_stats():
+    """
+    Get IP reservation statistics.
+    """
+    if not config.OVERLAY_ENABLED:
+        raise HTTPException(status_code=400, detail="Overlay network is not enabled")
+
+    from kohakuriver.host.app import get_ip_reservation_manager
+
+    ip_manager = get_ip_reservation_manager()
+    if not ip_manager:
+        raise HTTPException(
+            status_code=500, detail="IP reservation manager not initialized"
+        )
+
+    stats = await ip_manager.get_stats()
+    return stats

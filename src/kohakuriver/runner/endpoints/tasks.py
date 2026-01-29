@@ -80,6 +80,7 @@ async def execute_task_endpoint(
         stderr_path=request.stderr_path,
         numa_topology=numa_topology,
         task_store=task_store,
+        reserved_ip=request.reserved_ip,
     )
 
     return {"message": "Task accepted for launch", "task_id": task_id}

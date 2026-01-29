@@ -259,14 +259,22 @@ async def _initialize_overlay_network():
         # Store in app.state for access from endpoints
         app.state.overlay_manager = overlay_manager
 
+        # Initialize IP reservation manager
+        from kohakuriver.host.services.ip_reservation import IPReservationManager
+
+        ip_reservation_manager = IPReservationManager(overlay_manager)
+        app.state.ip_reservation_manager = ip_reservation_manager
+        logger.info("IP reservation manager initialized")
+
         logger.info(
-            f"Overlay network initialized: bridge={config.OVERLAY_BRIDGE_NAME}, "
-            f"host_ip={config.OVERLAY_HOST_IP}/{config.OVERLAY_HOST_PREFIX}"
+            f"Overlay network initialized: subnet={config.OVERLAY_SUBNET}, "
+            f"host_ip={overlay_manager.host_ip}/{overlay_manager.host_prefix}"
         )
     except Exception as e:
         logger.error(f"Failed to initialize overlay network: {e}")
         logger.warning("Overlay network disabled due to initialization failure")
         app.state.overlay_manager = None
+        app.state.ip_reservation_manager = None
 
 
 def get_overlay_manager():
@@ -279,6 +287,18 @@ def get_overlay_manager():
     if not config.OVERLAY_ENABLED:
         return None
     return getattr(app.state, "overlay_manager", None)
+
+
+def get_ip_reservation_manager():
+    """
+    Get the IP reservation manager instance.
+
+    Returns:
+        IPReservationManager or None if overlay is disabled or not initialized.
+    """
+    if not config.OVERLAY_ENABLED:
+        return None
+    return getattr(app.state, "ip_reservation_manager", None)
 
 
 # =============================================================================

@@ -351,6 +351,13 @@ async def _setup_overlay_network(overlay_info: dict) -> None:
             host_overlay_ip=overlay_info["host_overlay_ip"],
             host_physical_ip=overlay_info["host_physical_ip"],
             runner_physical_ip=runner_ip,
+            overlay_network_cidr=overlay_info.get(
+                "overlay_network_cidr", "10.128.0.0/12"
+            ),
+            host_ip_on_runner_subnet=overlay_info.get(
+                "host_ip_on_runner_subnet",
+                "",  # Will be calculated from runner_id if not provided
+            ),
         )
 
         overlay_manager = RunnerOverlayManager(

@@ -154,6 +154,56 @@ async def submit_task(req: TaskSubmission):
     )
 
 
+async def _validate_ip_reservation(
+    req: TaskSubmission,
+    target_hostname: str,
+) -> str | None:
+    """
+    Validate IP reservation token if provided.
+
+    Args:
+        req: Task submission request
+        target_hostname: Target node hostname
+
+    Returns:
+        Reserved IP if token is valid, None if no token provided
+
+    Raises:
+        HTTPException if token is invalid
+    """
+    if not req.ip_reservation_token:
+        return None
+
+    if not config.OVERLAY_ENABLED:
+        raise HTTPException(
+            status_code=400,
+            detail="IP reservation requires overlay network to be enabled",
+        )
+
+    from kohakuriver.host.app import get_ip_reservation_manager
+
+    ip_manager = get_ip_reservation_manager()
+    if not ip_manager:
+        raise HTTPException(
+            status_code=500,
+            detail="IP reservation manager not initialized",
+        )
+
+    # Validate token and check it's for the target node
+    reservation = await ip_manager.validate_token(
+        req.ip_reservation_token,
+        expected_runner=target_hostname,
+    )
+
+    if not reservation:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid IP reservation token, expired, or node mismatch",
+        )
+
+    return reservation.ip
+
+
 def _validate_submission(req: TaskSubmission) -> None:
     """Validate task submission request."""
     if req.task_type not in {"command", "vps"}:
@@ -260,6 +310,14 @@ async def _process_target(
     if validation_error:
         return {"error": validation_error}
 
+    # Validate IP reservation if provided
+    reserved_ip = None
+    if req.ip_reservation_token:
+        try:
+            reserved_ip = await _validate_ip_reservation(req, target_hostname)
+        except HTTPException as e:
+            return {"error": e.detail}
+
     # Create task record
     task_id = generate_snowflake_id()
     task = _create_task_record(
@@ -275,8 +333,25 @@ async def _process_target(
     if task is None:
         return {"error": "Database error during task creation"}
 
+    # Mark reservation as used before dispatching
+    if reserved_ip and req.ip_reservation_token:
+        from kohakuriver.host.app import get_ip_reservation_manager
+
+        ip_manager = get_ip_reservation_manager()
+        if ip_manager:
+            container_name = (
+                vps_container_name(task_id)
+                if req.task_type == "vps"
+                else task_container_name(task_id)
+            )
+            await ip_manager.use_reservation(
+                req.ip_reservation_token,
+                container_name,
+                expected_runner=target_hostname,
+            )
+
     # Dispatch to runner
-    runner_response = await _dispatch_task(task, node, req, task_config)
+    runner_response = await _dispatch_task(task, node, req, task_config, reserved_ip)
 
     if runner_response is False:
         return {"error": "Runner failed to execute task"}
@@ -417,6 +492,7 @@ async def _dispatch_task(
     node: Node,
     req: TaskSubmission,
     task_config: dict,
+    reserved_ip: str | None = None,
 ) -> dict | bool | None:
     """Dispatch task to runner node."""
     if req.task_type == "vps":
@@ -425,6 +501,7 @@ async def _dispatch_task(
             task=task,
             container_name=task_config["container_name"],
             ssh_public_key=req.command,
+            reserved_ip=reserved_ip,
         )
         if result is None:
             task.status = "failed"
@@ -441,6 +518,7 @@ async def _dispatch_task(
                 task=task,
                 container_name=task_config["container_name"],
                 working_dir="/shared",
+                reserved_ip=reserved_ip,
             )
         )
         background_tasks.add(dispatch_task)

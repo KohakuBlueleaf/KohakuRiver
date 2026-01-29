@@ -71,6 +71,11 @@ class RunnerConfig:
     # Must match Host's OVERLAY_ENABLED setting
     OVERLAY_ENABLED: bool = False
 
+    # Overlay subnet configuration (must match Host's OVERLAY_SUBNET)
+    # Format: BASE_IP/NETWORK_PREFIX/NODE_BITS/SUBNET_BITS (must sum to 32)
+    # Default: 10.128.0.0/12/6/14 = 10.128-143.x.x range, avoids common 10.x.x.x
+    OVERLAY_SUBNET: str = "10.128.0.0/12/6/14"
+
     # Docker network name for overlay (used when overlay is enabled)
     OVERLAY_NETWORK_NAME: str = "kohakuriver-overlay"
 

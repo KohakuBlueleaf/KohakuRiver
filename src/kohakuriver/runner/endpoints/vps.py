@@ -75,6 +75,7 @@ async def create_vps_endpoint(request: VPSCreateRequest):
         ssh_public_key=request.ssh_public_key,
         ssh_port=request.ssh_port,
         task_store=task_store,
+        reserved_ip=request.reserved_ip,
     )
 
     if not result.get("success"):

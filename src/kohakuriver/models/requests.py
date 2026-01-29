@@ -85,6 +85,10 @@ class TaskSubmitRequest(BaseModel):
         default_factory=list,
         description="Additional directories to mount",
     )
+    ip_reservation_token: str | None = Field(
+        default=None,
+        description="IP reservation token for fixed container IP",
+    )
 
 
 class TaskSubmission(BaseModel):
@@ -141,6 +145,10 @@ class TaskSubmission(BaseModel):
         default=None,
         description="Override default additional mounts",
     )
+    ip_reservation_token: str | None = Field(
+        default=None,
+        description="IP reservation token for fixed container IP",
+    )
 
 
 class TaskExecuteRequest(BaseModel):
@@ -163,6 +171,7 @@ class TaskExecuteRequest(BaseModel):
     working_dir: str = "/shared"
     stdout_path: str
     stderr_path: str
+    reserved_ip: str | None = None
 
 
 class VPSSubmission(BaseModel):
@@ -184,6 +193,7 @@ class VPSSubmission(BaseModel):
     container_name: str | None = None
     ssh_key_mode: str = "disabled"
     ssh_public_key: str | None = None
+    ip_reservation_token: str | None = None
 
 
 class VPSCreateRequest(BaseModel):
@@ -198,6 +208,7 @@ class VPSCreateRequest(BaseModel):
     ssh_key_mode: str = "disabled"
     ssh_public_key: str | None = None
     ssh_port: int
+    reserved_ip: str | None = None
 
 
 class TaskKillRequest(BaseModel):

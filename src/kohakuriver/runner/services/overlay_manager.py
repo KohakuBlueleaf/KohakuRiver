@@ -35,6 +35,12 @@ class OverlayConfig:
     host_overlay_ip: str  # "10.0.0.1"
     host_physical_ip: str  # Physical IP of Host for VXLAN tunnel
     runner_physical_ip: str  # Physical IP of this Runner for VXLAN local binding
+    overlay_network_cidr: str = (
+        "10.128.0.0/12"  # Full overlay network CIDR for routing/firewall
+    )
+    host_ip_on_runner_subnet: str = (
+        ""  # Host's IP within this runner's subnet (e.g., 10.128.64.254)
+    )
 
 
 class RunnerOverlayManager:
@@ -211,10 +217,10 @@ class RunnerOverlayManager:
                 ipr.link("set", index=vxlan_idx, master=bridge_idx)
 
         # Add route to other overlay subnets via host
-        # Host IP on this runner's subnet is 10.{runner_id}.0.254
-        # Route 10.0.0.0/8 via this gateway (host will route to other runners)
-        host_gateway = f"10.{config.runner_id}.0.254"
-        self._ensure_overlay_routes(ipr, bridge_idx, host_gateway, config.runner_id)
+        # Host IP on this runner's subnet (e.g., 10.1.0.254)
+        # Route overlay network via this gateway (host will route to other runners)
+        host_gateway = config.host_ip_on_runner_subnet
+        self._ensure_overlay_routes(ipr, bridge_idx, host_gateway, config)
 
         # Set up iptables and firewalld rules for overlay forwarding
         self._setup_firewall_rules()
@@ -222,19 +228,26 @@ class RunnerOverlayManager:
         logger.info(f"Network setup complete: {self.VXLAN_NAME} -> {self.BRIDGE_NAME}")
 
     def _ensure_overlay_routes(
-        self, ipr, bridge_idx: int, host_gateway: str, runner_id: int
+        self, ipr, bridge_idx: int, host_gateway: str, config: OverlayConfig
     ) -> None:
         """
         Ensure routes exist for cross-runner communication.
 
-        We need to route 10.0.0.0/8 (except our own 10.{runner_id}.0.0/16) via the host.
-        Since our local subnet 10.{runner_id}.0.0/16 has a more specific route (via bridge),
-        we can add a catch-all 10.0.0.0/8 via host_gateway.
+        We need to route the overlay network (except our own subnet) via the host.
+        Since our local subnet has a more specific route (via bridge),
+        we can add a catch-all for the overlay network via host_gateway.
         """
+        import ipaddress
+
         try:
-            # Add route for 10.0.0.0/8 via host gateway
-            # The local 10.{runner_id}.0.0/16 route is more specific, so local traffic stays local
-            routes = list(ipr.get_routes(dst="10.0.0.0", dst_len=8))
+            # Parse overlay network CIDR
+            overlay_net = ipaddress.IPv4Network(config.overlay_network_cidr)
+            overlay_dst = str(overlay_net.network_address)
+            overlay_prefix = overlay_net.prefixlen
+
+            # Add route for overlay network via host gateway
+            # The local subnet route is more specific, so local traffic stays local
+            routes = list(ipr.get_routes(dst=overlay_dst, dst_len=overlay_prefix))
             route_exists = False
             for route in routes:
                 if route.get_attr("RTA_GATEWAY") == host_gateway:
@@ -242,8 +255,12 @@ class RunnerOverlayManager:
                     break
 
             if not route_exists:
-                logger.info(f"Adding route 10.0.0.0/8 via {host_gateway}")
-                ipr.route("add", dst="10.0.0.0", dst_len=8, gateway=host_gateway)
+                logger.info(
+                    f"Adding route {config.overlay_network_cidr} via {host_gateway}"
+                )
+                ipr.route(
+                    "add", dst=overlay_dst, dst_len=overlay_prefix, gateway=host_gateway
+                )
 
         except Exception as e:
             # Route may already exist
@@ -261,10 +278,16 @@ class RunnerOverlayManager:
         import shutil
         import subprocess
 
+        config = self._config
+        if config is None:
+            raise RuntimeError("OverlayConfig not set")
+
+        overlay_cidr = config.overlay_network_cidr
+
         # Set up iptables FORWARD rules (insert at top of FORWARD chain)
         forward_rules = [
-            ["-I", "FORWARD", "1", "-s", "10.0.0.0/8", "-j", "ACCEPT"],
-            ["-I", "FORWARD", "2", "-d", "10.0.0.0/8", "-j", "ACCEPT"],
+            ["-I", "FORWARD", "1", "-s", overlay_cidr, "-j", "ACCEPT"],
+            ["-I", "FORWARD", "2", "-d", overlay_cidr, "-j", "ACCEPT"],
         ]
 
         for rule in forward_rules:
@@ -273,7 +296,7 @@ class RunnerOverlayManager:
                 "-C",
                 "FORWARD",
                 "-s" if "-s" in rule else "-d",
-                "10.0.0.0/8",
+                overlay_cidr,
                 "-j",
                 "ACCEPT",
             ]
@@ -299,10 +322,10 @@ class RunnerOverlayManager:
             "-A",
             "POSTROUTING",
             "-s",
-            "10.0.0.0/8",
+            overlay_cidr,
             "!",
             "-d",
-            "10.0.0.0/8",
+            overlay_cidr,
             "-j",
             "MASQUERADE",
         ]
@@ -312,10 +335,10 @@ class RunnerOverlayManager:
             "-C",
             "POSTROUTING",
             "-s",
-            "10.0.0.0/8",
+            overlay_cidr,
             "!",
             "-d",
-            "10.0.0.0/8",
+            overlay_cidr,
             "-j",
             "MASQUERADE",
         ]

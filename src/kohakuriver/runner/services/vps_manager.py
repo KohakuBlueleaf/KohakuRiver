@@ -308,6 +308,7 @@ def _build_vps_docker_command(
     memory_limit_bytes: int | None,
     gpu_ids: list[int],
     privileged: bool,
+    reserved_ip: str | None = None,
 ) -> list[str]:
     """
     Build docker run command for VPS container.
@@ -323,6 +324,7 @@ def _build_vps_docker_command(
         memory_limit_bytes: Memory limit in bytes.
         gpu_ids: List of GPU indices.
         privileged: Run with --privileged.
+        reserved_ip: Pre-reserved IP address for the container (optional).
 
     Returns:
         Docker command as list of strings.
@@ -337,6 +339,11 @@ def _build_vps_docker_command(
     # With overlay, containers across nodes can communicate via overlay IPs
     container_network = config.get_container_network()
     docker_cmd.extend(["--network", container_network])
+
+    # Assign specific IP if reserved
+    if reserved_ip:
+        docker_cmd.extend(["--ip", reserved_ip])
+        logger.info(f"[VPS {task_id}] Using reserved IP: {reserved_ip}")
 
     # SSH port mapping - only if SSH is enabled
     if ssh_key_mode != "disabled":
@@ -522,6 +529,7 @@ async def create_vps(
     ssh_port: int,
     task_store: TaskStateStore,
     restore_from_snapshot: bool | None = None,
+    reserved_ip: str | None = None,
 ) -> dict:
     """
     Create a VPS container with SSH access using subprocess.
@@ -539,6 +547,7 @@ async def create_vps(
         task_store: Task state store.
         restore_from_snapshot: Whether to restore from latest snapshot if available.
                               If None, uses config.AUTO_RESTORE_ON_CREATE.
+        reserved_ip: Pre-reserved IP address for the container (optional).
 
     Returns:
         Dictionary with VPS creation result.
@@ -635,6 +644,7 @@ async def create_vps(
         memory_limit_bytes=required_memory_bytes,
         gpu_ids=required_gpus or [],
         privileged=config.TASKS_PRIVILEGED,
+        reserved_ip=reserved_ip,
     )
 
     try:

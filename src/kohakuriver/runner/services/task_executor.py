@@ -209,6 +209,7 @@ def build_docker_run_command(
     required_gpus: list[str],
     env_vars: dict[str, str],
     privileged: bool = False,
+    reserved_ip: str | None = None,
 ) -> list[str]:
     """
     Build a 'docker run --rm' command list for subprocess execution.
@@ -229,6 +230,7 @@ def build_docker_run_command(
         required_gpus: List of GPU IDs.
         env_vars: Environment variables.
         privileged: Run in privileged mode.
+        reserved_ip: Pre-reserved IP address for the container (optional).
 
     Returns:
         Command list for subprocess execution.
@@ -257,6 +259,11 @@ def build_docker_run_command(
     # With overlay, containers across nodes can communicate via overlay IPs
     container_network = config.get_container_network()
     docker_cmd.extend(["--network", container_network])
+
+    # Assign specific IP if reserved
+    if reserved_ip:
+        docker_cmd.extend(["--ip", reserved_ip])
+        logger.info(f"[Task {task_id}] Using reserved IP: {reserved_ip}")
 
     # Privileged mode
     if privileged:
@@ -374,6 +381,7 @@ async def execute_task(
     stderr_path: str,
     numa_topology: dict | None,
     task_store: TaskStateStore,
+    reserved_ip: str | None = None,
 ):
     """
     Execute a task in a Docker container using subprocess.
@@ -489,6 +497,7 @@ async def execute_task(
         required_gpus=required_gpus,
         env_vars=task_env,
         privileged=config.TASKS_PRIVILEGED,
+        reserved_ip=reserved_ip,
     )
 
     logger.info(f"[Task {task_id}] Step 2 complete: Task configuration built")
