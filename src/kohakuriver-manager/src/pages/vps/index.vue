@@ -46,7 +46,9 @@ const selectedVps = ref(null)
 const createForm = ref({
   required_cores: 0,
   required_memory_bytes: null,
+  imageSource: 'tarball', // 'tarball' or 'registry'
   container_name: null,
+  registry_image: null,
   target_hostname: null,
   target_numa_node_id: null,
   ssh_key_mode: 'disabled', // Default to TTY-only mode (no SSH)
@@ -189,7 +191,8 @@ async function handleCreate() {
     const data = {
       required_cores: createForm.value.required_cores,
       required_memory_bytes: createForm.value.required_memory_bytes || null,
-      container_name: createForm.value.container_name || null,
+      container_name: createForm.value.imageSource === 'tarball' ? createForm.value.container_name || null : null,
+      registry_image: createForm.value.imageSource === 'registry' ? createForm.value.registry_image || null : null,
       target_hostname: targetHostname,
       target_numa_node_id: createForm.value.target_numa_node_id,
       ssh_key_mode: createForm.value.ssh_key_mode,
@@ -218,7 +221,9 @@ function resetCreateForm() {
   createForm.value = {
     required_cores: 0,
     required_memory_bytes: null,
+    imageSource: 'tarball',
     container_name: null,
+    registry_image: null,
     target_hostname: null,
     target_numa_node_id: null,
     ssh_key_mode: 'disabled', // Default to TTY-only mode
@@ -672,8 +677,15 @@ function copyVpsId(taskId) {
           </el-form-item>
         </div>
 
-        <el-form-item label="Container Environment">
+        <el-form-item label="Image Source">
+          <el-radio-group
+            v-model="createForm.imageSource"
+            class="mb-2">
+            <el-radio value="tarball">Tarball</el-radio>
+            <el-radio value="registry">Registry Image</el-radio>
+          </el-radio-group>
           <el-select
+            v-if="createForm.imageSource === 'tarball'"
             v-model="createForm.container_name"
             placeholder="Select container"
             clearable
@@ -684,6 +696,10 @@ function copyVpsId(taskId) {
               :label="tarball.name"
               :value="tarball.name" />
           </el-select>
+          <el-input
+            v-else
+            v-model="createForm.registry_image"
+            placeholder="e.g. ubuntu:22.04, nvidia/cuda:12.0-base" />
         </el-form-item>
 
         <!-- GPU Feature Toggle -->

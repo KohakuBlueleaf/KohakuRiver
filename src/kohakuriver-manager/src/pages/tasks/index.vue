@@ -57,7 +57,9 @@ const submitForm = ref({
   env_vars: '',
   required_cores: 0,
   required_memory_bytes: null,
+  imageSource: 'tarball', // 'tarball' or 'registry'
   container_name: null,
+  registry_image: null,
   targets: null,
   required_gpus: null,
   privileged: false,
@@ -304,7 +306,8 @@ async function handleSubmit() {
         : {},
       required_cores: submitForm.value.required_cores,
       required_memory_bytes: submitForm.value.required_memory_bytes,
-      container_name: submitForm.value.container_name || null,
+      container_name: submitForm.value.imageSource === 'tarball' ? submitForm.value.container_name || null : null,
+      registry_image: submitForm.value.imageSource === 'registry' ? submitForm.value.registry_image || null : null,
       targets: targets,
       required_gpus: requiredGpus,
       privileged: submitForm.value.privileged || null,
@@ -329,7 +332,9 @@ function resetSubmitForm() {
     env_vars: '',
     required_cores: 0,
     required_memory_bytes: null,
+    imageSource: 'tarball',
     container_name: null,
+    registry_image: null,
     targets: null,
     required_gpus: null,
     privileged: false,
@@ -358,7 +363,9 @@ function createBatchInstance() {
     env_vars: submitForm.value.env_vars,
     required_cores: submitForm.value.required_cores,
     required_memory_bytes: submitForm.value.required_memory_bytes,
+    imageSource: submitForm.value.imageSource,
     container_name: submitForm.value.container_name,
+    registry_image: submitForm.value.registry_image,
     targets: submitForm.value.targets,
     gpuFeatureEnabled: submitForm.value.gpuFeatureEnabled,
     selectedGpus: { ...submitForm.value.selectedGpus },
@@ -411,7 +418,9 @@ function loadBatchInstance(index) {
     submitForm.value.env_vars = instance.env_vars
     submitForm.value.required_cores = instance.required_cores
     submitForm.value.required_memory_bytes = instance.required_memory_bytes
+    submitForm.value.imageSource = instance.imageSource
     submitForm.value.container_name = instance.container_name
+    submitForm.value.registry_image = instance.registry_image
     submitForm.value.targets = instance.targets
     submitForm.value.gpuFeatureEnabled = instance.gpuFeatureEnabled
     submitForm.value.selectedGpus = { ...instance.selectedGpus }
@@ -483,7 +492,8 @@ async function handleBatchSubmit() {
           : {},
         required_cores: instance.required_cores,
         required_memory_bytes: instance.required_memory_bytes,
-        container_name: instance.container_name || null,
+        container_name: instance.imageSource === 'tarball' ? instance.container_name || null : null,
+        registry_image: instance.imageSource === 'registry' ? instance.registry_image || null : null,
         targets: targets,
         required_gpus: requiredGpus,
         privileged: instance.privileged || null,
@@ -986,8 +996,15 @@ function getNodeName(node) {
           </el-form-item>
         </div>
 
-        <el-form-item label="Container Environment">
+        <el-form-item label="Image Source">
+          <el-radio-group
+            v-model="submitForm.imageSource"
+            class="mb-2">
+            <el-radio value="tarball">Tarball</el-radio>
+            <el-radio value="registry">Registry Image</el-radio>
+          </el-radio-group>
           <el-select
+            v-if="submitForm.imageSource === 'tarball'"
             v-model="submitForm.container_name"
             placeholder="Select container"
             clearable
@@ -998,6 +1015,10 @@ function getNodeName(node) {
               :label="tarball.name"
               :value="tarball.name" />
           </el-select>
+          <el-input
+            v-else
+            v-model="submitForm.registry_image"
+            placeholder="e.g. ubuntu:22.04, nvidia/cuda:12.0-base" />
         </el-form-item>
 
         <!-- GPU Feature Toggle -->
