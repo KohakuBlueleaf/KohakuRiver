@@ -22,6 +22,7 @@ import { formatBytes, formatRelativeTime } from '@/utils/format'
 import IdeContent from '@/components/ide/IdeContent.vue'
 import IdeOverlay from '@/components/ide/IdeOverlay.vue'
 import PortForwardDialog from '@/components/vps/PortForwardDialog.vue'
+import IpReservation from '@/components/common/IpReservation.vue'
 
 const vpsStore = useVpsStore()
 const clusterStore = useClusterStore()
@@ -53,14 +54,57 @@ const createForm = ref({
   privileged: false,
   gpuFeatureEnabled: false,
   selectedGpus: {}, // { hostname: [gpu_id1, gpu_id2], ... }
+  ip_reservation_token: null, // Token from IP reservation
 })
 
 // Expanded GPU node panels
 const expandedGpuNodes = ref([])
 
+// IP Reservation component ref
+const ipReservationRef = ref(null)
+
+// Computed: selected runner (either from node selection or GPU selection)
+const selectedRunner = computed(() => {
+  if (createForm.value.gpuFeatureEnabled) {
+    const gpuInfo = getSelectedGpuInfo()
+    return gpuInfo?.hostname || null
+  }
+  return createForm.value.target_hostname || null
+})
+
+// Handle IP token update from IpReservation component
+function handleIpTokenUpdate(token) {
+  createForm.value.ip_reservation_token = token
+}
+
 // Get nodes with GPU info
 const nodesWithGpus = computed(() => {
   return clusterStore.onlineNodes.filter((n) => n.gpu_info && n.gpu_info.length > 0)
+})
+
+// Get available NUMA nodes for the selected runner
+const availableNumaNodes = computed(() => {
+  if (!selectedRunner.value) return []
+  const node = clusterStore.onlineNodes.find((n) => n.hostname === selectedRunner.value)
+  if (!node || !node.numa_topology || !node.numa_topology.numa_nodes) return []
+  return node.numa_topology.numa_nodes.map((n) => ({
+    id: n.id,
+    label: `NUMA ${n.id} (${n.cpu_count} CPUs, ${formatNumaMemory(n.memory_total_mb)})`,
+  }))
+})
+
+// Format memory for NUMA display
+function formatNumaMemory(mb) {
+  if (!mb) return '0 MB'
+  if (mb >= 1024) {
+    return `${(mb / 1024).toFixed(1)} GB`
+  }
+  return `${mb} MB`
+}
+
+// Clear NUMA selection when runner changes
+watch(selectedRunner, () => {
+  createForm.value.target_numa_node_id = null
 })
 
 // Check if another GPU node is already selected (for disabling other nodes)
@@ -152,6 +196,7 @@ async function handleCreate() {
       ssh_public_key: createForm.value.ssh_key_mode === 'upload' ? createForm.value.ssh_public_key : null,
       privileged: createForm.value.privileged || null,
       required_gpus: requiredGpus,
+      ip_reservation_token: createForm.value.ip_reservation_token || null,
     }
 
     const result = await vpsStore.createVps(data)
@@ -181,6 +226,7 @@ function resetCreateForm() {
     privileged: false,
     gpuFeatureEnabled: false,
     selectedGpus: {},
+    ip_reservation_token: null,
   }
   expandedGpuNodes.value = []
 }
@@ -750,6 +796,32 @@ function copyVpsId(taskId) {
             type="textarea"
             :rows="3"
             placeholder="ssh-ed25519 AAAA... user@host" />
+        </el-form-item>
+
+        <!-- NUMA Node Selection -->
+        <el-form-item
+          v-if="selectedRunner && availableNumaNodes.length > 0"
+          label="NUMA Node">
+          <el-select
+            v-model="createForm.target_numa_node_id"
+            placeholder="No NUMA affinity (use any)"
+            clearable
+            class="w-full">
+            <el-option
+              v-for="numa in availableNumaNodes"
+              :key="numa.id"
+              :label="numa.label"
+              :value="numa.id" />
+          </el-select>
+          <div class="text-xs text-muted mt-1">Pin VPS to a specific NUMA node for better memory locality</div>
+        </el-form-item>
+
+        <!-- IP Reservation -->
+        <el-form-item label="IP Reservation">
+          <IpReservation
+            ref="ipReservationRef"
+            :runner="selectedRunner"
+            @update:token="handleIpTokenUpdate" />
         </el-form-item>
 
         <el-form-item>

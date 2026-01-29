@@ -21,6 +21,8 @@ import { usePolling } from '@/composables/usePolling'
 import { ACTIVE_STATUSES } from '@/utils/constants'
 import { formatBytes, formatDate, formatRelativeTime, formatRequiredGpus, formatTaskId } from '@/utils/format'
 
+import IpReservation from '@/components/common/IpReservation.vue'
+
 const tasksStore = useTasksStore()
 const clusterStore = useClusterStore()
 const dockerStore = useDockerStore()
@@ -42,6 +44,11 @@ const detailTab = ref('info')
 const logContent = ref('')
 const logLoading = ref(false)
 
+// Batch submission mode
+const batchModeEnabled = ref(false)
+const batchInstances = ref([])
+const activeBatchIndex = ref(0)
+
 // Submit form
 const submitForm = ref({
   command: '',
@@ -54,7 +61,107 @@ const submitForm = ref({
   targets: null,
   required_gpus: null,
   privileged: false,
+  gpuFeatureEnabled: false,
+  selectedGpus: {}, // { hostname: [gpu_id1, gpu_id2], ... }
+  ip_reservation_token: null, // Token from IP reservation
+  target_numa_node_id: null, // NUMA node ID
 })
+
+// Expanded GPU node panels
+const expandedGpuNodes = ref([])
+
+// IP Reservation component ref
+const ipReservationRef = ref(null)
+
+// Computed: selected runner (either from node selection or GPU selection)
+const selectedRunner = computed(() => {
+  if (submitForm.value.gpuFeatureEnabled) {
+    const gpuInfo = getSelectedGpuInfo()
+    return gpuInfo?.hostname || null
+  }
+  return submitForm.value.targets || null
+})
+
+// Get nodes with GPU info
+const nodesWithGpus = computed(() => {
+  return clusterStore.onlineNodes.filter((n) => n.gpu_info && n.gpu_info.length > 0)
+})
+
+// Get available NUMA nodes for the selected runner
+const availableNumaNodes = computed(() => {
+  if (!selectedRunner.value) return []
+  const node = clusterStore.onlineNodes.find((n) => n.hostname === selectedRunner.value)
+  if (!node || !node.numa_topology || !node.numa_topology.numa_nodes) return []
+  return node.numa_topology.numa_nodes.map((n) => ({
+    id: n.id,
+    label: `NUMA ${n.id} (${n.cpu_count} CPUs, ${formatNumaMemory(n.memory_total_mb)})`,
+  }))
+})
+
+// Format memory for NUMA display
+function formatNumaMemory(mb) {
+  if (!mb) return '0 MB'
+  if (mb >= 1024) {
+    return `${(mb / 1024).toFixed(1)} GB`
+  }
+  return `${mb} MB`
+}
+
+// Clear NUMA selection when runner changes
+watch(selectedRunner, () => {
+  submitForm.value.target_numa_node_id = null
+})
+
+// Check if another GPU node is already selected (for disabling other nodes)
+function isAnotherGpuNodeSelected(hostname) {
+  const selectedNode = Object.keys(submitForm.value.selectedGpus).find(
+    (h) => submitForm.value.selectedGpus[h] && submitForm.value.selectedGpus[h].length > 0
+  )
+  return selectedNode !== undefined && selectedNode !== hostname
+}
+
+// Get the selected GPU node hostname and GPU IDs
+function getSelectedGpuInfo() {
+  for (const hostname in submitForm.value.selectedGpus) {
+    if (submitForm.value.selectedGpus[hostname] && submitForm.value.selectedGpus[hostname].length > 0) {
+      return { hostname, gpuIds: submitForm.value.selectedGpus[hostname] }
+    }
+  }
+  return null
+}
+
+// Initialize selectedGpus for nodes
+function initializeGpuSelections() {
+  submitForm.value.selectedGpus = {}
+  for (const node of nodesWithGpus.value) {
+    submitForm.value.selectedGpus[node.hostname] = []
+  }
+}
+
+// Watch GPU feature toggle - clear appropriate selections
+watch(
+  () => submitForm.value.gpuFeatureEnabled,
+  (enabled) => {
+    if (enabled) {
+      // Clear node selection when switching to GPU mode
+      submitForm.value.targets = null
+      initializeGpuSelections()
+    } else {
+      // Clear GPU selections when switching to node mode
+      submitForm.value.selectedGpus = {}
+      expandedGpuNodes.value = []
+    }
+  }
+)
+
+// Format MiB for GPU display
+function formatGpuMemory(mib) {
+  if (!mib) return ''
+  if (mib >= 1024) {
+    return `${(mib / 1024).toFixed(0)} GB`
+  }
+  return `${mib.toFixed(0)} MB`
+}
 
 // Argument list drag state
 const draggedArgIndex = ref(null)
@@ -165,6 +272,24 @@ async function handleSubmit() {
       addCurrentArg()
     }
 
+    // Determine target and GPUs based on mode
+    let targets = null
+    let requiredGpus = null
+
+    if (submitForm.value.gpuFeatureEnabled) {
+      // GPU mode - get selected GPU info
+      const gpuInfo = getSelectedGpuInfo()
+      if (!gpuInfo) {
+        notify.warning('Please select at least one GPU')
+        return
+      }
+      targets = [gpuInfo.hostname]
+      requiredGpus = [gpuInfo.gpuIds]
+    } else {
+      // Node mode
+      targets = submitForm.value.targets ? [submitForm.value.targets] : null
+    }
+
     const data = {
       task_type: 'command',
       command: submitForm.value.command,
@@ -180,11 +305,11 @@ async function handleSubmit() {
       required_cores: submitForm.value.required_cores,
       required_memory_bytes: submitForm.value.required_memory_bytes,
       container_name: submitForm.value.container_name || null,
-      targets: submitForm.value.targets ? [submitForm.value.targets] : null,
-      required_gpus: submitForm.value.required_gpus
-        ? [submitForm.value.required_gpus.split(',').map((g) => parseInt(g.trim()))]
-        : null,
+      targets: targets,
+      required_gpus: requiredGpus,
       privileged: submitForm.value.privileged || null,
+      ip_reservation_token: submitForm.value.ip_reservation_token || null,
+      target_numa_node_id: submitForm.value.target_numa_node_id,
     }
 
     await tasksStore.submitTask(data)
@@ -208,6 +333,184 @@ function resetSubmitForm() {
     targets: null,
     required_gpus: null,
     privileged: false,
+    gpuFeatureEnabled: false,
+    selectedGpus: {},
+    ip_reservation_token: null,
+    target_numa_node_id: null,
+  }
+  expandedGpuNodes.value = []
+}
+
+// Handle IP token update from IpReservation component
+function handleIpTokenUpdate(token) {
+  submitForm.value.ip_reservation_token = token
+}
+
+// =============================================================================
+// Batch Submission Functions
+// =============================================================================
+
+// Create a default batch instance from current form
+function createBatchInstance() {
+  return {
+    command: submitForm.value.command,
+    arguments: [...submitForm.value.arguments],
+    env_vars: submitForm.value.env_vars,
+    required_cores: submitForm.value.required_cores,
+    required_memory_bytes: submitForm.value.required_memory_bytes,
+    container_name: submitForm.value.container_name,
+    targets: submitForm.value.targets,
+    gpuFeatureEnabled: submitForm.value.gpuFeatureEnabled,
+    selectedGpus: { ...submitForm.value.selectedGpus },
+    privileged: submitForm.value.privileged,
+    ip_reservation_token: null,
+    target_numa_node_id: submitForm.value.target_numa_node_id,
+  }
+}
+
+// Initialize batch mode with current form as first instance
+function initBatchMode() {
+  if (batchInstances.value.length === 0) {
+    batchInstances.value = [createBatchInstance()]
+  }
+  activeBatchIndex.value = 0
+}
+
+// Add a new batch instance (copy from current active or template)
+function addBatchInstance() {
+  const newInstance = createBatchInstance()
+  batchInstances.value.push(newInstance)
+  activeBatchIndex.value = batchInstances.value.length - 1
+  // Load into form
+  loadBatchInstance(activeBatchIndex.value)
+}
+
+// Remove a batch instance
+function removeBatchInstance(index) {
+  if (batchInstances.value.length <= 1) return
+  batchInstances.value.splice(index, 1)
+  if (activeBatchIndex.value >= batchInstances.value.length) {
+    activeBatchIndex.value = batchInstances.value.length - 1
+  }
+  loadBatchInstance(activeBatchIndex.value)
+}
+
+// Save current form state to batch instance
+function saveBatchInstance(index) {
+  if (index >= 0 && index < batchInstances.value.length) {
+    batchInstances.value[index] = createBatchInstance()
+  }
+}
+
+// Load batch instance into form
+function loadBatchInstance(index) {
+  if (index >= 0 && index < batchInstances.value.length) {
+    const instance = batchInstances.value[index]
+    submitForm.value.command = instance.command
+    submitForm.value.arguments = [...instance.arguments]
+    submitForm.value.env_vars = instance.env_vars
+    submitForm.value.required_cores = instance.required_cores
+    submitForm.value.required_memory_bytes = instance.required_memory_bytes
+    submitForm.value.container_name = instance.container_name
+    submitForm.value.targets = instance.targets
+    submitForm.value.gpuFeatureEnabled = instance.gpuFeatureEnabled
+    submitForm.value.selectedGpus = { ...instance.selectedGpus }
+    submitForm.value.privileged = instance.privileged
+    submitForm.value.ip_reservation_token = instance.ip_reservation_token
+    submitForm.value.target_numa_node_id = instance.target_numa_node_id
+    activeBatchIndex.value = index
+  }
+}
+
+// Switch active batch instance
+function switchBatchInstance(index) {
+  // Save current before switching
+  saveBatchInstance(activeBatchIndex.value)
+  loadBatchInstance(index)
+}
+
+// Watch batch mode toggle
+watch(batchModeEnabled, (enabled) => {
+  if (enabled) {
+    initBatchMode()
+  } else {
+    // Clear batch instances when disabling
+    batchInstances.value = []
+    activeBatchIndex.value = 0
+  }
+})
+
+// Submit all batch instances
+async function handleBatchSubmit() {
+  // Save current form to active instance
+  saveBatchInstance(activeBatchIndex.value)
+
+  let successCount = 0
+  let failCount = 0
+
+  for (let i = 0; i < batchInstances.value.length; i++) {
+    const instance = batchInstances.value[i]
+
+    try {
+      // Determine target and GPUs based on mode
+      let targets = null
+      let requiredGpus = null
+
+      if (instance.gpuFeatureEnabled) {
+        for (const hostname in instance.selectedGpus) {
+          if (instance.selectedGpus[hostname]?.length > 0) {
+            targets = [hostname]
+            requiredGpus = [instance.selectedGpus[hostname]]
+            break
+          }
+        }
+        if (!targets) continue // Skip instances with no GPUs selected
+      } else {
+        targets = instance.targets ? [instance.targets] : null
+      }
+
+      const data = {
+        task_type: 'command',
+        command: instance.command,
+        arguments: instance.arguments,
+        env_vars: instance.env_vars
+          ? Object.fromEntries(
+              instance.env_vars
+                .split('\n')
+                .filter(Boolean)
+                .map((line) => line.split('=').map((s) => s.trim()))
+            )
+          : {},
+        required_cores: instance.required_cores,
+        required_memory_bytes: instance.required_memory_bytes,
+        container_name: instance.container_name || null,
+        targets: targets,
+        required_gpus: requiredGpus,
+        privileged: instance.privileged || null,
+        ip_reservation_token: instance.ip_reservation_token || null,
+        target_numa_node_id: instance.target_numa_node_id,
+      }
+
+      await tasksStore.submitTask(data)
+      successCount++
+    } catch (e) {
+      failCount++
+      console.error(`Failed to submit batch instance ${i + 1}:`, e)
+    }
+  }
+
+  if (successCount > 0) {
+    notify.success(`${successCount} task(s) submitted successfully`)
+  }
+  if (failCount > 0) {
+    notify.error(`${failCount} task(s) failed to submit`)
+  }
+
+  if (successCount > 0) {
+    submitDialogVisible.value = false
+    resetSubmitForm()
+    batchModeEnabled.value = false
+    batchInstances.value = []
   }
 }
 
@@ -536,9 +839,58 @@ function getNodeName(node) {
     <!-- Submit Dialog -->
     <el-dialog
       v-model="submitDialogVisible"
-      title="Submit Task"
-      width="600px"
+      :title="batchModeEnabled ? `Submit Tasks (${batchInstances.length} instances)` : 'Submit Task'"
+      width="700px"
       destroy-on-close>
+      <!-- Batch Mode Header -->
+      <div class="mb-4 pb-4 border-b border-gray-200 dark:border-gray-700">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <el-switch v-model="batchModeEnabled" />
+            <span class="text-sm">Batch Mode</span>
+            <el-tooltip
+              content="Submit multiple similar tasks with different parameters"
+              placement="top">
+              <span class="i-carbon-information text-gray-400"></span>
+            </el-tooltip>
+          </div>
+          <el-button
+            v-if="batchModeEnabled"
+            size="small"
+            type="primary"
+            @click="addBatchInstance">
+            <span class="i-carbon-add mr-1"></span>
+            Add Instance
+          </el-button>
+        </div>
+
+        <!-- Batch Instance Tabs -->
+        <div
+          v-if="batchModeEnabled && batchInstances.length > 0"
+          class="flex flex-wrap gap-2 mt-3">
+          <div
+            v-for="(instance, index) in batchInstances"
+            :key="index"
+            class="flex items-center gap-1 px-3 py-1.5 rounded-lg cursor-pointer transition-colors"
+            :class="
+              activeBatchIndex === index
+                ? 'bg-blue-500 text-white'
+                : 'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'
+            "
+            @click="switchBatchInstance(index)">
+            <span class="text-sm font-medium">Instance {{ index + 1 }}</span>
+            <button
+              v-if="batchInstances.length > 1"
+              type="button"
+              class="ml-1 hover:text-red-500"
+              :class="activeBatchIndex === index ? 'text-white/70 hover:text-red-200' : 'text-gray-400'"
+              @click.stop="removeBatchInstance(index)">
+              <span class="i-carbon-close text-xs"></span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <el-form
         :model="submitForm"
         label-position="top">
@@ -648,7 +1000,16 @@ function getNodeName(node) {
           </el-select>
         </el-form-item>
 
-        <el-form-item label="Target Node">
+        <!-- GPU Feature Toggle -->
+        <el-form-item label="Enable GPU Selection">
+          <el-switch v-model="submitForm.gpuFeatureEnabled" />
+          <span class="text-muted text-xs ml-2">Toggle to select specific GPUs instead of a node</span>
+        </el-form-item>
+
+        <!-- Node Selection (when GPU feature is OFF) -->
+        <el-form-item
+          v-if="!submitForm.gpuFeatureEnabled"
+          label="Target Node">
           <el-select
             v-model="submitForm.targets"
             placeholder="Auto-select"
@@ -662,10 +1023,81 @@ function getNodeName(node) {
           </el-select>
         </el-form-item>
 
-        <el-form-item label="GPU IDs (comma-separated)">
-          <el-input
-            v-model="submitForm.required_gpus"
-            placeholder="e.g., 0,1" />
+        <!-- GPU Selection (when GPU feature is ON) -->
+        <el-form-item
+          v-else
+          label="Select Target GPUs">
+          <div class="gpu-selection-container">
+            <el-empty
+              v-if="nodesWithGpus.length === 0"
+              description="No online nodes with GPUs"
+              :image-size="60" />
+            <el-collapse
+              v-else
+              v-model="expandedGpuNodes">
+              <el-collapse-item
+                v-for="node in nodesWithGpus"
+                :key="node.hostname"
+                :name="node.hostname">
+                <template #title>
+                  <span class="font-medium">{{ node.hostname }}</span>
+                  <span class="text-muted text-xs ml-2">({{ node.gpu_info.length }} GPUs)</span>
+                </template>
+                <el-checkbox-group
+                  v-model="submitForm.selectedGpus[node.hostname]"
+                  :disabled="isAnotherGpuNodeSelected(node.hostname)"
+                  class="gpu-checkbox-grid">
+                  <el-checkbox
+                    v-for="gpu in node.gpu_info"
+                    :key="gpu.gpu_id"
+                    :value="gpu.gpu_id"
+                    border
+                    class="gpu-checkbox">
+                    <div class="gpu-checkbox-content">
+                      <span class="font-medium">GPU {{ gpu.gpu_id }}: {{ gpu.name || 'Unknown' }}</span>
+                      <span class="gpu-stats">
+                        {{ formatGpuMemory(gpu.memory_total_mib) }} | Util: {{ gpu.gpu_utilization ?? '-' }}% | Temp:
+                        {{ gpu.temperature ?? '-' }}°C
+                      </span>
+                    </div>
+                  </el-checkbox>
+                </el-checkbox-group>
+              </el-collapse-item>
+            </el-collapse>
+          </div>
+          <el-alert
+            v-if="!getSelectedGpuInfo()"
+            title="Select at least one GPU on a single node"
+            type="info"
+            show-icon
+            :closable="false"
+            class="mt-2" />
+        </el-form-item>
+
+        <!-- NUMA Node Selection -->
+        <el-form-item
+          v-if="selectedRunner && availableNumaNodes.length > 0"
+          label="NUMA Node">
+          <el-select
+            v-model="submitForm.target_numa_node_id"
+            placeholder="No NUMA affinity (use any)"
+            clearable
+            class="w-full">
+            <el-option
+              v-for="numa in availableNumaNodes"
+              :key="numa.id"
+              :label="numa.label"
+              :value="numa.id" />
+          </el-select>
+          <div class="text-xs text-muted mt-1">Pin task to a specific NUMA node for better memory locality</div>
+        </el-form-item>
+
+        <!-- IP Reservation -->
+        <el-form-item label="IP Reservation">
+          <IpReservation
+            ref="ipReservationRef"
+            :runner="selectedRunner"
+            @update:token="handleIpTokenUpdate" />
         </el-form-item>
 
         <el-form-item>
@@ -676,6 +1108,14 @@ function getNodeName(node) {
       <template #footer>
         <el-button @click="submitDialogVisible = false">Cancel</el-button>
         <el-button
+          v-if="batchModeEnabled"
+          type="primary"
+          :loading="tasksStore.submitting"
+          @click="handleBatchSubmit">
+          Submit {{ batchInstances.length }} Task(s)
+        </el-button>
+        <el-button
+          v-else
           type="primary"
           :loading="tasksStore.submitting"
           @click="handleSubmit">
@@ -913,3 +1353,59 @@ function getNodeName(node) {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+/* GPU Selection Styles */
+.gpu-selection-container {
+  border: 1px solid var(--el-border-color);
+  border-radius: 8px;
+  padding: 8px;
+  min-height: 80px;
+  max-height: 300px;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.gpu-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.gpu-checkbox {
+  margin: 0 !important;
+  width: 100%;
+}
+
+.gpu-checkbox-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
+.gpu-stats {
+  font-size: 0.75em;
+  color: var(--el-text-color-secondary);
+}
+
+:deep(.el-collapse) {
+  border: none;
+}
+
+:deep(.el-collapse-item__header) {
+  font-size: 0.9em;
+  padding: 0 8px;
+  background: transparent;
+}
+
+:deep(.el-collapse-item__content) {
+  padding: 12px 8px;
+}
+
+:deep(.el-checkbox.is-bordered) {
+  padding: 8px 10px !important;
+  height: auto !important;
+}
+</style>
