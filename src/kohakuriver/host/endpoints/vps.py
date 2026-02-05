@@ -16,13 +16,21 @@ import json
 import os
 import subprocess
 import tempfile
+from typing import Annotated
 
 import httpx
 import peewee
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from kohakuriver.db.auth import User, UserRole, VpsAssignment
 from kohakuriver.db.node import Node
 from kohakuriver.db.task import Task
+from kohakuriver.host.auth.dependencies import (
+    require_operator,
+    require_role,
+    require_user,
+    require_viewer,
+)
 from kohakuriver.docker.naming import vps_container_name
 from kohakuriver.host.config import config
 from kohakuriver.host.services.node_manager import find_suitable_node
@@ -172,8 +180,15 @@ def allocate_ssh_port() -> int:
 
 
 @router.post("/vps/create")
-async def submit_vps(submission: VPSSubmission):
-    """Submit a new VPS for creation."""
+async def submit_vps(
+    submission: VPSSubmission,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Submit a new VPS for creation.
+
+    Requires 'operator' role or higher (operators and admins can create VPS).
+    """
     logger.info(
         f"Received VPS submission for {submission.required_cores} cores "
         f"(ssh_key_mode={submission.ssh_key_mode})"
@@ -254,6 +269,8 @@ async def submit_vps(submission: VPSSubmission):
     task = Task.create(
         task_id=task_id,
         task_type="vps",
+        name=submission.name,
+        owner_id=current_user.id if current_user.id > 0 else None,
         command="vps",
         required_cores=submission.required_cores,
         required_gpus=(
@@ -334,9 +351,47 @@ async def submit_vps(submission: VPSSubmission):
     return response
 
 
+def _get_vps_owner_username(owner_id: int | None) -> str | None:
+    """Get username for owner_id."""
+    if not owner_id:
+        return None
+    try:
+        user = User.get_or_none(User.id == owner_id)
+        return user.username if user else None
+    except Exception:
+        return None
+
+
+def _get_vps_assignees(task_id: int) -> list[dict]:
+    """Get list of users assigned to a VPS."""
+    try:
+        assignments = VpsAssignment.select().where(VpsAssignment.vps_task_id == task_id)
+        assignees = []
+        for assignment in assignments:
+            user = assignment.user
+            if user:
+                assignees.append(
+                    {
+                        "id": user.id,
+                        "username": user.username,
+                        "display_name": user.display_name,
+                    }
+                )
+        return assignees
+    except Exception:
+        return []
+
+
 @router.get("/vps")
-async def get_vps_list():
-    """Get list of ALL VPS tasks (matching old /vps endpoint)."""
+async def get_vps_list(
+    current_user: Annotated[User, Depends(require_viewer)],
+):
+    """
+    Get list of ALL VPS tasks.
+
+    Requires 'viewer' role or higher.
+    Users should use /vps/my endpoint to see their assigned VPS.
+    """
     logger.debug("Fetching all VPS list.")
 
     try:
@@ -359,6 +414,10 @@ async def get_vps_list():
             vps_list.append(
                 {
                     "task_id": str(task.task_id),
+                    "name": task.name,
+                    "owner_id": task.owner_id,
+                    "owner_username": _get_vps_owner_username(task.owner_id),
+                    "assignees": _get_vps_assignees(task.task_id),
                     "required_cores": task.required_cores,
                     "required_gpus": (
                         json.loads(task.required_gpus) if task.required_gpus else []
@@ -388,8 +447,14 @@ async def get_vps_list():
 
 
 @router.get("/vps/status")
-async def get_active_vps_status():
-    """Get list of active VPS instances."""
+async def get_active_vps_status(
+    current_user: Annotated[User, Depends(require_viewer)],
+):
+    """
+    Get list of active VPS instances.
+
+    Requires 'viewer' role or higher.
+    """
     logger.debug("Fetching active VPS list.")
 
     try:
@@ -408,6 +473,10 @@ async def get_active_vps_status():
             vps_list.append(
                 {
                     "task_id": str(task.task_id),
+                    "name": task.name,
+                    "owner_id": task.owner_id,
+                    "owner_username": _get_vps_owner_username(task.owner_id),
+                    "assignees": _get_vps_assignees(task.task_id),
                     "status": task.status,
                     "assigned_node": task.assigned_node,
                     "target_numa_node_id": task.target_numa_node_id,
@@ -437,9 +506,216 @@ async def get_active_vps_status():
         )
 
 
+@router.get("/vps/my")
+async def get_my_vps(
+    current_user: Annotated[User, Depends(require_user)],
+):
+    """
+    Get list of VPS instances assigned to the current user.
+
+    Requires 'user' role or higher.
+    """
+    logger.debug(f"Fetching VPS list for user {current_user.username}")
+
+    try:
+        # Get VPS task IDs assigned to this user
+        assigned_vps_ids = [
+            assignment.vps_task_id
+            for assignment in VpsAssignment.select().where(
+                VpsAssignment.user == current_user
+            )
+        ]
+
+        if not assigned_vps_ids:
+            return []
+
+        query = (
+            Task.select()
+            .where((Task.task_type == "vps") & (Task.task_id.in_(assigned_vps_ids)))
+            .order_by(Task.submitted_at.desc())
+        )
+
+        vps_list = []
+        for task in query:
+            vps_list.append(
+                {
+                    "task_id": str(task.task_id),
+                    "name": task.name,
+                    "owner_id": task.owner_id,
+                    "owner_username": _get_vps_owner_username(task.owner_id),
+                    "assignees": _get_vps_assignees(task.task_id),
+                    "required_cores": task.required_cores,
+                    "required_gpus": (
+                        json.loads(task.required_gpus) if task.required_gpus else []
+                    ),
+                    "required_memory_bytes": task.required_memory_bytes,
+                    "status": task.status,
+                    "assigned_node": task.assigned_node,
+                    "target_numa_node_id": task.target_numa_node_id,
+                    "container_name": task.container_name,
+                    "ssh_port": task.ssh_port,
+                    "submitted_at": task.submitted_at,
+                    "started_at": task.started_at,
+                }
+            )
+
+        return vps_list
+
+    except peewee.PeeweeException as e:
+        logger.error(f"Database error fetching user VPS: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Database error fetching VPS.",
+        )
+
+
+# =============================================================================
+# VPS Assignment Endpoints
+# =============================================================================
+
+
+@router.post("/vps/{task_id}/assign")
+async def assign_vps_to_users(
+    task_id: int,
+    user_ids: list[int],
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Assign VPS access to one or more users.
+
+    Requires 'operator' role or higher.
+
+    Args:
+        task_id: VPS task ID.
+        user_ids: List of user IDs to assign.
+    """
+    task = Task.get_or_none((Task.task_id == task_id) & (Task.task_type == "vps"))
+    if not task:
+        raise HTTPException(status_code=404, detail="VPS not found.")
+
+    from kohakuriver.db.auth import User as UserModel
+
+    # Validate all users exist
+    for user_id in user_ids:
+        user = UserModel.get_or_none(UserModel.id == user_id)
+        if not user:
+            raise HTTPException(
+                status_code=404,
+                detail=f"User {user_id} not found.",
+            )
+
+    # Create assignments (ignore duplicates)
+    created = 0
+    for user_id in user_ids:
+        try:
+            VpsAssignment.create(
+                vps_task_id=task_id,
+                user_id=user_id,
+            )
+            created += 1
+        except peewee.IntegrityError:
+            # Already assigned
+            pass
+
+    logger.info(
+        f"Operator '{current_user.username}' assigned VPS {task_id} to {created} users"
+    )
+
+    return {
+        "message": f"VPS {task_id} assigned to {created} user(s).",
+        "task_id": task_id,
+        "assigned_users": user_ids,
+    }
+
+
+@router.delete("/vps/{task_id}/assign/{user_id}")
+async def unassign_vps_from_user(
+    task_id: int,
+    user_id: int,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Remove VPS access from a user.
+
+    Requires 'operator' role or higher.
+
+    Args:
+        task_id: VPS task ID.
+        user_id: User ID to unassign.
+    """
+    task = Task.get_or_none((Task.task_id == task_id) & (Task.task_type == "vps"))
+    if not task:
+        raise HTTPException(status_code=404, detail="VPS not found.")
+
+    deleted = (
+        VpsAssignment.delete()
+        .where(
+            (VpsAssignment.vps_task_id == task_id) & (VpsAssignment.user_id == user_id)
+        )
+        .execute()
+    )
+
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User {user_id} is not assigned to VPS {task_id}.",
+        )
+
+    logger.info(
+        f"Operator '{current_user.username}' unassigned user {user_id} from VPS {task_id}"
+    )
+
+    return {
+        "message": f"User {user_id} unassigned from VPS {task_id}.",
+    }
+
+
+@router.get("/vps/{task_id}/assignments")
+async def get_vps_assignments(
+    task_id: int,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Get list of users assigned to a VPS.
+
+    Requires 'operator' role or higher.
+    """
+    task = Task.get_or_none((Task.task_id == task_id) & (Task.task_type == "vps"))
+    if not task:
+        raise HTTPException(status_code=404, detail="VPS not found.")
+
+    from kohakuriver.db.auth import User as UserModel
+
+    assignments = (
+        VpsAssignment.select(VpsAssignment, UserModel)
+        .join(UserModel)
+        .where(VpsAssignment.vps_task_id == task_id)
+    )
+
+    return {
+        "task_id": task_id,
+        "assignments": [
+            {
+                "user_id": a.user.id,
+                "username": a.user.username,
+                "display_name": a.user.display_name,
+                "assigned_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in assignments
+        ],
+    }
+
+
 @router.post("/vps/stop/{task_id}", status_code=202)
-async def stop_vps(task_id: int):
-    """Stop a VPS instance."""
+async def stop_vps(
+    task_id: int,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Stop a VPS instance.
+
+    Requires 'operator' role or higher.
+    """
     try:
         task_uuid = int(task_id)
     except ValueError:
@@ -487,11 +763,17 @@ async def stop_vps(task_id: int):
 
 
 @router.post("/vps/restart/{task_id}", status_code=202)
-async def restart_vps(task_id: int):
-    """Restart a VPS instance.
+async def restart_vps(
+    task_id: int,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Restart a VPS instance.
 
     Useful when nvidia docker breaks (nvml error) or container becomes unresponsive.
     This will stop the current container and create a new one with the same configuration.
+
+    Requires 'operator' role or higher.
     """
     try:
         task_uuid = int(task_id)

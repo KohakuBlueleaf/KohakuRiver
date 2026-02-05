@@ -115,6 +115,28 @@ class HostConfig:
     # MTU for overlay network (1500 - 50 bytes VXLAN overhead)
     OVERLAY_MTU: int = 1450
 
+    # -------------------------------------------------------------------------
+    # Authentication Configuration
+    # -------------------------------------------------------------------------
+
+    # Enable authentication (when False, all endpoints are public)
+    AUTH_ENABLED: bool = False
+
+    # Admin secret for bootstrap operations (creating first invitation)
+    # Set this via environment or config file, then use X-Admin-Token header
+    ADMIN_SECRET: str = ""
+
+    # Admin registration secret - use this as invitation token to register as admin
+    # Set this to allow first admin registration via web UI: /register?token=<secret>
+    # Leave empty to disable direct admin registration
+    ADMIN_REGISTER_SECRET: str = ""
+
+    # Session cookie expiration in hours (default: 30 days)
+    SESSION_EXPIRE_HOURS: int = 24 * 30
+
+    # Default invitation expiration in hours (default: 1 days)
+    INVITATION_EXPIRE_HOURS: int = 24
+
     # =========================================================================
     # Helper Methods
     # =========================================================================

@@ -12,12 +12,22 @@ import asyncio
 import datetime
 import json
 import os
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
+from kohakuriver.db.auth import User, UserRole
 from kohakuriver.db.node import Node
 from kohakuriver.db.task import Task
+from kohakuriver.host.auth.dependencies import (
+    OptionalUser,
+    get_current_user_optional,
+    require_operator,
+    require_role,
+    require_user,
+    require_viewer,
+)
 from kohakuriver.docker.naming import task_container_name, vps_container_name
 from kohakuriver.host.config import config
 from kohakuriver.host.services.node_manager import (
@@ -92,15 +102,21 @@ def allocate_ssh_port() -> int:
 
 
 @router.post("/submit", status_code=202)
-async def submit_task(req: TaskSubmission):
+async def submit_task(
+    req: TaskSubmission,
+    current_user: Annotated[User, Depends(require_user)],
+):
     """
     Submit a task for execution on the cluster.
 
     Handles both 'command' and 'vps' task types. Tasks can be submitted
     to specific nodes or auto-scheduled to suitable nodes.
 
+    Requires 'user' role or higher.
+
     Args:
         req: Task submission request containing command, resources, and targets.
+        current_user: Authenticated user (injected by dependency).
 
     Returns:
         Response with created task IDs and any failed targets.
@@ -118,6 +134,10 @@ async def submit_task(req: TaskSubmission):
 
     # Prepare task configuration
     task_config = _prepare_task_config(req)
+
+    # Store owner info for task creation
+    task_config["owner_id"] = current_user.id if current_user.id > 0 else None
+    task_config["owner_role"] = current_user.role
 
     # Determine targets
     targets, required_gpus = _resolve_targets(req)
@@ -339,6 +359,14 @@ async def _process_target(
     if task is None:
         return {"error": "Database error during task creation"}
 
+    # If task needs approval, don't dispatch yet - just return success
+    if task.status == "pending_approval":
+        return {
+            "task_id": str(task_id),
+            "node": node,
+            "runner_response": {"status": "pending_approval"},
+        }
+
     # Mark reservation as used before dispatching
     if reserved_ip and req.ip_reservation_token:
         from kohakuriver.host.app import get_ip_reservation_manager
@@ -463,11 +491,31 @@ def _create_task_record(
 
     ssh_port = allocate_ssh_port() if req.task_type == "vps" else None
 
+    # Determine approval status based on role
+    # USER role requires approval, OPERATOR/ADMIN auto-approved
+    owner_role = task_config.get("owner_role")
+    owner_id = task_config.get("owner_id")
+    needs_approval = owner_role == UserRole.USER
+
+    if needs_approval:
+        approval_status = "pending"
+        approved_by_id = None
+        initial_status = "pending_approval"
+    else:
+        # Operator/admin: auto-approved by self
+        approval_status = "approved" if owner_id else None
+        approved_by_id = owner_id  # Self-approved
+        initial_status = "assigning"
+
     try:
         return Task.create(
             task_id=task_id,
             task_type=req.task_type,
             batch_id=batch_id,
+            owner_id=owner_id,
+            approval_status=approval_status,
+            approved_by_id=approved_by_id,
+            approved_at=datetime.datetime.now() if approved_by_id else None,
             command=req.command,
             arguments=json.dumps(req.arguments) if req.arguments else "[]",
             env_vars=json.dumps(req.env_vars) if req.env_vars else "{}",
@@ -475,7 +523,7 @@ def _create_task_record(
             required_gpus=json.dumps(target_gpus),
             required_memory_bytes=req.required_memory_bytes,
             assigned_node=node.hostname,
-            status="assigning",
+            status=initial_status,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
             submitted_at=datetime.datetime.now(),
@@ -610,25 +658,51 @@ async def update_task_status_endpoint(update: TaskStatusUpdate):
 
 
 @router.get("/status/{task_id}", response_model=TaskResponse)
-async def get_task_status(task_id: int):
-    """Get status and details of a specific task."""
+async def get_task_status(
+    task_id: int,
+    current_user: Annotated[User, Depends(require_role(UserRole.ANONY))],
+):
+    """
+    Get status and details of a specific task.
+
+    Access rules:
+    - Anonymous users can see cluster summary but not task details
+    - Viewers can see all task details
+    - Users can see their own task details
+    - Operators/admins can see all task details
+    """
     logger.debug(f"Getting status for task {task_id}")
 
     task = Task.get_or_none(Task.task_id == task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
 
+    # Check access: viewers+ can see all, users can see own tasks
+    if current_user.role == UserRole.ANONY:
+        raise HTTPException(
+            status_code=403, detail="Anonymous users cannot view task details"
+        )
+
+    if current_user.role == UserRole.USER:
+        # Users can only see their own tasks
+        if task.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this task")
+
     return TaskResponse(**task.to_dict())
 
 
 @router.get("/tasks", response_model=list[TaskResponse])
 async def list_tasks(
+    current_user: Annotated[User, Depends(require_viewer)],
     status: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ):
     """
-    List command tasks (excludes VPS - use /vps endpoint for VPS).
+    List all command tasks (excludes VPS - use /vps endpoint for VPS).
+
+    Requires 'viewer' role or higher (viewers, operators, admins).
+    Users should use /tasks/my endpoint to see their own tasks.
 
     Args:
         status: Filter by task status.
@@ -654,15 +728,206 @@ async def list_tasks(
     return [TaskResponse(**task.to_dict()) for task in query]
 
 
+@router.get("/tasks/my", response_model=list[TaskResponse])
+async def list_my_tasks(
+    current_user: Annotated[User, Depends(require_user)],
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    List tasks owned by the current user.
+
+    Requires 'user' role or higher.
+
+    Args:
+        status: Filter by task status.
+        limit: Maximum number of tasks to return.
+        offset: Number of tasks to skip.
+
+    Returns:
+        List of task responses owned by current user.
+    """
+    logger.debug(f"Listing my tasks: user={current_user.username}, status={status}")
+
+    query = (
+        Task.select()
+        .where((Task.task_type == "command") & (Task.owner_id == current_user.id))
+        .order_by(Task.submitted_at.desc())
+    )
+
+    if status:
+        query = query.where(Task.status == status)
+
+    query = query.limit(limit).offset(offset)
+
+    return [TaskResponse(**task.to_dict()) for task in query]
+
+
+# =============================================================================
+# Task Approval
+# =============================================================================
+
+
+@router.get("/tasks/pending-approval", response_model=list[TaskResponse])
+async def list_pending_approval_tasks(
+    current_user: Annotated[User, Depends(require_operator)],
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    List tasks awaiting approval.
+
+    Requires 'operator' role or higher.
+
+    Returns:
+        List of tasks with status 'pending_approval'.
+    """
+    logger.debug(f"Listing pending approval tasks: limit={limit}, offset={offset}")
+
+    query = (
+        Task.select()
+        .where(Task.status == "pending_approval")
+        .order_by(Task.submitted_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+    return [TaskResponse(**task.to_dict()) for task in query]
+
+
+@router.post("/approve/{task_id}", status_code=200)
+async def approve_task(
+    task_id: int,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Approve a pending task for execution.
+
+    Requires 'operator' role or higher.
+    Changes task status from 'pending_approval' to 'assigning' and dispatches to runner.
+    """
+    logger.info(f"Approval requested for task {task_id} by {current_user.username}")
+
+    task = Task.get_or_none(Task.task_id == task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+    if task.status != "pending_approval":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task is not pending approval (status: {task.status})",
+        )
+
+    # Update task approval info
+    task.approval_status = "approved"
+    task.approved_by_id = current_user.id
+    task.approved_at = datetime.datetime.now()
+    task.status = "assigning"
+    task.save()
+
+    # Get assigned node and dispatch
+    if task.assigned_node:
+        node = Node.get_or_none(Node.hostname == task.assigned_node)
+        if node and node.status == "online":
+            # Dispatch to runner
+            if task.task_type == "vps":
+                result = await send_vps_task_to_runner(
+                    runner_url=node.url,
+                    task=task,
+                    container_name=task.container_name,
+                    ssh_public_key=task.command,
+                    reserved_ip=None,
+                    registry_image=task.registry_image,
+                )
+                if result is None:
+                    task.status = "failed"
+                    task.error_message = (
+                        "Failed to dispatch VPS to runner after approval"
+                    )
+                    task.completed_at = datetime.datetime.now()
+                    task.save()
+                    raise HTTPException(
+                        status_code=502, detail="Failed to dispatch VPS to runner"
+                    )
+            else:
+                # Dispatch command task
+                dispatch_coro = send_task_to_runner(
+                    runner_url=node.url,
+                    task=task,
+                    container_name=task.container_name,
+                    working_dir="/shared",
+                    reserved_ip=None,
+                    registry_image=task.registry_image,
+                )
+                bg_task = asyncio.create_task(dispatch_coro)
+                background_tasks.add(bg_task)
+                bg_task.add_done_callback(background_tasks.discard)
+        else:
+            # Node offline, set to pending for rescheduling
+            task.status = "pending"
+            task.assigned_node = None
+            task.save()
+            logger.warning(
+                f"Assigned node {task.assigned_node} offline, task {task_id} set to pending"
+            )
+
+    logger.info(f"Task {task_id} approved by {current_user.username}")
+    return {"message": "Task approved and dispatched", "task_id": str(task_id)}
+
+
+@router.post("/reject/{task_id}", status_code=200)
+async def reject_task(
+    task_id: int,
+    current_user: Annotated[User, Depends(require_operator)],
+    reason: str | None = Query(None, description="Rejection reason"),
+):
+    """
+    Reject a pending task.
+
+    Requires 'operator' role or higher.
+    Changes task status from 'pending_approval' to 'rejected'.
+    """
+    logger.info(f"Rejection requested for task {task_id} by {current_user.username}")
+
+    task = Task.get_or_none(Task.task_id == task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+    if task.status != "pending_approval":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task is not pending approval (status: {task.status})",
+        )
+
+    # Update task
+    task.status = "rejected"
+    task.approval_status = "rejected"
+    task.approved_by_id = current_user.id
+    task.approved_at = datetime.datetime.now()
+    task.rejection_reason = reason
+    task.save()
+
+    logger.info(f"Task {task_id} rejected by {current_user.username}: {reason}")
+    return {"message": "Task rejected", "task_id": str(task_id), "reason": reason}
+
+
 # =============================================================================
 # Task Control
 # =============================================================================
 
 
 @router.post("/kill/{task_id}", status_code=202)
-async def request_kill_task(task_id: int):
+async def request_kill_task(
+    task_id: int,
+    current_user: Annotated[User, Depends(require_user)],
+):
     """
     Request to kill a running task.
+
+    Access rules:
+    - Users can kill their own tasks
+    - Operators/admins can kill any task
 
     Marks the task as killed and sends kill signal to the runner
     if the task is currently running.
@@ -672,6 +937,11 @@ async def request_kill_task(task_id: int):
     task = Task.get_or_none(Task.task_id == task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
+
+    # Check access: users can kill own tasks, operators+ can kill any
+    if current_user.role == UserRole.USER:
+        if task.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this task")
 
     killable_states = ["pending", "assigning", "running", "paused"]
     if task.status not in killable_states:
@@ -704,9 +974,17 @@ async def request_kill_task(task_id: int):
 
 
 @router.post("/command/{task_id}/{command}")
-async def send_command_to_task(task_id: int, command: str):
+async def send_command_to_task(
+    task_id: int,
+    command: str,
+    current_user: Annotated[User, Depends(require_user)],
+):
     """
     Send a control command (pause/resume) to a task.
+
+    Access rules:
+    - Users can pause/resume their own tasks
+    - Operators/admins can pause/resume any task
 
     Args:
         task_id: Target task ID.
@@ -717,6 +995,11 @@ async def send_command_to_task(task_id: int, command: str):
     task = Task.get_or_none(Task.task_id == task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
+
+    # Check access: users can control own tasks, operators+ can control any
+    if current_user.role == UserRole.USER:
+        if task.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this task")
 
     if not task.assigned_node:
         raise HTTPException(status_code=400, detail="Task has no assigned node.")
@@ -759,9 +1042,17 @@ async def send_command_to_task(task_id: int, command: str):
 
 
 @router.get("/tasks/{task_id}/stdout", response_class=PlainTextResponse)
-async def get_task_stdout(task_id: int, lines: int | None = None):
+async def get_task_stdout(
+    task_id: int,
+    current_user: Annotated[User, Depends(require_role(UserRole.USER))],
+    lines: int | None = None,
+):
     """
     Get stdout output from a task.
+
+    Access rules:
+    - Users can view logs of their own tasks
+    - Viewers/operators/admins can view any task logs
 
     Args:
         task_id: Task ID.
@@ -770,13 +1061,21 @@ async def get_task_stdout(task_id: int, lines: int | None = None):
     Returns:
         Plain text stdout content.
     """
-    return await _get_task_output(task_id, "stdout", lines)
+    return await _get_task_output(task_id, "stdout", lines, current_user)
 
 
 @router.get("/tasks/{task_id}/stderr", response_class=PlainTextResponse)
-async def get_task_stderr(task_id: int, lines: int | None = None):
+async def get_task_stderr(
+    task_id: int,
+    current_user: Annotated[User, Depends(require_role(UserRole.USER))],
+    lines: int | None = None,
+):
     """
     Get stderr output from a task.
+
+    Access rules:
+    - Users can view logs of their own tasks
+    - Viewers/operators/admins can view any task logs
 
     Args:
         task_id: Task ID.
@@ -785,14 +1084,24 @@ async def get_task_stderr(task_id: int, lines: int | None = None):
     Returns:
         Plain text stderr content.
     """
-    return await _get_task_output(task_id, "stderr", lines)
+    return await _get_task_output(task_id, "stderr", lines, current_user)
 
 
-async def _get_task_output(task_id: int, output_type: str, lines: int | None) -> str:
+async def _get_task_output(
+    task_id: int,
+    output_type: str,
+    lines: int | None,
+    current_user: User,
+) -> str:
     """Helper to get task stdout or stderr."""
     task = Task.get_or_none(Task.task_id == task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
+
+    # Check access: users can view own task logs, viewers+ can view any
+    if current_user.role == UserRole.USER:
+        if task.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this task")
 
     if task.task_type == "vps":
         raise HTTPException(

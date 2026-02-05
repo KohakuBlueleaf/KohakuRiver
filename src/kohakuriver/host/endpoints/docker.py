@@ -12,15 +12,18 @@ import asyncio
 import os
 import re
 from collections import defaultdict
+from typing import Annotated
 
 import docker
 import psutil
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from kohakuriver.db.auth import User
 from kohakuriver.docker.client import DockerManager
 from kohakuriver.docker.naming import ENV_PREFIX
+from kohakuriver.host.auth.dependencies import require_operator
 from kohakuriver.host.config import config
 from kohakuriver.utils.logger import get_logger
 
@@ -119,11 +122,16 @@ def _do_list_host_containers() -> list[dict]:
 
 
 @router.get("/host/containers")
-async def list_host_containers():
-    """List HakuRiver environment containers on the Host.
+async def list_host_containers(
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    List HakuRiver environment containers on the Host.
 
     Returns only containers with the kohakuriver-env- prefix.
     These are containers created for environment setup.
+
+    Requires 'operator' role or higher.
     """
     try:
         result = await asyncio.to_thread(_do_list_host_containers)
@@ -190,11 +198,17 @@ def _do_create_host_container(image_name: str, container_name: str) -> dict:
 
 
 @router.post("/host/create")
-async def create_host_container(request: CreateContainerRequest):
-    """Create a persistent Docker container on the Host for environment setup.
+async def create_host_container(
+    request: CreateContainerRequest,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Create a persistent Docker container on the Host for environment setup.
 
     The container name will be prefixed with 'kohakuriver-env-' to identify it
     as a HakuRiver environment container.
+
+    Requires 'operator' role or higher.
     """
     # Apply prefix to container name
     container_name = _make_env_container_name(request.container_name)
@@ -241,8 +255,15 @@ def _do_delete_host_container(env_name: str) -> str:
 
 
 @router.post("/host/delete/{env_name}")
-async def delete_host_container(env_name: str):
-    """Delete a Docker environment container on the Host."""
+async def delete_host_container(
+    env_name: str,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Delete a Docker environment container on the Host.
+
+    Requires 'operator' role or higher.
+    """
     try:
         actual_name = await asyncio.to_thread(_do_delete_host_container, env_name)
         logger.info(f"Deleted environment container '{actual_name}'")
@@ -271,8 +292,15 @@ def _do_stop_host_container(env_name: str) -> str:
 
 
 @router.post("/host/stop/{env_name}")
-async def stop_host_container(env_name: str):
-    """Stop a running Docker environment container on the Host."""
+async def stop_host_container(
+    env_name: str,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Stop a running Docker environment container on the Host.
+
+    Requires 'operator' role or higher.
+    """
     try:
         actual_name = await asyncio.to_thread(_do_stop_host_container, env_name)
         logger.info(f"Stopped environment container '{actual_name}'")
@@ -301,8 +329,15 @@ def _do_start_host_container(env_name: str) -> str:
 
 
 @router.post("/host/start/{env_name}")
-async def start_host_container(env_name: str):
-    """Start a stopped Docker environment container on the Host."""
+async def start_host_container(
+    env_name: str,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Start a stopped Docker environment container on the Host.
+
+    Requires 'operator' role or higher.
+    """
     try:
         actual_name = await asyncio.to_thread(_do_start_host_container, env_name)
         logger.info(f"Started environment container '{actual_name}'")
@@ -321,8 +356,13 @@ async def start_host_container(env_name: str):
 
 
 @router.get("/list")
-async def list_tarballs():
-    """List available HakuRiver container tarballs in the shared directory.
+async def list_tarballs(
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    List available HakuRiver container tarballs in the shared directory.
+
+    Requires 'operator' role or higher.
 
     Returns:
         Object with container names as keys, each containing:
@@ -401,8 +441,15 @@ def _do_create_tarball(env_name: str, container_dir: str) -> tuple[str, str]:
 
 
 @router.post("/create_tar/{env_name}")
-async def create_tarball(env_name: str):
-    """Create a HakuRiver container tarball from a Host environment container."""
+async def create_tarball(
+    env_name: str,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Create a HakuRiver container tarball from a Host environment container.
+
+    Requires 'operator' role or higher.
+    """
     try:
         logger.info(f"Creating tarball from environment '{env_name}'")
 
@@ -444,8 +491,15 @@ def _do_find_tarball(name: str, container_dir: str) -> str | None:
 
 
 @router.get("/container/{name}")
-async def download_container(name: str):
-    """Download a container tarball."""
+async def download_container(
+    name: str,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Download a container tarball.
+
+    Requires 'operator' role or higher.
+    """
     container_dir = config.get_container_dir()
 
     tarball_path = await asyncio.to_thread(_do_find_tarball, name, container_dir)
@@ -485,8 +539,15 @@ def _do_delete_tarball(name: str, container_dir: str) -> list[str]:
 
 
 @router.delete("/container/{name}")
-async def delete_tarball(name: str):
-    """Delete a container tarball."""
+async def delete_tarball(
+    name: str,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Delete a container tarball.
+
+    Requires 'operator' role or higher.
+    """
     container_dir = config.get_container_dir()
 
     try:
@@ -580,13 +641,19 @@ def _check_migrate_preconditions(old_name: str, new_name: str) -> None:
 
 
 @router.post("/host/migrate/{old_name}")
-async def migrate_container(old_name: str):
-    """Migrate a legacy container to the new kohakuriver-env- naming convention.
+async def migrate_container(
+    old_name: str,
+    current_user: Annotated[User, Depends(require_operator)],
+):
+    """
+    Migrate a legacy container to the new kohakuriver-env- naming convention.
 
     Renames container from '{old_name}' to 'kohakuriver-env-{old_name}'.
     This allows users to migrate existing environment containers to the new format.
 
     Note: This operation can take several minutes for large containers (10-50GB).
+
+    Requires 'operator' role or higher.
     """
     try:
         # Check if already using new naming (no Docker call needed)

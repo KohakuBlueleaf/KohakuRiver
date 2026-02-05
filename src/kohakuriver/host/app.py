@@ -23,6 +23,7 @@ from kohakuriver.docker.naming import ENV_PREFIX
 from kohakuriver.host.background.health import collate_health_data
 from kohakuriver.host.background.runner_monitor import check_dead_runners
 from kohakuriver.host.config import config
+from kohakuriver.host.auth.routes import router as auth_router
 from kohakuriver.host.endpoints import (
     container_filesystem,
     docker,
@@ -59,6 +60,7 @@ app = FastAPI(
 )
 
 # Include API routers (all under /api prefix)
+app.include_router(auth_router, prefix="/api", tags=["Auth"])
 app.include_router(tasks.router, prefix="/api", tags=["Tasks"])
 app.include_router(nodes.router, prefix="/api", tags=["Nodes"])
 app.include_router(vps.router, prefix="/api", tags=["VPS"])
