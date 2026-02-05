@@ -20,6 +20,7 @@ import typer
 
 from kohakuriver.cli import config as cli_config
 from kohakuriver.cli.commands import (
+    auth,
     config_cmd,
     connect,
     docker,
@@ -41,6 +42,7 @@ app = typer.Typer(
 )
 
 # Register command groups
+app.add_typer(auth.app, name="auth", help="Authentication")
 app.add_typer(task.app, name="task", help="Task management")
 app.add_typer(vps.app, name="vps", help="VPS management")
 app.add_typer(node.app, name="node", help="Node management")

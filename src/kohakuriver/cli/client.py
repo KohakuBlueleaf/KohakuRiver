@@ -13,6 +13,24 @@ from kohakuriver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+# =============================================================================
+# Authentication Header
+# =============================================================================
+
+
+def _get_auth_headers() -> dict[str, str]:
+    """Get authorization headers if logged in."""
+    try:
+        from kohakuriver.cli.commands.auth import get_stored_token
+
+        token = get_stored_token()
+        if token:
+            return {"Authorization": f"Bearer {token}"}
+    except ImportError:
+        pass
+    return {}
+
+
 class APIError(Exception):
     """API request error with status code and detail."""
 
@@ -27,6 +45,17 @@ class APIError(Exception):
 def _get_host_url() -> str:
     """Get the host API URL from config."""
     return f"http://{cli_config.HOST_ADDRESS}:{cli_config.HOST_PORT}/api"
+
+
+def _make_request(
+    method: str,
+    url: str,
+    **kwargs,
+) -> httpx.Response:
+    """Make an HTTP request with auth headers."""
+    headers = kwargs.pop("headers", {})
+    headers.update(_get_auth_headers())
+    return getattr(httpx, method)(url, headers=headers, **kwargs)
 
 
 def _handle_http_error(e: httpx.HTTPStatusError, context: str = "request") -> None:
@@ -53,7 +82,7 @@ def get_nodes() -> list[dict]:
     """Get all registered nodes."""
     url = f"{_get_host_url()}/nodes"
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = _make_request("get", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -71,7 +100,7 @@ def get_node_health(hostname: str | None = None) -> dict | list[dict]:
         url += f"?hostname={hostname}"
 
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = _make_request("get", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -116,7 +145,7 @@ def get_tasks(
         params["limit"] = 10000
 
     try:
-        response = httpx.get(url, params=params, timeout=10.0)
+        response = _make_request("get", url, params=params, timeout=10.0)
         response.raise_for_status()
         result = response.json()
         # Handle both list and paginated response
@@ -136,7 +165,7 @@ def get_task_status(task_id: str) -> dict | None:
     url = f"{_get_host_url()}/status/{task_id}"
 
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = _make_request("get", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -202,7 +231,7 @@ def submit_task(
     payload = {k: v for k, v in payload.items() if v is not None}
 
     try:
-        response = httpx.post(url, json=payload, timeout=30.0)
+        response = _make_request("post", url, json=payload, timeout=30.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -218,7 +247,7 @@ def kill_task(task_id: str) -> dict:
     url = f"{_get_host_url()}/kill/{task_id}"
 
     try:
-        response = httpx.post(url, timeout=10.0)
+        response = _make_request("post", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -234,7 +263,7 @@ def send_task_command(task_id: str, action: str) -> dict:
     url = f"{_get_host_url()}/command/{task_id}/{action}"
 
     try:
-        response = httpx.post(url, timeout=10.0)
+        response = _make_request("post", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -253,7 +282,7 @@ def get_task_stdout(task_id: str, lines: int = 1000) -> str:
     url = f"{_get_host_url()}/tasks/{task_id}/stdout"
 
     try:
-        response = httpx.get(url, params={"lines": lines}, timeout=10.0)
+        response = _make_request("get", url, params={"lines": lines}, timeout=10.0)
         response.raise_for_status()
         # Backend returns plain text (PlainTextResponse)
         return response.text
@@ -278,7 +307,7 @@ def get_task_stderr(task_id: str, lines: int = 1000) -> str:
     url = f"{_get_host_url()}/tasks/{task_id}/stderr"
 
     try:
-        response = httpx.get(url, params={"lines": lines}, timeout=10.0)
+        response = _make_request("get", url, params={"lines": lines}, timeout=10.0)
         response.raise_for_status()
         # Backend returns plain text (PlainTextResponse)
         return response.text
@@ -359,7 +388,7 @@ def create_vps(
 
     try:
         # No timeout - VPS creation can take a long time
-        response = httpx.post(url, json=payload, timeout=None)
+        response = _make_request("post", url, json=payload, timeout=None)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -378,7 +407,7 @@ def get_vps_list(active_only: bool = False) -> list[dict]:
         url = f"{_get_host_url()}/vps"
 
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = _make_request("get", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -394,7 +423,7 @@ def stop_vps(task_id: str) -> dict:
     url = f"{_get_host_url()}/vps/stop/{task_id}"
 
     try:
-        response = httpx.post(url, timeout=10.0)
+        response = _make_request("post", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -414,7 +443,7 @@ def restart_vps(task_id: str) -> dict:
 
     try:
         # No timeout - restart can take a while
-        response = httpx.post(url, timeout=None)
+        response = _make_request("post", url, timeout=None)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -435,7 +464,7 @@ def get_docker_images() -> list[dict]:
     url = f"{_get_host_url()}/docker/images"
 
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = _make_request("get", url, timeout=10.0)
         response.raise_for_status()
         result = response.json()
         if isinstance(result, list):
@@ -459,7 +488,7 @@ def create_docker_container(image_name: str, container_name: str) -> dict:
     }
 
     try:
-        response = httpx.post(url, json=payload, timeout=180.0)
+        response = _make_request("post", url, json=payload, timeout=180.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -480,7 +509,7 @@ def commit_docker_container(source_container: str, kohakuriver_name: str) -> dic
     }
 
     try:
-        response = httpx.post(url, json=payload, timeout=120.0)
+        response = _make_request("post", url, json=payload, timeout=120.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -496,7 +525,7 @@ def delete_docker_image(image_name: str) -> dict:
     url = f"{_get_host_url()}/docker/images/{image_name}"
 
     try:
-        response = httpx.delete(url, timeout=30.0)
+        response = _make_request("delete", url, timeout=30.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -517,7 +546,7 @@ def get_host_containers() -> list[dict]:
     url = f"{_get_host_url()}/docker/host/containers"
 
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = _make_request("get", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -533,7 +562,7 @@ def delete_host_container(container_name: str) -> dict:
     url = f"{_get_host_url()}/docker/host/delete/{container_name}"
 
     try:
-        response = httpx.post(url, timeout=30.0)
+        response = _make_request("post", url, timeout=30.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -549,7 +578,7 @@ def stop_host_container(container_name: str) -> dict:
     url = f"{_get_host_url()}/docker/host/stop/{container_name}"
 
     try:
-        response = httpx.post(url, timeout=30.0)
+        response = _make_request("post", url, timeout=30.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -565,7 +594,7 @@ def start_host_container(container_name: str) -> dict:
     url = f"{_get_host_url()}/docker/host/start/{container_name}"
 
     try:
-        response = httpx.post(url, timeout=30.0)
+        response = _make_request("post", url, timeout=30.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -586,7 +615,7 @@ def get_tarballs() -> dict:
     url = f"{_get_host_url()}/docker/list"
 
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = _make_request("get", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -606,7 +635,7 @@ def create_tarball(container_name: str) -> dict:
 
     try:
         # No timeout - large containers can take very long
-        response = httpx.post(url, timeout=None)
+        response = _make_request("post", url, timeout=None)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -622,7 +651,7 @@ def delete_tarball(name: str) -> dict:
     url = f"{_get_host_url()}/docker/container/{name}"
 
     try:
-        response = httpx.delete(url, timeout=30.0)
+        response = _make_request("delete", url, timeout=30.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -642,7 +671,7 @@ def migrate_container(old_name: str) -> dict:
 
     try:
         # No timeout - large containers can take very long
-        response = httpx.post(url, timeout=None)
+        response = _make_request("post", url, timeout=None)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -692,7 +721,7 @@ def get_overlay_status() -> dict:
     url = f"{_get_host_url()}/overlay/status"
 
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = _make_request("get", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -708,7 +737,7 @@ def release_overlay(runner_name: str) -> dict:
     url = f"{_get_host_url()}/overlay/release/{runner_name}"
 
     try:
-        response = httpx.post(url, timeout=10.0)
+        response = _make_request("post", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -724,7 +753,7 @@ def cleanup_overlay() -> dict:
     url = f"{_get_host_url()}/overlay/cleanup"
 
     try:
-        response = httpx.post(url, timeout=30.0)
+        response = _make_request("post", url, timeout=30.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -748,7 +777,7 @@ def get_available_ips(runner: str | None = None, limit: int = 100) -> dict:
         params["runner"] = runner
 
     try:
-        response = httpx.get(url, params=params, timeout=10.0)
+        response = _make_request("get", url, params=params, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -764,7 +793,7 @@ def get_runner_ip_info(runner_name: str) -> dict:
     url = f"{_get_host_url()}/overlay/ip/info/{runner_name}"
 
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = _make_request("get", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -783,7 +812,7 @@ def reserve_ip(runner: str, ip: str | None = None, ttl: int = 300) -> dict:
         params["ip"] = ip
 
     try:
-        response = httpx.post(url, params=params, timeout=10.0)
+        response = _make_request("post", url, params=params, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -800,7 +829,7 @@ def release_ip_reservation(token: str) -> dict:
     params = {"token": token}
 
     try:
-        response = httpx.post(url, params=params, timeout=10.0)
+        response = _make_request("post", url, params=params, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -819,7 +848,7 @@ def list_ip_reservations(runner: str | None = None) -> dict:
         params["runner"] = runner
 
     try:
-        response = httpx.get(url, params=params, timeout=10.0)
+        response = _make_request("get", url, params=params, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -838,7 +867,7 @@ def validate_ip_token(token: str, runner: str | None = None) -> dict:
         params["runner"] = runner
 
     try:
-        response = httpx.post(url, params=params, timeout=10.0)
+        response = _make_request("post", url, params=params, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
@@ -854,7 +883,7 @@ def get_ip_reservation_stats() -> dict:
     url = f"{_get_host_url()}/overlay/ip/stats"
 
     try:
-        response = httpx.get(url, timeout=10.0)
+        response = _make_request("get", url, timeout=10.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
