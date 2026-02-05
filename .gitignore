@@ -2,6 +2,7 @@
 .DS_store
 CLAUDE.md
 test/
+tmp/
 .vscode
 .claude
 .codex
