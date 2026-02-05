@@ -18,6 +18,7 @@ import { useNotification } from '@/composables/useNotification'
 import { usePolling } from '@/composables/usePolling'
 
 import { formatBytes, formatRelativeTime } from '@/utils/format'
+import { generateRandomName } from '@/utils/randomName'
 
 import IdeContent from '@/components/ide/IdeContent.vue'
 import IdeOverlay from '@/components/ide/IdeOverlay.vue'
@@ -44,6 +45,7 @@ const selectedVps = ref(null)
 
 // Create form
 const createForm = ref({
+  name: '',
   required_cores: 0,
   required_memory_bytes: null,
   imageSource: 'tarball', // 'tarball' or 'registry'
@@ -189,6 +191,7 @@ async function handleCreate() {
     }
 
     const data = {
+      name: createForm.value.name || null,
       required_cores: createForm.value.required_cores,
       required_memory_bytes: createForm.value.required_memory_bytes || null,
       container_name: createForm.value.imageSource === 'tarball' ? createForm.value.container_name || null : null,
@@ -219,6 +222,7 @@ async function handleCreate() {
 
 function resetCreateForm() {
   createForm.value = {
+    name: '',
     required_cores: 0,
     required_memory_bytes: null,
     imageSource: 'tarball',
@@ -403,16 +407,16 @@ function copyVpsId(taskId) {
           v-for="vps in vpsStore.vpsList"
           :key="vps.task_id"
           class="card flex flex-col">
-          <!-- Header with full ID -->
+          <!-- Header with name and ID -->
           <div class="flex items-start justify-between gap-2 mb-4">
             <div class="flex items-center gap-2 min-w-0 flex-1">
               <span class="i-carbon-virtual-machine text-2xl text-blue-500 flex-shrink-0"></span>
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
                   <h3
-                    class="font-mono text-sm font-semibold truncate"
-                    :title="vps.task_id">
-                    {{ vps.task_id }}
+                    class="font-semibold truncate"
+                    :title="vps.name || vps.task_id">
+                    {{ vps.name || `VPS #${vps.task_id.substring(0, 8)}` }}
                   </h3>
                   <el-tooltip
                     content="Copy VPS ID"
@@ -424,7 +428,7 @@ function copyVpsId(taskId) {
                     </button>
                   </el-tooltip>
                 </div>
-                <p class="text-xs text-muted truncate">{{ getNodeHostname(vps.assigned_node) }}</p>
+                <p class="text-xs text-muted font-mono truncate">{{ vps.task_id }}</p>
               </div>
             </div>
             <StatusBadge
@@ -434,6 +438,10 @@ function copyVpsId(taskId) {
 
           <!-- Info -->
           <div class="space-y-2 text-sm flex-1">
+            <div class="flex justify-between">
+              <span class="text-muted">Node</span>
+              <span>{{ getNodeHostname(vps.assigned_node) }}</span>
+            </div>
             <div class="flex justify-between">
               <span class="text-muted">CPU Cores</span>
               <span>{{ vps.required_cores }}</span>
@@ -458,6 +466,22 @@ function copyVpsId(taskId) {
                 class="truncate"
                 :title="vps.container_name">
                 {{ vps.container_name }}
+              </span>
+            </div>
+            <div
+              v-if="vps.owner_username"
+              class="flex justify-between">
+              <span class="text-muted">Creator</span>
+              <span>{{ vps.owner_username }}</span>
+            </div>
+            <div
+              v-if="vps.assignees && vps.assignees.length > 0"
+              class="flex justify-between gap-2">
+              <span class="text-muted flex-shrink-0">Assignees</span>
+              <span
+                class="truncate text-right"
+                :title="vps.assignees.map((a) => a.username).join(', ')">
+                {{ vps.assignees.map((a) => a.username).join(', ') }}
               </span>
             </div>
             <div class="flex justify-between">
@@ -659,6 +683,19 @@ function copyVpsId(taskId) {
       <el-form
         :model="createForm"
         label-position="top">
+        <el-form-item label="Name">
+          <div class="flex gap-2 w-full">
+            <el-input
+              v-model="createForm.name"
+              placeholder="Optional friendly name for this VPS"
+              class="flex-1" />
+            <el-button @click="createForm.name = generateRandomName()">
+              <span class="i-carbon-shuffle mr-1"></span>
+              Random
+            </el-button>
+          </div>
+        </el-form-item>
+
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <el-form-item label="CPU Cores (0 = no limit)">
             <el-input-number

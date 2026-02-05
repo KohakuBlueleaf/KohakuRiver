@@ -1,19 +1,39 @@
 <script setup>
 import { useUIStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
 const uiStore = useUIStore()
+const authStore = useAuthStore()
 
-const menuItems = [
-  { path: '/', icon: 'i-carbon-dashboard', label: 'Dashboard' },
-  { path: '/nodes', icon: 'i-carbon-bare-metal-server', label: 'Nodes' },
-  { path: '/gpu', icon: 'i-carbon-chip', label: 'GPUs' },
-  { path: '/tasks', icon: 'i-carbon-task', label: 'Tasks' },
-  { path: '/vps', icon: 'i-carbon-virtual-machine', label: 'VPS' },
-  { path: '/docker', icon: 'i-carbon-container-software', label: 'Docker' },
-  { path: '/stats', icon: 'i-carbon-chart-line', label: 'Statistics' },
+// Menu items with role requirements
+// role: minimum role required to see this item
+const allMenuItems = [
+  { path: '/', icon: 'i-carbon-dashboard', label: 'Dashboard', role: 'anony' },
+  { path: '/nodes', icon: 'i-carbon-bare-metal-server', label: 'Nodes', role: 'viewer' },
+  { path: '/gpu', icon: 'i-carbon-chip', label: 'GPUs', role: 'viewer' },
+  { path: '/tasks', icon: 'i-carbon-task', label: 'Tasks', role: 'viewer' },
+  { path: '/vps', icon: 'i-carbon-virtual-machine', label: 'VPS', role: 'viewer' },
+  { path: '/docker', icon: 'i-carbon-container-software', label: 'Docker', role: 'operator' },
+  { path: '/stats', icon: 'i-carbon-chart-line', label: 'Statistics', role: 'viewer' },
+  { path: '/admin', icon: 'i-carbon-user-admin', label: 'Admin', role: 'operator' },
 ]
+
+const menuItems = computed(() => {
+  return allMenuItems.filter((item) => authStore.hasRole(item.role))
+})
+
+async function handleLogout() {
+  await authStore.logout()
+  router.push('/login')
+}
+
+function handleLogin() {
+  router.push('/login')
+}
+
+const isAnonymous = computed(() => authStore.role === 'anony')
 
 const themeOptions = [
   { value: 'light', icon: 'i-carbon-sun' },
@@ -120,6 +140,38 @@ function refresh() {
 
     <!-- Footer -->
     <div class="p-3 border-t border-gray-800 space-y-2">
+      <!-- User info (when auth enabled) -->
+      <div
+        v-if="authStore.authEnabled"
+        class="px-2 py-2 text-sm">
+        <!-- Show user info only if logged in (not anonymous) -->
+        <div
+          v-if="!isAnonymous && (!uiStore.sidebarCollapsed || uiStore.isMobile)"
+          class="flex items-center gap-2 text-gray-300 mb-2">
+          <span class="i-carbon-user text-lg"></span>
+          <span class="truncate">{{ authStore.displayName }}</span>
+          <span class="text-xs text-gray-500">({{ authStore.role }})</span>
+        </div>
+        <!-- Login button for anonymous -->
+        <button
+          v-if="isAnonymous"
+          @click="handleLogin"
+          class="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg text-gray-400 hover:bg-gray-700 hover:text-white transition-colors text-sm"
+          :title="uiStore.sidebarCollapsed && !uiStore.isMobile ? 'Login' : ''">
+          <span class="i-carbon-login text-lg"></span>
+          <span v-if="!uiStore.sidebarCollapsed || uiStore.isMobile">Login</span>
+        </button>
+        <!-- Logout button for authenticated users -->
+        <button
+          v-else
+          @click="handleLogout"
+          class="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg text-gray-400 hover:bg-gray-700 hover:text-white transition-colors text-sm"
+          :title="uiStore.sidebarCollapsed && !uiStore.isMobile ? 'Logout' : ''">
+          <span class="i-carbon-logout text-lg"></span>
+          <span v-if="!uiStore.sidebarCollapsed || uiStore.isMobile">Logout</span>
+        </button>
+      </div>
+
       <!-- Action buttons row -->
       <div class="flex items-center justify-center gap-2">
         <!-- Theme toggle -->

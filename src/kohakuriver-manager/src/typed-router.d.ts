@@ -30,6 +30,13 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    '/admin/': RouteRecordInfo<
+      '/admin/',
+      '/admin',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/docker/': RouteRecordInfo<
       '/docker/',
       '/docker',
@@ -44,9 +51,23 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    '/login/': RouteRecordInfo<
+      '/login/',
+      '/login',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/nodes/': RouteRecordInfo<
       '/nodes/',
       '/nodes',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
+    '/register/': RouteRecordInfo<
+      '/register/',
+      '/register',
       Record<never, never>,
       Record<never, never>,
       | never
@@ -91,6 +112,12 @@ declare module 'vue-router/auto-routes' {
       views:
         | never
     }
+    'src/pages/admin/index.vue': {
+      routes:
+        | '/admin/'
+      views:
+        | never
+    }
     'src/pages/docker/index.vue': {
       routes:
         | '/docker/'
@@ -103,9 +130,21 @@ declare module 'vue-router/auto-routes' {
       views:
         | never
     }
+    'src/pages/login/index.vue': {
+      routes:
+        | '/login/'
+      views:
+        | never
+    }
     'src/pages/nodes/index.vue': {
       routes:
         | '/nodes/'
+      views:
+        | never
+    }
+    'src/pages/register/index.vue': {
+      routes:
+        | '/register/'
       views:
         | never
     }

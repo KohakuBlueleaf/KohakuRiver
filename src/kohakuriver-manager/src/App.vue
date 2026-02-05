@@ -3,7 +3,13 @@ import { useUIStore } from '@/stores/ui'
 import TheSidebar from '@/components/layout/TheSidebar.vue'
 import GlobalLoading from '@/components/common/GlobalLoading.vue'
 
+const route = useRoute()
 const uiStore = useUIStore()
+
+// Check if current route is an auth page (no sidebar layout)
+const isAuthPage = computed(() => {
+  return ['/login', '/register'].includes(route.path)
+})
 
 // Initialize UI store on mount
 onMounted(() => {
@@ -12,7 +18,22 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="app-root h-screen overflow-hidden bg-app-page">
+  <!-- Auth pages (login/register) - full page without sidebar -->
+  <div
+    v-if="isAuthPage"
+    class="h-screen overflow-auto bg-app-page">
+    <router-view v-slot="{ Component, route }">
+      <component
+        :is="Component"
+        :key="route.path" />
+    </router-view>
+    <GlobalLoading />
+  </div>
+
+  <!-- Normal layout with sidebar -->
+  <div
+    v-else
+    class="app-root h-screen overflow-hidden bg-app-page">
     <!-- Sidebar -->
     <TheSidebar />
 

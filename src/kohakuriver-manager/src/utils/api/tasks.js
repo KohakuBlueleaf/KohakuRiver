@@ -70,6 +70,31 @@ export const tasksAPI = {
   delete(taskId) {
     return apiClient.delete(`/tasks/${taskId}`)
   },
+
+  /**
+   * List tasks pending approval (operator+)
+   */
+  listPendingApproval(params = {}) {
+    return apiClient.get('/tasks/pending-approval', { params })
+  },
+
+  /**
+   * Approve a pending task (operator+)
+   * @param {string|number} taskId
+   */
+  approve(taskId) {
+    return apiClient.post(`/approve/${taskId}`)
+  },
+
+  /**
+   * Reject a pending task (operator+)
+   * @param {string|number} taskId
+   * @param {string} reason - Optional rejection reason
+   */
+  reject(taskId, reason = null) {
+    const params = reason ? { reason } : {}
+    return apiClient.post(`/reject/${taskId}`, null, { params })
+  },
 }
 
 export default tasksAPI

@@ -729,7 +729,9 @@ function getNodeName(node) {
               <th class="table-cell">Status</th>
               <th class="table-cell">Node</th>
               <th class="table-cell hidden sm:table-cell">Resources</th>
-              <th class="table-cell hidden md:table-cell">Submitted</th>
+              <th class="table-cell">Creator</th>
+              <th class="table-cell">Approver</th>
+              <th class="table-cell hidden lg:table-cell">Submitted</th>
               <th class="table-cell">Actions</th>
             </tr>
           </thead>
@@ -767,7 +769,28 @@ function getNodeName(node) {
               <td class="table-cell text-sm hidden sm:table-cell">
                 <div>{{ task.required_cores }} cores</div>
               </td>
-              <td class="table-cell text-muted text-sm hidden md:table-cell">
+              <td class="table-cell text-sm">
+                <span v-if="task.owner_username">{{ task.owner_username }}</span>
+                <span
+                  v-else
+                  class="text-muted">
+                  -
+                </span>
+              </td>
+              <td class="table-cell text-sm">
+                <span v-if="task.approved_by_username">{{ task.approved_by_username }}</span>
+                <span
+                  v-else-if="task.status === 'pending_approval'"
+                  class="text-yellow-500">
+                  Pending
+                </span>
+                <span
+                  v-else
+                  class="text-muted">
+                  -
+                </span>
+              </td>
+              <td class="table-cell text-muted text-sm hidden lg:table-cell">
                 {{ formatRelativeTime(task.submitted_at) }}
               </td>
               <td
@@ -1211,7 +1234,7 @@ function getNodeName(node) {
               </div>
 
               <!-- Basic Info Grid -->
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 <div class="p-4 bg-app-surface rounded-lg">
                   <div class="text-sm text-muted mb-1">Task ID</div>
                   <div class="font-mono text-sm break-all">{{ selectedTask.task_id }}</div>
@@ -1227,6 +1250,20 @@ function getNodeName(node) {
                 <div class="p-4 bg-app-surface rounded-lg">
                   <div class="text-sm text-muted mb-1">Container</div>
                   <div>{{ selectedTask.container_name || '-' }}</div>
+                </div>
+                <div class="p-4 bg-app-surface rounded-lg">
+                  <div class="text-sm text-muted mb-1">Creator</div>
+                  <div>{{ selectedTask.owner_username || '-' }}</div>
+                </div>
+                <div class="p-4 bg-app-surface rounded-lg">
+                  <div class="text-sm text-muted mb-1">Approver</div>
+                  <div v-if="selectedTask.approved_by_username">{{ selectedTask.approved_by_username }}</div>
+                  <div
+                    v-else-if="selectedTask.status === 'pending_approval'"
+                    class="text-yellow-500">
+                    Pending
+                  </div>
+                  <div v-else>-</div>
                 </div>
               </div>
 

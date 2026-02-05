@@ -14,6 +14,7 @@
 import { useClusterStore } from '@/stores/cluster'
 import { useTasksStore } from '@/stores/tasks'
 import { useVpsStore } from '@/stores/vps'
+import { useAuthStore } from '@/stores/auth'
 
 import { usePolling } from '@/composables/usePolling'
 
@@ -22,15 +23,19 @@ import { formatBytes, formatPercent } from '@/utils/format'
 const clusterStore = useClusterStore()
 const tasksStore = useTasksStore()
 const vpsStore = useVpsStore()
+const authStore = useAuthStore()
+
+// Check if user has viewer role (can see tasks/VPS)
+const canViewTasks = computed(() => authStore.hasRole('viewer'))
 
 // Polling for real-time updates
 const { start: startPolling } = usePolling(async () => {
-  await Promise.all([
-    clusterStore.fetchNodes(),
-    clusterStore.fetchHealth(),
-    tasksStore.fetchTasks({ limit: 10 }),
-    vpsStore.fetchVpsList(true),
-  ])
+  // Always fetch nodes and health (accessible to anony)
+  await Promise.all([clusterStore.fetchNodes(), clusterStore.fetchHealth()])
+  // Only fetch tasks/VPS if user has viewer role
+  if (canViewTasks.value) {
+    await Promise.all([tasksStore.fetchTasks({ limit: 10 }), vpsStore.fetchVpsList(true)])
+  }
 }, 5000)
 
 onMounted(() => {
