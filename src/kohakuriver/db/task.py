@@ -61,6 +61,28 @@ class Task(BaseModel):
     target_numa_node_id = peewee.IntegerField(null=True)
 
     # -------------------------------------------------------------------------
+    # Naming (optional user-friendly name)
+    # -------------------------------------------------------------------------
+
+    name = peewee.CharField(null=True)  # Optional user-defined name
+
+    # -------------------------------------------------------------------------
+    # Ownership (for auth)
+    # -------------------------------------------------------------------------
+
+    owner_id = peewee.IntegerField(null=True, index=True)  # References User.id
+
+    # -------------------------------------------------------------------------
+    # Approval (for user role tasks)
+    # -------------------------------------------------------------------------
+
+    # null = auto-approved (operator/admin), 'pending', 'approved', 'rejected'
+    approval_status = peewee.CharField(null=True, index=True)
+    approved_by_id = peewee.IntegerField(null=True)  # References User.id
+    approved_at = peewee.DateTimeField(null=True)
+    rejection_reason = peewee.TextField(null=True)
+
+    # -------------------------------------------------------------------------
     # Assignment and Status
     # -------------------------------------------------------------------------
 
@@ -243,12 +265,20 @@ class Task(BaseModel):
     # Serialization
     # =========================================================================
 
-    def to_dict(self) -> dict:
+    def to_dict(self, include_owner: bool = True) -> dict:
         """Convert task to dictionary for API responses."""
-        return {
+        result = {
             "task_id": self.task_id,
             "task_type": self.task_type,
             "batch_id": self.batch_id,
+            "name": self.name,
+            "owner_id": self.owner_id,
+            "owner_username": None,
+            "approval_status": self.approval_status,
+            "approved_by_id": self.approved_by_id,
+            "approved_by_username": None,
+            "approved_at": (self.approved_at.isoformat() if self.approved_at else None),
+            "rejection_reason": self.rejection_reason,
             "command": self.command,
             "arguments": self.get_arguments(),
             "env_vars": self.get_env_vars(),
@@ -275,3 +305,29 @@ class Task(BaseModel):
                 self.completed_at.isoformat() if self.completed_at else None
             ),
         }
+
+        # Fetch owner and approver usernames
+        if include_owner:
+            try:
+                from kohakuriver.db.auth import User
+
+                if self.owner_id:
+                    user = User.get_or_none(User.id == self.owner_id)
+                    if user:
+                        result["owner_username"] = user.username
+
+                if self.approved_by_id:
+                    approver = User.get_or_none(User.id == self.approved_by_id)
+                    if approver:
+                        result["approved_by_username"] = approver.username
+            except ImportError:
+                pass  # Auth module not available (auth disabled)
+            except Exception as e:
+                # Log other errors but don't fail the whole response
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    f"Error fetching user info for task {self.task_id}: {e}"
+                )
+
+        return result

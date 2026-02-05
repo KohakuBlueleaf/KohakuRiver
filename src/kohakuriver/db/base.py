@@ -62,13 +62,14 @@ def initialize_database(db_path: str) -> None:
     # Import models here to avoid circular imports
     from kohakuriver.db.node import Node
     from kohakuriver.db.task import Task
+    from kohakuriver.db.auth import AUTH_TABLES
 
     logger.debug(f"Initializing database at: {db_path}")
 
     try:
         db.init(db_path)
         db.connect()
-        db.create_tables([Node, Task], safe=True)
+        db.create_tables([Node, Task] + AUTH_TABLES, safe=True)
 
         # Run migrations for new columns
         _run_migrations(Task)
@@ -106,6 +107,40 @@ def _run_migrations(Task) -> None:
     if "registry_image" not in existing_columns:
         migrations.append(
             migrator.add_column("tasks", "registry_image", peewee.CharField(null=True))
+        )
+
+    if "owner_id" not in existing_columns:
+        migrations.append(
+            migrator.add_column("tasks", "owner_id", peewee.IntegerField(null=True))
+        )
+
+    if "name" not in existing_columns:
+        migrations.append(
+            migrator.add_column("tasks", "name", peewee.CharField(null=True))
+        )
+
+    if "approval_status" not in existing_columns:
+        migrations.append(
+            migrator.add_column("tasks", "approval_status", peewee.CharField(null=True))
+        )
+
+    if "approved_by_id" not in existing_columns:
+        migrations.append(
+            migrator.add_column(
+                "tasks", "approved_by_id", peewee.IntegerField(null=True)
+            )
+        )
+
+    if "approved_at" not in existing_columns:
+        migrations.append(
+            migrator.add_column("tasks", "approved_at", peewee.DateTimeField(null=True))
+        )
+
+    if "rejection_reason" not in existing_columns:
+        migrations.append(
+            migrator.add_column(
+                "tasks", "rejection_reason", peewee.TextField(null=True)
+            )
         )
 
     if migrations:
