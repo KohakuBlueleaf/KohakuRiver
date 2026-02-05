@@ -194,6 +194,7 @@ class VPSSubmission(BaseModel):
         - generate: SSH with server-generated keypair
     """
 
+    name: str | None = None
     required_cores: int = 1
     required_gpus: list[int] | None = None
     required_memory_bytes: int | None = None
@@ -249,6 +250,14 @@ class TaskResponse(BaseModel):
     task_id: SnowflakeID
     task_type: str
     batch_id: SnowflakeID | None
+    name: str | None = None
+    owner_id: int | None = None
+    owner_username: str | None = None
+    approval_status: str | None = None
+    approved_by_id: int | None = None
+    approved_by_username: str | None = None
+    approved_at: str | None = None
+    rejection_reason: str | None = None
     command: str
     arguments: list[str]
     env_vars: dict[str, str]

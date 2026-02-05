@@ -18,6 +18,7 @@ class TaskStatus(str, Enum):
     Task execution lifecycle status.
 
     State transitions:
+        PENDING_APPROVAL -> PENDING (approved) or REJECTED
         PENDING -> ASSIGNING -> RUNNING -> COMPLETED/FAILED/KILLED
         RUNNING -> PAUSED -> RUNNING (resume)
         RUNNING -> STOPPED (graceful stop)
@@ -25,6 +26,8 @@ class TaskStatus(str, Enum):
         Any -> LOST (runner connection lost)
     """
 
+    PENDING_APPROVAL = "pending_approval"  # User task awaiting operator/admin approval
+    REJECTED = "rejected"  # Task rejected by operator/admin
     PENDING = "pending"  # Task submitted, waiting for assignment
     ASSIGNING = "assigning"  # Task being assigned to a runner
     RUNNING = "running"  # Task actively executing
