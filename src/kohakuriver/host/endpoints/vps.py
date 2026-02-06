@@ -37,7 +37,7 @@ from kohakuriver.host.services.node_manager import (
     find_suitable_node,
     find_suitable_node_for_vm,
 )
-from kohakuriver.host.services.task_scheduler import send_kill_to_runner
+from kohakuriver.host.services.task_scheduler import send_vps_stop_to_runner
 from kohakuriver.models.requests import VPSSubmission
 from kohakuriver.utils.logger import get_logger
 from kohakuriver.utils.snowflake import generate_snowflake_id
@@ -198,6 +198,44 @@ def allocate_ssh_port() -> int:
     return port
 
 
+@router.get("/vm/images/{hostname}")
+async def get_vm_images(
+    hostname: str,
+    current_user: Annotated[User, Depends(require_viewer)],
+):
+    """
+    List available VM base images on a specific runner node.
+
+    Proxies the request to the runner's /api/vm/images endpoint.
+    Requires 'viewer' role or higher.
+    """
+    node = Node.get_or_none(Node.hostname == hostname)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"Node '{hostname}' not found.")
+    if node.status != "online":
+        raise HTTPException(status_code=503, detail=f"Node '{hostname}' is not online.")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{node.url}/api/vm/images",
+                timeout=15.0,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.RequestError as e:
+        logger.error(f"Failed to fetch VM images from {hostname}: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to communicate with runner '{hostname}': {e}",
+        )
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=e.response.text,
+        )
+
+
 @router.post("/vps/create")
 async def submit_vps(
     submission: VPSSubmission,
@@ -239,12 +277,14 @@ async def submit_vps(
 
     # Find suitable node (different logic for VM backend)
     if vps_backend == "qemu":
-        node = find_suitable_node_for_vm(
+        node, reject_reason = find_suitable_node_for_vm(
             required_cores=submission.required_cores,
             required_gpus=submission.required_gpus,
             required_memory_bytes=submission.required_memory_bytes,
             target_hostname=submission.target_hostname,
         )
+        if not node:
+            raise HTTPException(status_code=503, detail=reject_reason)
     else:
         node = find_suitable_node(
             required_cores=submission.required_cores,
@@ -253,14 +293,11 @@ async def submit_vps(
             target_hostname=submission.target_hostname,
             target_numa_node_id=submission.target_numa_node_id,
         )
-
-    if not node:
-        detail = (
-            "No suitable VM-capable node available."
-            if vps_backend == "qemu"
-            else "No suitable node available for this VPS."
-        )
-        raise HTTPException(status_code=503, detail=detail)
+        if not node:
+            raise HTTPException(
+                status_code=503,
+                detail="No suitable node available for this VPS.",
+            )
 
     # Generate task ID and allocate SSH port
     task_id = generate_snowflake_id()
@@ -802,7 +839,6 @@ async def stop_vps(
         )
 
     original_status = task.status
-    container_name = vps_container_name(task.task_id)
 
     # Mark as stopped
     task.status = "stopped"
@@ -811,16 +847,14 @@ async def stop_vps(
     task.save()
     logger.info(f"Marked VPS {task_id} as 'stopped'.")
 
-    # Tell runner to stop the VPS container
+    # Tell runner to stop the VPS (handles both Docker and VM)
     if original_status in ["running", "paused"] and task.assigned_node:
         node = Node.get_or_none(Node.hostname == task.assigned_node)
         if node and node.status == "online":
             logger.info(
                 f"Requesting stop from runner {node.hostname} " f"for VPS {task_id}"
             )
-            stop_task = asyncio.create_task(
-                send_kill_to_runner(node.url, task_id, container_name)
-            )
+            stop_task = asyncio.create_task(send_vps_stop_to_runner(node.url, task_id))
             background_tasks.add(stop_task)
             stop_task.add_done_callback(background_tasks.discard)
 
@@ -873,65 +907,101 @@ async def restart_vps(
             detail=f"Assigned node '{task.assigned_node}' is not online.",
         )
 
-    container_name = vps_container_name(task.task_id)
     original_status = task.status
+    vps_backend = task.vps_backend or "docker"
 
-    logger.info(f"Restarting VPS {task_id} on node {node.hostname}")
-
-    # Step 1: Stop the current container
-    if original_status in ["running", "paused"]:
-        logger.info(f"Stopping VPS container {container_name} on {node.hostname}")
-        await send_kill_to_runner(node.url, task_id, container_name)
-        # Wait briefly for container to stop
-        await asyncio.sleep(2)
-
-    # Step 2: Update task status to "assigning" for restart
-    task.status = "assigning"
-    task.error_message = None
-    task.started_at = None
-    task.completed_at = None
-    task.save()
-
-    # Step 3: Re-send VPS creation request to runner
-    # We need to get the container name from the original task
-    # The container_name field stores the base image name (e.g., "kohakuriver-base")
-    base_container_name = task.container_name or config.DEFAULT_CONTAINER_NAME
-
-    result = await send_vps_to_runner(
-        runner_url=node.url,
-        task=task,
-        container_name=base_container_name,
-        ssh_key_mode="none",  # Restart uses existing container, SSH should already be set up
-        ssh_public_key=None,
-        registry_image=task.registry_image,
+    logger.info(
+        f"Restarting VPS {task_id} on node {node.hostname} (backend={vps_backend})"
     )
 
-    if result is None:
-        task.status = "failed"
-        task.error_message = "Runner rejected VPS restart."
-        task.completed_at = datetime.datetime.now()
-        task.save()
-        raise HTTPException(
-            status_code=502,
-            detail="Runner rejected VPS restart.",
-        )
+    if vps_backend == "qemu":
+        # VM restart: QMP system_reset (soft reboot, keeps disk/network/GPU)
+        # No stop needed — just send a reset command
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{node.url}/api/vps/{task_id}/vm-restart",
+                    timeout=15.0,
+                )
+                resp.raise_for_status()
+                result = resp.json()
+        except httpx.RequestError as e:
+            logger.error(f"Failed to send VM restart for VPS {task_id}: {e}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to communicate with runner for VM restart: {e}",
+            )
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"Runner failed VM restart for VPS {task_id}: {e.response.status_code}"
+            )
+            raise HTTPException(
+                status_code=e.response.status_code,
+                detail=f"Runner rejected VM restart: {e.response.text}",
+            )
 
-    if result == {}:
-        # Communication failure - task remains in "assigning" state
-        logger.warning(
-            f"VPS {task_id} restart communication failed, task remains in 'assigning' state."
-        )
         return {
-            "message": "VPS restart request sent (awaiting runner confirmation).",
+            "message": f"VM VPS {task_id} restart (QMP reset) successful.",
             "task_id": str(task_id),
-            "status": "assigning",
+            "runner_response": result,
         }
 
-    return {
-        "message": f"VPS {task_id} restart successful.",
-        "task_id": str(task_id),
-        "runner_response": result,
-    }
+    else:
+        # Docker restart: stop container, then recreate
+
+        # Step 1: Stop the current container
+        if original_status in ["running", "paused"]:
+            container_name = vps_container_name(task.task_id)
+            logger.info(f"Stopping VPS container {container_name} on {node.hostname}")
+            await send_vps_stop_to_runner(node.url, task_id)
+            # Wait briefly for container to stop
+            await asyncio.sleep(2)
+
+        # Step 2: Update task status to "assigning" for restart
+        task.status = "assigning"
+        task.error_message = None
+        task.started_at = None
+        task.completed_at = None
+        task.save()
+
+        # Step 3: Re-send VPS creation request to runner
+        base_container_name = task.container_name or config.DEFAULT_CONTAINER_NAME
+
+        result = await send_vps_to_runner(
+            runner_url=node.url,
+            task=task,
+            container_name=base_container_name,
+            ssh_key_mode="none",  # Restart uses existing container, SSH should already be set up
+            ssh_public_key=None,
+            registry_image=task.registry_image,
+        )
+
+        if result is None:
+            task.status = "failed"
+            task.error_message = "Runner rejected VPS restart."
+            task.completed_at = datetime.datetime.now()
+            task.save()
+            raise HTTPException(
+                status_code=502,
+                detail="Runner rejected VPS restart.",
+            )
+
+        if result == {}:
+            # Communication failure - task remains in "assigning" state
+            logger.warning(
+                f"VPS {task_id} restart communication failed, task remains in 'assigning' state."
+            )
+            return {
+                "message": "VPS restart request sent (awaiting runner confirmation).",
+                "task_id": str(task_id),
+                "status": "assigning",
+            }
+
+        return {
+            "message": f"VPS {task_id} restart successful.",
+            "task_id": str(task_id),
+            "runner_response": result,
+        }
 
 
 # =============================================================================

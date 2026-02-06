@@ -176,7 +176,7 @@ def find_suitable_node_for_vm(
     required_gpus: list[int] | None = None,
     required_memory_bytes: int | None = None,
     target_hostname: str | None = None,
-) -> Node | None:
+) -> tuple[Node | None, str]:
     """
     Find a suitable VM-capable node for QEMU VPS.
 
@@ -189,7 +189,7 @@ def find_suitable_node_for_vm(
         target_hostname: Specific hostname to use.
 
     Returns:
-        Suitable Node or None if not found.
+        Tuple of (node, reason). node is None if not found, reason explains why.
     """
     query = Node.select().where((Node.status == "online") & (Node.vm_capable == True))
 
@@ -199,21 +199,40 @@ def find_suitable_node_for_vm(
     nodes: list[Node] = list(query)
 
     if not nodes:
-        logger.warning("No VM-capable online nodes available")
-        return None
+        # Check if node exists but isn't VM-capable
+        if target_hostname:
+            any_node = Node.get_or_none(Node.hostname == target_hostname)
+            if any_node is None:
+                reason = f"Node '{target_hostname}' not found."
+            elif any_node.status != "online":
+                reason = f"Node '{target_hostname}' is not online (status: {any_node.status})."
+            else:
+                reason = (
+                    f"Node '{target_hostname}' is not VM-capable. "
+                    f"Ensure QEMU/KVM is installed and runner has sent a heartbeat."
+                )
+        else:
+            reason = "No VM-capable online nodes available."
+        logger.warning(reason)
+        return None, reason
 
     suitable_nodes = []
+    rejection_reasons = []
 
     for node in nodes:
         # Check cores
         available_cores = get_node_available_cores(node)
         if available_cores < required_cores:
+            rejection_reasons.append(
+                f"{node.hostname}: insufficient cores ({available_cores} available, {required_cores} required)"
+            )
             continue
 
         # Check memory
         if required_memory_bytes:
             available_memory = get_node_available_memory(node)
             if available_memory < required_memory_bytes:
+                rejection_reasons.append(f"{node.hostname}: insufficient memory")
                 continue
 
         # Check VFIO GPUs if required
@@ -223,21 +242,31 @@ def find_suitable_node_for_vm(
             available_gpus = get_node_available_gpus(node)
             # GPU must be both VFIO-capable and not in use
             available_vfio = vfio_gpu_ids & available_gpus
-            if not all(gpu in available_vfio for gpu in required_gpus):
+            missing = [g for g in required_gpus if g not in available_vfio]
+            if missing:
+                rejection_reasons.append(
+                    f"{node.hostname}: requested GPU IDs {missing} not in available "
+                    f"VFIO GPUs {sorted(available_vfio)} "
+                    f"(vfio_gpu_ids={sorted(vfio_gpu_ids)}, available={sorted(available_gpus)})"
+                )
                 continue
 
         suitable_nodes.append((node, available_cores))
 
     if not suitable_nodes:
-        logger.warning(
-            f"No suitable VM-capable nodes found for requirements: "
-            f"cores={required_cores}, gpus={required_gpus}, "
-            f"memory={required_memory_bytes}"
+        reason = (
+            "; ".join(rejection_reasons)
+            if rejection_reasons
+            else (
+                f"No VM-capable nodes match requirements: "
+                f"cores={required_cores}, gpus={required_gpus}, memory={required_memory_bytes}"
+            )
         )
-        return None
+        logger.warning(f"VM node selection failed: {reason}")
+        return None, reason
 
     suitable_nodes.sort(key=lambda x: x[1], reverse=True)
-    return suitable_nodes[0][0]
+    return suitable_nodes[0][0], ""
 
 
 def _node_meets_requirements(

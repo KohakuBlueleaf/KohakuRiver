@@ -196,6 +196,38 @@ async def send_kill_to_runner(
         )
 
 
+async def send_vps_stop_to_runner(runner_url: str, task_id: int) -> None:
+    """
+    Send VPS stop request to runner (handles both Docker and VM).
+
+    Uses the runner's /api/vps/stop/{task_id} endpoint which correctly
+    dispatches to either Docker or VM shutdown based on the container name.
+
+    Args:
+        runner_url: Runner's HTTP URL.
+        task_id: Task ID to stop.
+    """
+    logger.info(f"Sending VPS stop for task {task_id} to {runner_url}")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{runner_url}/api/vps/stop/{task_id}",
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            logger.info(f"VPS stop for task {task_id} acknowledged by {runner_url}")
+
+    except httpx.RequestError as e:
+        logger.error(f"Failed to send VPS stop for task {task_id} to {runner_url}: {e}")
+
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"Runner {runner_url} failed VPS stop for task {task_id}: "
+            f"{e.response.status_code}"
+        )
+
+
 async def send_pause_to_runner(
     runner_url: str,
     task_id: int,

@@ -126,7 +126,10 @@ async def forward_port_proxy(
 
         # 2. Get container name
         if task.task_type == "vps":
-            container_name = vps_container_name(task_id)
+            if getattr(task, "vps_backend", "docker") == "qemu":
+                container_name = f"vm-{task_id}"
+            else:
+                container_name = vps_container_name(task_id)
         else:
             container_name = task_container_name(task_id)
 
