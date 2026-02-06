@@ -14,6 +14,7 @@ Two modes:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import subprocess
 from dataclasses import dataclass
@@ -26,11 +27,27 @@ from kohakuriver.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _tap_name(task_id: int) -> str:
+    """Generate a short TAP device name (max 15 chars for Linux IFNAMSIZ)."""
+    h = hashlib.sha3_224(str(task_id).encode()).hexdigest()[:8]
+    return f"tap-{h}"
+
+
+def _generate_mac(task_id: int) -> str:
+    """Generate a deterministic MAC address from task_id.
+
+    Uses QEMU's locally-administered range (52:54:00:xx:xx:xx).
+    """
+    h = hashlib.sha3_224(str(task_id).encode()).digest()
+    return f"52:54:00:{h[0]:02x}:{h[1]:02x}:{h[2]:02x}"
+
+
 @dataclass
 class VMNetworkInfo:
     """Network configuration for a VM."""
 
-    tap_device: str  # e.g., "tap-vm-12345"
+    tap_device: str  # e.g., "tap-a1b2c3d4"
+    mac_address: str  # e.g., "52:54:00:ab:cd:ef"
     vm_ip: str  # e.g., "10.128.64.5" or "10.200.0.10"
     gateway: str  # e.g., "10.128.64.1" or "10.200.0.1"
     bridge_name: str  # e.g., "kohaku-overlay" or "kohaku-br0"
@@ -292,7 +309,8 @@ class VMNetworkManager:
         )
 
         vm_ip, token = await self._reserve_overlay_ip(task_id)
-        tap_name = f"tap-vm-{task_id}"
+        tap_name = _tap_name(task_id)
+        mac = _generate_mac(task_id)
         bridge = RunnerOverlayManager.BRIDGE_NAME  # "kohaku-overlay"
         await asyncio.to_thread(self._create_tap_sync, tap_name, bridge)
 
@@ -306,6 +324,7 @@ class VMNetworkManager:
 
         return VMNetworkInfo(
             tap_device=tap_name,
+            mac_address=mac,
             vm_ip=vm_ip,
             gateway=gateway,
             bridge_name=bridge,
@@ -328,7 +347,7 @@ class VMNetworkManager:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{host_url}/api/overlay/ip/reserve",
-                    params={"runner": hostname, "ttl": 3600},
+                    params={"runner": hostname, "ttl": 1800},
                     timeout=15.0,
                 )
                 response.raise_for_status()
@@ -360,12 +379,14 @@ class VMNetworkManager:
     def _create_standard_vm_network(self, task_id: int) -> VMNetworkInfo:
         """Allocate local IP, create TAP on kohaku-br0."""
         vm_ip = self._allocate_local_ip()
-        tap_name = f"tap-vm-{task_id}"
+        tap_name = _tap_name(task_id)
+        mac = _generate_mac(task_id)
         self._create_tap_sync(tap_name, config.VM_BRIDGE_NAME)
         network = ipaddress.IPv4Network(config.VM_BRIDGE_SUBNET)
 
         return VMNetworkInfo(
             tap_device=tap_name,
+            mac_address=mac,
             vm_ip=vm_ip,
             gateway=config.VM_BRIDGE_GATEWAY,
             bridge_name=config.VM_BRIDGE_NAME,
@@ -395,48 +416,51 @@ class VMNetworkManager:
     # =========================================================================
 
     def _create_tap_sync(self, tap_name: str, bridge_name: str) -> None:
-        """Create TAP device and attach to bridge via pyroute2."""
+        """Create TAP device and attach to bridge."""
         from pyroute2 import IPRoute
 
+        # Create TAP via ip tuntap (pyroute2's TUN/TAP API is unreliable)
+        tap_exists = False
         ipr = IPRoute()
         try:
-            # Check if TAP already exists
-            tap_idx = None
             for link in ipr.get_links():
                 if link.get_attr("IFLA_IFNAME") == tap_name:
-                    tap_idx = link["index"]
+                    tap_exists = True
                     logger.info(f"TAP {tap_name} already exists")
                     break
+        finally:
+            ipr.close()
 
-            if tap_idx is None:
-                logger.info(f"Creating TAP device: {tap_name}")
-                ipr.link("add", ifname=tap_name, kind="tun", tun_type="tap")
-                for link in ipr.get_links():
-                    if link.get_attr("IFLA_IFNAME") == tap_name:
-                        tap_idx = link["index"]
-                        break
+        if not tap_exists:
+            logger.info(f"Creating TAP device: {tap_name}")
+            result = subprocess.run(
+                ["ip", "tuntap", "add", "dev", tap_name, "mode", "tap"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to create TAP {tap_name}: {result.stderr}")
 
-            if tap_idx is None:
-                raise RuntimeError(f"Failed to create TAP {tap_name}")
-
-            # Find bridge
+        # Attach to bridge and bring up via pyroute2
+        ipr = IPRoute()
+        try:
+            tap_idx = None
             bridge_idx = None
             for link in ipr.get_links():
-                if link.get_attr("IFLA_IFNAME") == bridge_name:
+                name = link.get_attr("IFLA_IFNAME")
+                if name == tap_name:
+                    tap_idx = link["index"]
+                elif name == bridge_name:
                     bridge_idx = link["index"]
-                    break
 
+            if tap_idx is None:
+                raise RuntimeError(f"TAP {tap_name} not found after creation")
             if bridge_idx is None:
                 raise RuntimeError(f"Bridge {bridge_name} not found")
 
-            # Attach TAP to bridge
             ipr.link("set", index=tap_idx, master=bridge_idx)
-
-            # Bring TAP up
             ipr.link("set", index=tap_idx, state="up")
-
             logger.info(f"TAP {tap_name} attached to bridge {bridge_name}")
-
         finally:
             ipr.close()
 
@@ -462,13 +486,19 @@ class VMNetworkManager:
     # =========================================================================
 
     def get_cloud_init_network_config(self, info: VMNetworkInfo) -> dict:
-        """Generate cloud-init network-config v2 for this VM."""
+        """Generate cloud-init network-config v2 for this VM.
+
+        Uses MAC address matching instead of a hardcoded device name
+        (e.g. 'ens3') because the actual name depends on PCI topology
+        and firmware (could be enp0s2, ens3, eth0, etc.).
+        """
         return {
             "version": 2,
             "ethernets": {
-                "ens3": {
+                "vmnic0": {
+                    "match": {"macaddress": info.mac_address},
                     "addresses": [f"{info.vm_ip}/{info.prefix_len}"],
-                    "gateway4": info.gateway,
+                    "routes": [{"to": "default", "via": info.gateway}],
                     "nameservers": {"addresses": info.dns_servers},
                 }
             },

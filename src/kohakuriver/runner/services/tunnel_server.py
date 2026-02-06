@@ -10,6 +10,7 @@ import asyncio
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from kohakuriver.storage.vault import TaskStateStore
 from kohakuriver.tunnel.protocol import (
     HEADER_SIZE,
     MSG_CLOSE,
@@ -28,6 +29,17 @@ from kohakuriver.tunnel.protocol import (
 from kohakuriver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Module-level dependencies
+_task_store: TaskStateStore | None = None
+
+VM_CONTAINER_PREFIX = "vm-"
+
+
+def set_dependencies(task_store: TaskStateStore):
+    """Set module dependencies from app startup."""
+    global _task_store
+    _task_store = task_store
 
 
 # =============================================================================
@@ -319,12 +331,20 @@ async def handle_port_forward(
     This maintains a single persistent WebSocket connection and handles
     multiplexed CONNECT/DATA/CLOSE messages for multiple local connections.
 
+    Detects VM tasks (container_id starts with "vm-") and uses direct TCP
+    instead of container tunnel.
+
     Args:
         websocket: Host's WebSocket connection
         container_id: Target container ID or name
         port: Target port in container (used for initial validation)
         proto: Protocol type (PROTO_TCP or PROTO_UDP)
     """
+    # Check if this is a VM task
+    if container_id.startswith(VM_CONTAINER_PREFIX):
+        await _handle_vm_port_forward(websocket, container_id, port, proto)
+        return
+
     await websocket.accept()
 
     proto_name = "UDP" if proto == PROTO_UDP else "TCP"
@@ -446,3 +466,210 @@ async def handle_port_forward(
             await tunnel.unregister_user_connection(client_id)
 
         logger.info(f"[Forward] Session closed (container={container_id})")
+
+
+# =============================================================================
+# VM Port Forward Handler
+# =============================================================================
+
+
+async def _handle_vm_port_forward(
+    websocket: WebSocket,
+    container_id: str,
+    port: int,
+    proto: int = PROTO_TCP,
+) -> None:
+    """
+    Handle port forwarding for a VM via direct TCP.
+
+    Instead of using a tunnel-client inside the VM, the runner opens direct
+    TCP connections to vm_ip:port and bridges them with the binary WebSocket
+    protocol from the host.
+
+    Each MSG_CONNECT opens a new TCP connection to the VM.
+    MSG_DATA forwards data bidirectionally.
+    MSG_CLOSE closes the TCP connection.
+    """
+    await websocket.accept()
+
+    proto_name = "UDP" if proto == PROTO_UDP else "TCP"
+
+    # Extract task_id from container_id (format: "vm-{task_id}")
+    try:
+        task_id = int(container_id[len(VM_CONTAINER_PREFIX) :])
+    except (ValueError, IndexError):
+        logger.warning(f"[VM Forward] Invalid VM container_id: {container_id}")
+        await websocket.send_text(f"Error: Invalid VM identifier: {container_id}")
+        await websocket.close(code=1011)
+        return
+
+    # Get VM IP from task store
+    if not _task_store:
+        await websocket.send_text("Error: Task store not available")
+        await websocket.close(code=1011)
+        return
+
+    task_data = _task_store.get_task(task_id)
+    if not task_data:
+        await websocket.send_text(f"Error: VM {task_id} not found")
+        await websocket.close(code=1011)
+        return
+
+    vm_ip = task_data.get("vm_ip")
+    if not vm_ip:
+        await websocket.send_text(f"Error: VM {task_id} has no IP address")
+        await websocket.close(code=1011)
+        return
+
+    logger.info(
+        f"[VM Forward] New {proto_name} forward session: VM {task_id} ({vm_ip}), port={port}"
+    )
+
+    # Track active TCP connections: client_id -> (reader, writer, read_task)
+    active_connections: dict[
+        int, tuple[asyncio.StreamReader, asyncio.StreamWriter, asyncio.Task]
+    ] = {}
+    stop_event = asyncio.Event()
+
+    async def _forward_vm_to_ws(
+        client_id: int,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ):
+        """Read from VM TCP and send to WebSocket as MSG_DATA."""
+        try:
+            while not stop_event.is_set():
+                data = await reader.read(65536)
+                if not data:
+                    # TCP connection closed by VM
+                    logger.debug(
+                        f"[VM Forward] VM closed TCP for client_id={client_id}"
+                    )
+                    close_msg = build_message(MSG_CLOSE, proto, client_id, 0)
+                    try:
+                        await websocket.send_bytes(close_msg)
+                    except Exception:
+                        pass
+                    break
+
+                msg = build_message(MSG_DATA, proto, client_id, 0, data)
+                await websocket.send_bytes(msg)
+        except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+            pass
+        except Exception as e:
+            if not stop_event.is_set():
+                logger.debug(f"[VM Forward] Read error client_id={client_id}: {e}")
+                error_msg = build_message(
+                    MSG_ERROR, proto, client_id, 0, str(e).encode()
+                )
+                try:
+                    await websocket.send_bytes(error_msg)
+                except Exception:
+                    pass
+        finally:
+            # Clean up connection
+            try:
+                writer.close()
+            except Exception:
+                pass
+            active_connections.pop(client_id, None)
+
+    try:
+        # Send CONNECTED to confirm VM is available
+        await websocket.send_text("CONNECTED")
+        logger.info(f"[VM Forward] Session established for VM {task_id}:{port}")
+
+        while True:
+            data = await websocket.receive_bytes()
+
+            header = parse_header(data)
+            if not header:
+                logger.warning(f"[VM Forward] Invalid message header (len={len(data)})")
+                continue
+
+            msg_type = header.msg_type
+            client_id = header.client_id
+            msg_port = header.port or port
+            payload = get_payload(data)
+
+            if msg_type == MSG_CONNECT:
+                # Open direct TCP connection to VM
+                logger.info(
+                    f"[VM Forward] CONNECT client_id={client_id} -> {vm_ip}:{msg_port}"
+                )
+                try:
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(vm_ip, msg_port),
+                        timeout=10.0,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[VM Forward] TCP connect failed for client_id={client_id}: {e}"
+                    )
+                    error_msg = build_message(
+                        MSG_ERROR,
+                        proto,
+                        client_id,
+                        msg_port,
+                        f"Connection failed: {e}".encode(),
+                    )
+                    await websocket.send_bytes(error_msg)
+                    continue
+
+                # Start reading from VM in background
+                read_task = asyncio.create_task(
+                    _forward_vm_to_ws(client_id, reader, writer)
+                )
+                active_connections[client_id] = (reader, writer, read_task)
+
+                # Send CONNECTED back
+                connected_msg = build_message(MSG_CONNECTED, proto, client_id, msg_port)
+                await websocket.send_bytes(connected_msg)
+                logger.info(f"[VM Forward] TCP connected for client_id={client_id}")
+
+            elif msg_type == MSG_DATA:
+                # Forward data to VM TCP connection
+                conn = active_connections.get(client_id)
+                if not conn:
+                    logger.warning(
+                        f"[VM Forward] DATA for unknown client_id={client_id}"
+                    )
+                    continue
+
+                _, writer, _ = conn
+                try:
+                    writer.write(payload)
+                    await writer.drain()
+                except Exception as e:
+                    logger.warning(
+                        f"[VM Forward] TCP write failed client_id={client_id}: {e}"
+                    )
+
+            elif msg_type == MSG_CLOSE:
+                # Close TCP connection
+                logger.info(f"[VM Forward] CLOSE client_id={client_id}")
+                conn = active_connections.pop(client_id, None)
+                if conn:
+                    _, writer, read_task = conn
+                    read_task.cancel()
+                    try:
+                        writer.close()
+                    except Exception:
+                        pass
+
+    except WebSocketDisconnect:
+        logger.info(f"[VM Forward] Host disconnected (VM {task_id})")
+    except Exception as e:
+        logger.error(f"[VM Forward] Error: {e}")
+    finally:
+        # Clean up all TCP connections
+        stop_event.set()
+        for client_id, (_, writer, read_task) in active_connections.items():
+            read_task.cancel()
+            try:
+                writer.close()
+            except Exception:
+                pass
+        active_connections.clear()
+
+        logger.info(f"[VM Forward] Session closed (VM {task_id})")

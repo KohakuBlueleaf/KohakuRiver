@@ -7,11 +7,17 @@ Called by vps.py endpoints when vps_backend="qemu".
 
 import asyncio
 import datetime
+import os
 
 from kohakuriver.models.requests import TaskStatusUpdate
 from kohakuriver.runner.config import config
 from kohakuriver.runner.services.task_executor import report_status_to_host
 from kohakuriver.runner.services.vm_network_manager import get_vm_network_manager
+from kohakuriver.runner.services.vm_ssh import (
+    get_runner_public_key,
+    start_ssh_proxy,
+    stop_ssh_proxy,
+)
 from kohakuriver.storage.vault import TaskStateStore
 from kohakuriver.utils.logger import format_traceback, get_logger
 
@@ -26,6 +32,7 @@ async def create_vm_vps(
     disk_size: str,
     gpu_ids: list[int] | None,
     ssh_public_key: str | None,
+    ssh_port: int | None,
     task_store: TaskStateStore,
 ) -> dict:
     """
@@ -117,8 +124,20 @@ async def create_vm_vps(
             f"mode={net_info.mode}, bridge={net_info.bridge_name}"
         )
 
+        # Get runner public key for VM access
+        runner_pubkey = ""
+        try:
+            runner_pubkey = get_runner_public_key()
+        except Exception as e:
+            logger.warning(f"VM VPS {task_id}: could not get runner pubkey: {e}")
+
         # Create VM
         from kohakuriver.qemu import VMCreateOptions, get_qemu_manager
+
+        # Shared filesystem paths (mirror Docker bind mounts)
+        shared_host = os.path.join(config.SHARED_DIR, "shared_data")
+        local_temp_host = os.path.join(config.LOCAL_TEMP_DIR, str(task_id))
+        os.makedirs(local_temp_host, exist_ok=True)
 
         qemu = get_qemu_manager()
         options = VMCreateOptions(
@@ -129,40 +148,44 @@ async def create_vm_vps(
             disk_size=disk_size,
             gpu_pci_addresses=gpu_pci_addresses,
             ssh_public_key=ssh_public_key or "",
+            runner_public_key=runner_pubkey,
+            mac_address=net_info.mac_address,
             vm_ip=net_info.vm_ip,
             tap_device=net_info.tap_device,
             gateway=net_info.gateway,
             prefix_len=net_info.prefix_len,
             dns_servers=net_info.dns_servers,
             runner_url=net_info.runner_url,
+            shared_dir_host=shared_host,
+            local_temp_dir_host=local_temp_host,
         )
 
         vm = await qemu.create_vm(options)
 
-        # Store VPS state
-        task_store.add_task(
-            task_id=task_id,
-            container_name=f"vm-{task_id}",
-            allocated_cores=cores,
-            allocated_gpus=gpu_ids or [],
-            numa_node=None,
-        )
+        # Start SSH port proxy (so host SSH proxy can reach VM)
+        if ssh_port:
+            await start_ssh_proxy(task_id, ssh_port, net_info.vm_ip)
 
-        # Wait for SSH (non-blocking, report running either way)
-        ssh_ready = await qemu._wait_for_ssh(
-            net_info.vm_ip, timeout=config.VM_SSH_READY_TIMEOUT_SECONDS
-        )
-        vm.ssh_ready = ssh_ready
+        # Store VPS state (include VM-specific fields for recovery)
+        task_store[str(task_id)] = {
+            "task_id": task_id,
+            "container_name": f"vm-{task_id}",
+            "allocated_cores": cores,
+            "allocated_gpus": gpu_ids or [],
+            "numa_node": None,
+            # VM recovery fields
+            "vm_ip": net_info.vm_ip,
+            "tap_device": net_info.tap_device,
+            "mac_address": net_info.mac_address,
+            "gpu_pci_addresses": gpu_pci_addresses,
+            "network_mode": net_info.mode,
+            "bridge_name": net_info.bridge_name,
+            "gateway": net_info.gateway,
+            "prefix_len": net_info.prefix_len,
+            "ssh_port": ssh_port,
+        }
 
-        if ssh_ready:
-            logger.info(f"VM VPS {task_id}: SSH ready at {net_info.vm_ip}:22")
-        else:
-            logger.warning(
-                f"VM VPS {task_id}: SSH not ready after timeout, "
-                "but VM is running. VM agent will phone home when ready."
-            )
-
-        # Report running status
+        # Report running immediately — VM process is up
         await report_status_to_host(
             TaskStatusUpdate(
                 task_id=task_id,
@@ -171,10 +194,29 @@ async def create_vm_vps(
             )
         )
 
+        # Wait for SSH in background (don't block the response)
+        async def _background_ssh_wait():
+            try:
+                ssh_ready = await qemu._wait_for_ssh(
+                    net_info.vm_ip, timeout=config.VM_SSH_READY_TIMEOUT_SECONDS
+                )
+                vm.ssh_ready = ssh_ready
+                if ssh_ready:
+                    logger.info(f"VM VPS {task_id}: SSH ready at {net_info.vm_ip}:22")
+                else:
+                    logger.warning(
+                        f"VM VPS {task_id}: SSH not ready after timeout, "
+                        "VM agent will phone home when ready."
+                    )
+            except Exception as e:
+                logger.warning(f"VM VPS {task_id}: SSH wait error: {e}")
+
+        asyncio.create_task(_background_ssh_wait())
+
         return {
             "success": True,
             "vm_ip": net_info.vm_ip,
-            "ssh_ready": ssh_ready,
+            "ssh_ready": False,  # SSH wait is async, not ready yet
             "network_mode": net_info.mode,
         }
 
@@ -214,6 +256,9 @@ async def stop_vm_vps(
 
         # Stop VM
         success = await qemu.stop_vm(task_id)
+
+        # Stop SSH port proxy
+        await stop_ssh_proxy(task_id)
 
         # Cleanup network
         net_manager = get_vm_network_manager()
@@ -263,15 +308,27 @@ async def get_vm_status(task_id: int) -> dict | None:
 
 
 async def receive_vm_heartbeat(task_id: int, payload: dict) -> None:
-    """Process heartbeat from VM agent."""
+    """Process heartbeat from VM agent. Stores GPU and system info for aggregation."""
+    import time as _time
+
     from kohakuriver.qemu import get_qemu_manager
 
     qemu = get_qemu_manager()
     vm = qemu.get_vm(task_id)
     if vm:
-        vm.last_heartbeat = payload.get("timestamp", __import__("time").time())
+        first_heartbeat = vm.last_heartbeat is None
+        vm.last_heartbeat = payload.get("timestamp", _time.time())
         vm.ssh_ready = True
-        logger.debug(f"VM {task_id} heartbeat received")
+        # Store VM GPU info for runner heartbeat aggregation
+        if payload.get("gpus"):
+            vm.vm_gpu_info = payload["gpus"]
+        if payload.get("system"):
+            vm.vm_system_info = payload["system"]
+        logger.debug(f"VM {task_id} heartbeat received (gpus={len(vm.vm_gpu_info)})")
+
+        # On first heartbeat, ensure host knows VM is running
+        if first_heartbeat:
+            await _ensure_running_reported(task_id)
 
 
 async def mark_vm_ready(task_id: int) -> None:
@@ -283,3 +340,20 @@ async def mark_vm_ready(task_id: int) -> None:
     if vm:
         vm.ssh_ready = True
         logger.info(f"VM {task_id} phone-home: boot complete, SSH ready")
+        # Ensure host knows VM is running (safety net)
+        await _ensure_running_reported(task_id)
+
+
+async def _ensure_running_reported(task_id: int) -> None:
+    """Report running status to host. Safe to call multiple times — host ignores
+    duplicate running updates for already-running tasks."""
+    try:
+        await report_status_to_host(
+            TaskStatusUpdate(
+                task_id=task_id,
+                status="running",
+                started_at=datetime.datetime.now(),
+            )
+        )
+    except Exception as e:
+        logger.warning(f"VM {task_id}: failed to report running to host: {e}")
