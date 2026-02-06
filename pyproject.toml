@@ -31,6 +31,8 @@ dependencies = [
     "pyte>=0.8.0",
     "pyroute2>=0.7.0",
     "bcrypt>=4.0.0",
+    "asyncssh>=2.14.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
