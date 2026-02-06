@@ -144,6 +144,28 @@ def _run_migrations(Task) -> None:
             )
         )
 
+    if "vps_backend" not in existing_columns:
+        migrations.append(
+            migrator.add_column(
+                "tasks", "vps_backend", peewee.CharField(default="docker")
+            )
+        )
+
+    if "vm_image" not in existing_columns:
+        migrations.append(
+            migrator.add_column("tasks", "vm_image", peewee.CharField(null=True))
+        )
+
+    if "vm_disk_size" not in existing_columns:
+        migrations.append(
+            migrator.add_column("tasks", "vm_disk_size", peewee.CharField(null=True))
+        )
+
+    if "vm_ip" not in existing_columns:
+        migrations.append(
+            migrator.add_column("tasks", "vm_ip", peewee.CharField(null=True))
+        )
+
     if migrations:
         migrate(*migrations)
         logger.info(f"Ran {len(migrations)} database migration(s)")
