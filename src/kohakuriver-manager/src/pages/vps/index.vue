@@ -17,6 +17,7 @@ import { useVpsStore } from '@/stores/vps'
 import { useNotification } from '@/composables/useNotification'
 import { usePolling } from '@/composables/usePolling'
 
+import apiClient from '@/utils/api/client'
 import { formatBytes, formatRelativeTime } from '@/utils/format'
 import { generateRandomName } from '@/utils/randomName'
 
@@ -79,6 +80,35 @@ const selectedRunner = computed(() => {
     return gpuInfo?.hostname || null
   }
   return createForm.value.target_hostname || null
+})
+
+// VM image dropdown
+const vmImages = ref([])
+const vmImagesLoading = ref(false)
+
+async function fetchVmImages(hostname) {
+  if (!hostname) {
+    vmImages.value = []
+    return
+  }
+  vmImagesLoading.value = true
+  try {
+    const { data } = await apiClient.get(`/vm/images/${hostname}`)
+    vmImages.value = data.images || []
+  } catch {
+    vmImages.value = []
+  } finally {
+    vmImagesLoading.value = false
+  }
+}
+
+// Fetch VM images when runner selection changes and backend is qemu
+watch([selectedRunner, () => createForm.value.vps_backend], ([runner, backend]) => {
+  if (backend === 'qemu' && runner) {
+    fetchVmImages(runner)
+  } else {
+    vmImages.value = []
+  }
 })
 
 // Handle IP token update from IpReservation component
@@ -796,9 +826,27 @@ function copyVpsId(taskId) {
         <!-- VM Options (qemu backend only) -->
         <template v-if="createForm.vps_backend === 'qemu'">
           <el-form-item label="VM Image">
-            <el-input
+            <el-select
               v-model="createForm.vm_image"
-              placeholder="e.g. ubuntu-24.04" />
+              placeholder="Select VM image"
+              :loading="vmImagesLoading"
+              filterable
+              allow-create
+              class="w-full">
+              <el-option
+                v-for="img in vmImages"
+                :key="img.name"
+                :label="img.name"
+                :value="img.name">
+                <span>{{ img.name }}</span>
+                <span class="text-xs text-gray-400 ml-2">({{ formatBytes(img.size_bytes) }})</span>
+              </el-option>
+            </el-select>
+            <p
+              v-if="!selectedRunner"
+              class="text-xs text-gray-400 mt-1">
+              Select a node or GPU first to load available images
+            </p>
           </el-form-item>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <el-form-item label="Max Disk Size (thin-provisioned)">
