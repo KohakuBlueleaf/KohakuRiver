@@ -339,36 +339,70 @@ def image_create(
         raise typer.Exit(1)
 
     # Customize with virt-customize
+    customize_ok = False
     if has_virt_customize:
-        console.print(
-            "\n[bold]Customizing image (installing packages, enabling services)...[/bold]"
-        )
+        console.print("\n[bold]Customizing image...[/bold]")
         customize_cmd = [
             "virt-customize",
             "-a",
             output_path,
-            "--install",
-            "python3,python3-pip,openssh-server,curl,wget,net-tools,iputils-ping,cloud-init,qemu-guest-agent",
             "--run-command",
             "systemctl enable ssh",
-            "--run-command",
-            "systemctl enable qemu-guest-agent",
             "--run-command",
             "sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
             "--run-command",
             "sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
             "--run-command",
-            "echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config.d/99-kohakuriver.conf",
+            "mkdir -p /etc/ssh/sshd_config.d && echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config.d/99-kohakuriver.conf",
             "--run-command",
             "cloud-init clean",
             "--truncate",
             "/etc/machine-id",
+            # Try installing packages (requires dhcpcd-base on host for
+            # libguestfs appliance network — if this fails, cloud-init
+            # installs them on first boot instead)
+            "--install",
+            "qemu-guest-agent,net-tools",
+            "--run-command",
+            "systemctl enable qemu-guest-agent || true",
         ]
         result = subprocess.run(customize_cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            console.print(f"[yellow]virt-customize warnings:[/yellow]\n{result.stderr}")
+            # Package install likely failed due to no network in appliance.
+            # Re-run without --install (config-only).
+            console.print(
+                "[yellow]Package installation failed (appliance has no network).[/yellow]\n"
+                "[dim]Fix: sudo apt install dhcpcd-base\n"
+                "Packages will be installed on first VM boot via cloud-init instead.[/dim]"
+            )
+            config_only_cmd = [
+                "virt-customize",
+                "-a",
+                output_path,
+                "--run-command",
+                "systemctl enable ssh",
+                "--run-command",
+                "sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
+                "--run-command",
+                "sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
+                "--run-command",
+                "mkdir -p /etc/ssh/sshd_config.d && echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config.d/99-kohakuriver.conf",
+                "--run-command",
+                "cloud-init clean",
+                "--truncate",
+                "/etc/machine-id",
+            ]
+            result = subprocess.run(config_only_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                console.print(f"[red]Customization failed:[/red]\n{result.stderr}")
+            else:
+                console.print(
+                    "[green]Config customization complete (packages deferred to first boot).[/green]"
+                )
+                customize_ok = True
         else:
             console.print("[green]Image customization complete.[/green]")
+            customize_ok = True
     else:
         console.print(
             "\n[yellow]virt-customize not found. Skipping image customization.[/yellow]\n"
@@ -459,7 +493,8 @@ def image_create(
                 f"[red]NVIDIA driver installation failed:[/red]\n{result.stderr}"
             )
             console.print(
-                "[yellow]The base image was created but without NVIDIA drivers.[/yellow]"
+                "[yellow]The base image was created but without NVIDIA drivers.\n"
+                "If this failed due to network, install dhcpcd-base: sudo apt install dhcpcd-base[/yellow]"
             )
         else:
             console.print(
@@ -467,6 +502,13 @@ def image_create(
             )
 
     # Summary
+    if has_virt_customize and not customize_ok:
+        title = "Image Created (customization failed)"
+        border_style = "yellow"
+    else:
+        title = "Image Created Successfully"
+        border_style = "green"
+
     try:
         result = subprocess.run(
             ["qemu-img", "info", "--output=json", output_path],
@@ -486,14 +528,14 @@ def image_create(
                     f"[bold]Path:[/bold] {output_path}\n"
                     f"[bold]Virtual Size:[/bold] {virtual_gb:.1f} GB\n"
                     f"[bold]Actual Size:[/bold] {actual_mb:.1f} MB (thin-provisioned)",
-                    title="Image Created Successfully",
-                    border_style="green",
+                    title=title,
+                    border_style=border_style,
                 )
             )
         else:
-            print_success(f"Base image created: {output_path}")
+            console.print(f"[{border_style}]{title}: {output_path}[/{border_style}]")
     except Exception:
-        print_success(f"Base image created: {output_path}")
+        console.print(f"[{border_style}]{title}: {output_path}[/{border_style}]")
 
 
 @image_app.command("list")

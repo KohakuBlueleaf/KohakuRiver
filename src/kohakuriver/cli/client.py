@@ -414,6 +414,22 @@ def create_vps(
     return {}
 
 
+def get_vm_images(hostname: str) -> list[dict]:
+    """Get available VM images from a runner node (via host proxy)."""
+    url = f"{_get_host_url()}/vm/images/{hostname}"
+    try:
+        response = _make_request("get", url, timeout=15.0)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("images", [])
+    except httpx.HTTPStatusError as e:
+        _handle_http_error(e, f"get VM images from {hostname}")
+    except httpx.RequestError as e:
+        logger.error(f"Request error: {e}")
+        raise APIError(f"Network error: {e}")
+    return []
+
+
 def get_vps_list(active_only: bool = False) -> list[dict]:
     """Get VPS list."""
     if active_only:
