@@ -33,7 +33,10 @@ from kohakuriver.host.auth.dependencies import (
 )
 from kohakuriver.docker.naming import vps_container_name
 from kohakuriver.host.config import config
-from kohakuriver.host.services.node_manager import find_suitable_node
+from kohakuriver.host.services.node_manager import (
+    find_suitable_node,
+    find_suitable_node_for_vm,
+)
 from kohakuriver.host.services.task_scheduler import send_kill_to_runner
 from kohakuriver.models.requests import VPSSubmission
 from kohakuriver.utils.logger import get_logger
@@ -98,6 +101,10 @@ async def send_vps_to_runner(
     ssh_key_mode: str,
     ssh_public_key: str | None,
     registry_image: str | None = None,
+    vps_backend: str = "docker",
+    vm_image: str | None = None,
+    vm_disk_size: str | None = None,
+    memory_mb: int | None = None,
 ) -> dict | None:
     """
     Send VPS creation request to a runner.
@@ -108,6 +115,11 @@ async def send_vps_to_runner(
         container_name: Docker container base image.
         ssh_key_mode: SSH key mode ("none", "upload", or "generate").
         ssh_public_key: SSH public key for VPS access (None for "none" mode).
+        registry_image: Docker registry image override.
+        vps_backend: "docker" or "qemu".
+        vm_image: Base VM image name (qemu only).
+        vm_disk_size: VM disk size (qemu only).
+        memory_mb: VM memory in MB (qemu only).
 
     Returns:
         Runner response dict or None on failure.
@@ -123,7 +135,14 @@ async def send_vps_to_runner(
         "ssh_key_mode": ssh_key_mode,
         "ssh_public_key": ssh_public_key,
         "ssh_port": task.ssh_port,
+        "vps_backend": vps_backend,
     }
+
+    # Add VM-specific fields
+    if vps_backend == "qemu":
+        payload["vm_image"] = vm_image
+        payload["vm_disk_size"] = vm_disk_size
+        payload["memory_mb"] = memory_mb
 
     logger.info(
         f"Sending VPS {task.task_id} to runner at {runner_url} (ssh_key_mode={ssh_key_mode})"
@@ -189,10 +208,19 @@ async def submit_vps(
 
     Requires 'operator' role or higher (operators and admins can create VPS).
     """
+    vps_backend = submission.vps_backend or "docker"
+
     logger.info(
         f"Received VPS submission for {submission.required_cores} cores "
-        f"(ssh_key_mode={submission.ssh_key_mode})"
+        f"(ssh_key_mode={submission.ssh_key_mode}, backend={vps_backend})"
     )
+
+    # Validate backend
+    if vps_backend not in ("docker", "qemu"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid vps_backend: {vps_backend}. Must be 'docker' or 'qemu'.",
+        )
 
     # Validate SSH key mode
     ssh_key_mode = submission.ssh_key_mode or "disabled"
@@ -209,20 +237,30 @@ async def submit_vps(
             detail="ssh_public_key is required when ssh_key_mode is 'upload'.",
         )
 
-    # Find suitable node
-    node = find_suitable_node(
-        required_cores=submission.required_cores,
-        required_gpus=submission.required_gpus,
-        required_memory_bytes=submission.required_memory_bytes,
-        target_hostname=submission.target_hostname,
-        target_numa_node_id=submission.target_numa_node_id,
-    )
+    # Find suitable node (different logic for VM backend)
+    if vps_backend == "qemu":
+        node = find_suitable_node_for_vm(
+            required_cores=submission.required_cores,
+            required_gpus=submission.required_gpus,
+            required_memory_bytes=submission.required_memory_bytes,
+            target_hostname=submission.target_hostname,
+        )
+    else:
+        node = find_suitable_node(
+            required_cores=submission.required_cores,
+            required_gpus=submission.required_gpus,
+            required_memory_bytes=submission.required_memory_bytes,
+            target_hostname=submission.target_hostname,
+            target_numa_node_id=submission.target_numa_node_id,
+        )
 
     if not node:
-        raise HTTPException(
-            status_code=503,
-            detail="No suitable node available for this VPS.",
+        detail = (
+            "No suitable VM-capable node available."
+            if vps_backend == "qemu"
+            else "No suitable node available for this VPS."
         )
+        raise HTTPException(status_code=503, detail=detail)
 
     # Generate task ID and allocate SSH port
     task_id = generate_snowflake_id()
@@ -286,6 +324,9 @@ async def submit_vps(
         registry_image=submission.registry_image,
         docker_image_name=submission.registry_image
         or (f"kohakuriver/{container_name}:base" if container_name else None),
+        vps_backend=vps_backend,
+        vm_image=submission.vm_image if vps_backend == "qemu" else None,
+        vm_disk_size=submission.vm_disk_size if vps_backend == "qemu" else None,
     )
 
     logger.info(f"Created VPS task {task_id} assigned to {node.hostname}")
@@ -298,6 +339,10 @@ async def submit_vps(
         ssh_key_mode=ssh_key_mode,
         ssh_public_key=ssh_public_key,
         registry_image=submission.registry_image,
+        vps_backend=vps_backend,
+        vm_image=submission.vm_image,
+        vm_disk_size=submission.vm_disk_size,
+        memory_mb=submission.memory_mb,
     )
 
     if result is None:
@@ -334,6 +379,7 @@ async def submit_vps(
     response = {
         "message": "VPS created successfully.",
         "task_id": str(task_id),
+        "vps_backend": vps_backend,
         "ssh_key_mode": ssh_key_mode,
         "ssh_port": ssh_port,
         "assigned_node": {
@@ -342,6 +388,16 @@ async def submit_vps(
         },
         "runner_response": result,
     }
+
+    # Add VM-specific info
+    if vps_backend == "qemu" and result:
+        response["vm_ip"] = result.get("vm_ip")
+        response["vm_network_mode"] = result.get("network_mode")
+        # Store VM IP back in task record
+        vm_ip = result.get("vm_ip")
+        if vm_ip:
+            task.vm_ip = vm_ip
+            task.save()
 
     # Include generated keys in response (for "generate" mode)
     if ssh_key_mode == "generate" and ssh_private_key:
@@ -428,6 +484,9 @@ async def get_vps_list(
                     "target_numa_node_id": task.target_numa_node_id,
                     "container_name": task.container_name,
                     "ssh_port": task.ssh_port,
+                    "vps_backend": task.vps_backend,
+                    "vm_image": task.vm_image,
+                    "vm_ip": task.vm_ip,
                     "exit_code": task.exit_code,
                     "error_message": task.error_message,
                     "submitted_at": task.submitted_at,
@@ -493,6 +552,9 @@ async def get_active_vps_status(
                         task.started_at.isoformat() if task.started_at else None
                     ),
                     "ssh_port": task.ssh_port,
+                    "vps_backend": task.vps_backend,
+                    "vm_image": task.vm_image,
+                    "vm_ip": task.vm_ip,
                 }
             )
 
@@ -554,6 +616,9 @@ async def get_my_vps(
                     "target_numa_node_id": task.target_numa_node_id,
                     "container_name": task.container_name,
                     "ssh_port": task.ssh_port,
+                    "vps_backend": task.vps_backend,
+                    "vm_image": task.vm_image,
+                    "vm_ip": task.vm_ip,
                     "submitted_at": task.submitted_at,
                     "started_at": task.started_at,
                 }

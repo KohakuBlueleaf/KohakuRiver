@@ -193,6 +193,15 @@ def _update_node_metrics(
     if request.gpu_info:
         node.gpu_info = json.dumps(request.gpu_info)
 
+    # Update VM capability info
+    node.vm_capable = request.vm_capable
+    if request.vfio_gpus is not None:
+        node.vfio_gpus = json.dumps(request.vfio_gpus)
+
+    # Update runner version
+    if request.runner_version is not None:
+        node.runner_version = request.runner_version
+
     # Mark as online if it was offline
     if node.status != "online":
         logger.info(f"Node {node.hostname} came back online")

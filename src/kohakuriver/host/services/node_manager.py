@@ -171,6 +171,75 @@ def find_suitable_node(
     return suitable_nodes[0][0]
 
 
+def find_suitable_node_for_vm(
+    required_cores: int,
+    required_gpus: list[int] | None = None,
+    required_memory_bytes: int | None = None,
+    target_hostname: str | None = None,
+) -> Node | None:
+    """
+    Find a suitable VM-capable node for QEMU VPS.
+
+    Filters for nodes with vm_capable=True and matching VFIO GPUs.
+
+    Args:
+        required_cores: Number of cores needed.
+        required_gpus: List of GPU IDs needed (matched against VFIO-capable GPUs).
+        required_memory_bytes: Memory needed in bytes.
+        target_hostname: Specific hostname to use.
+
+    Returns:
+        Suitable Node or None if not found.
+    """
+    query = Node.select().where((Node.status == "online") & (Node.vm_capable == True))
+
+    if target_hostname:
+        query = query.where(Node.hostname == target_hostname)
+
+    nodes: list[Node] = list(query)
+
+    if not nodes:
+        logger.warning("No VM-capable online nodes available")
+        return None
+
+    suitable_nodes = []
+
+    for node in nodes:
+        # Check cores
+        available_cores = get_node_available_cores(node)
+        if available_cores < required_cores:
+            continue
+
+        # Check memory
+        if required_memory_bytes:
+            available_memory = get_node_available_memory(node)
+            if available_memory < required_memory_bytes:
+                continue
+
+        # Check VFIO GPUs if required
+        if required_gpus:
+            vfio_gpus = node.get_vfio_gpus()
+            vfio_gpu_ids = {g.get("gpu_id") for g in vfio_gpus}
+            available_gpus = get_node_available_gpus(node)
+            # GPU must be both VFIO-capable and not in use
+            available_vfio = vfio_gpu_ids & available_gpus
+            if not all(gpu in available_vfio for gpu in required_gpus):
+                continue
+
+        suitable_nodes.append((node, available_cores))
+
+    if not suitable_nodes:
+        logger.warning(
+            f"No suitable VM-capable nodes found for requirements: "
+            f"cores={required_cores}, gpus={required_gpus}, "
+            f"memory={required_memory_bytes}"
+        )
+        return None
+
+    suitable_nodes.sort(key=lambda x: x[1], reverse=True)
+    return suitable_nodes[0][0]
+
+
 def _node_meets_requirements(
     node: Node,
     required_cores: int,
@@ -280,4 +349,7 @@ def _build_node_status(node: Node, cores_in_use: dict[str, int]) -> dict:
         "memory_total_bytes": node.memory_total_bytes,
         "current_avg_temp": node.current_avg_temp,
         "current_max_temp": node.current_max_temp,
+        "vm_capable": node.vm_capable,
+        "vfio_gpus": node.get_vfio_gpus(),
+        "runner_version": node.runner_version,
     }
