@@ -22,6 +22,14 @@ from kohakuriver.runner.services.vps_manager import (
     resume_vps,
     stop_vps,
 )
+from kohakuriver.runner.services.vm_vps_manager import (
+    create_vm_vps,
+    get_vm_status,
+    mark_vm_ready,
+    receive_vm_heartbeat,
+    restart_vm_vps,
+    stop_vm_vps,
+)
 from kohakuriver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -39,7 +47,7 @@ def set_dependencies(store):
 
 @router.post("/vps/create")
 async def create_vps_endpoint(request: VPSCreateRequest):
-    """Create a VPS container."""
+    """Create a VPS container or VM."""
     task_id = request.task_id
 
     # Check if already running
@@ -50,17 +58,28 @@ async def create_vps_endpoint(request: VPSCreateRequest):
             detail=f"VPS {task_id} is already running on this node.",
         )
 
+    # Dispatch based on backend
+    if request.vps_backend == "qemu":
+        return await _create_vm_vps(request)
+    else:
+        return await _create_docker_vps(request)
+
+
+async def _create_docker_vps(request: VPSCreateRequest):
+    """Create a Docker-based VPS."""
+    task_id = request.task_id
+
     # Check local temp directory
     if not os.path.isdir(config.LOCAL_TEMP_DIR):
         logger.error(f"Local temp directory '{config.LOCAL_TEMP_DIR}' not found.")
         raise HTTPException(
             status_code=500,
-            detail=f"Configuration error: LOCAL_TEMP_DIR missing on node.",
+            detail="Configuration error: LOCAL_TEMP_DIR missing on node.",
         )
 
     ssh_key_mode = request.ssh_key_mode or "upload"
     logger.info(
-        f"Creating VPS {task_id} with {request.required_cores} cores, "
+        f"Creating Docker VPS {task_id} with {request.required_cores} cores, "
         f"SSH port {request.ssh_port}, ssh_key_mode={ssh_key_mode}"
     )
 
@@ -88,9 +107,42 @@ async def create_vps_endpoint(request: VPSCreateRequest):
     return result
 
 
+async def _create_vm_vps(request: VPSCreateRequest):
+    """Create a QEMU VM-based VPS."""
+    task_id = request.task_id
+
+    vm_image = request.vm_image or "ubuntu-24.04"
+    memory_mb = request.memory_mb or config.VM_DEFAULT_MEMORY_MB
+    disk_size = request.vm_disk_size or config.VM_DEFAULT_DISK_SIZE
+
+    logger.info(
+        f"Creating VM VPS {task_id} with {request.required_cores} cores, "
+        f"{memory_mb}MB RAM, image={vm_image}, disk={disk_size}"
+    )
+
+    result = await create_vm_vps(
+        task_id=task_id,
+        vm_image=vm_image,
+        cores=request.required_cores,
+        memory_mb=memory_mb,
+        disk_size=disk_size,
+        gpu_ids=request.required_gpus,
+        ssh_public_key=request.ssh_public_key,
+        task_store=task_store,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("error", "VM VPS creation failed."),
+        )
+
+    return result
+
+
 @router.post("/vps/stop/{task_id}")
 async def stop_vps_endpoint(task_id: int):
-    """Stop a running VPS."""
+    """Stop a running VPS (Docker or VM)."""
     logger.info(f"Received stop request for VPS {task_id}")
 
     if not task_store or not task_store.get_task(task_id):
@@ -100,7 +152,15 @@ async def stop_vps_endpoint(task_id: int):
             detail=f"VPS {task_id} not found.",
         )
 
-    success = await stop_vps(task_id, task_store)
+    # Check if this is a VM VPS
+    task_info = task_store.get_task(task_id)
+    container_name = task_info.get("container_name", "") if task_info else ""
+
+    if container_name and container_name.startswith("vm-"):
+        success = await stop_vm_vps(task_id, task_store)
+    else:
+        success = await stop_vps(task_id, task_store)
+
     if not success:
         raise HTTPException(
             status_code=500,
@@ -260,3 +320,50 @@ async def get_latest_snapshot_endpoint(task_id: int):
         "task_id": task_id,
         "tag": tag,
     }
+
+
+# =============================================================================
+# VM VPS Endpoints
+# =============================================================================
+
+
+@router.get("/vps/{task_id}/vm-status")
+async def vm_status_endpoint(task_id: int):
+    """Get VM status."""
+    status = await get_vm_status(task_id)
+    if not status:
+        raise HTTPException(status_code=404, detail=f"VM {task_id} not found.")
+    return status
+
+
+@router.post("/vps/{task_id}/vm-restart")
+async def vm_restart_endpoint(task_id: int):
+    """Restart a VM."""
+    success = await restart_vm_vps(task_id)
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Failed to restart VM {task_id}.")
+    return {"message": f"VM {task_id} restarted."}
+
+
+class VMHeartbeatPayload(BaseModel):
+    """Payload from VM agent heartbeat."""
+
+    task_id: int
+    timestamp: float | None = None
+    gpus: list[dict] | None = None
+    system: dict | None = None
+    status: str = "healthy"
+
+
+@router.post("/vps/{task_id}/vm-heartbeat")
+async def vm_heartbeat_endpoint(task_id: int, payload: VMHeartbeatPayload):
+    """Receive heartbeat from VM agent."""
+    await receive_vm_heartbeat(task_id, payload.model_dump())
+    return {"status": "ok"}
+
+
+@router.post("/vps/{task_id}/vm-phone-home")
+async def vm_phone_home_endpoint(task_id: int):
+    """Receive phone-home callback from cloud-init inside VM."""
+    await mark_vm_ready(task_id)
+    return {"status": "ok"}

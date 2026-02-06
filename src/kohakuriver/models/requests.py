@@ -192,6 +192,10 @@ class VPSSubmission(BaseModel):
         - none: SSH with passwordless root login
         - upload: SSH with user-provided public key
         - generate: SSH with server-generated keypair
+
+    Supports multiple backends:
+        - docker: Docker container (default)
+        - qemu: QEMU/KVM VM with full GPU passthrough
     """
 
     name: str | None = None
@@ -205,6 +209,11 @@ class VPSSubmission(BaseModel):
     ssh_key_mode: str = "disabled"
     ssh_public_key: str | None = None
     ip_reservation_token: str | None = None
+    # VM-specific options (qemu backend)
+    vps_backend: str = "docker"  # "docker" or "qemu"
+    vm_image: str | None = None  # Base VM image name (qemu only)
+    vm_disk_size: str | None = None  # VM disk size e.g. "50G" (qemu only)
+    memory_mb: int | None = None  # VM memory in MB (qemu only)
 
 
 class VPSCreateRequest(BaseModel):
@@ -221,6 +230,11 @@ class VPSCreateRequest(BaseModel):
     ssh_public_key: str | None = None
     ssh_port: int
     reserved_ip: str | None = None
+    # VM-specific options (qemu backend)
+    vps_backend: str = "docker"  # "docker" or "qemu"
+    vm_image: str | None = None  # Base VM image name (qemu only)
+    vm_disk_size: str | None = None  # VM disk size e.g. "50G" (qemu only)
+    memory_mb: int | None = None  # VM memory in MB (qemu only)
 
 
 class TaskKillRequest(BaseModel):
@@ -272,6 +286,10 @@ class TaskResponse(BaseModel):
     docker_privileged: bool
     docker_mount_dirs: list[str]
     ssh_port: int | None
+    vps_backend: str | None = None
+    vm_image: str | None = None
+    vm_disk_size: str | None = None
+    vm_ip: str | None = None
     stdout_path: str
     stderr_path: str
     exit_code: int | None
@@ -352,6 +370,11 @@ class HeartbeatRequest(BaseModel):
     current_avg_temp: float | None = None
     current_max_temp: float | None = None
     gpu_info: list[dict] | None = None
+    # VM capability info
+    vm_capable: bool = False
+    vfio_gpus: list[dict] | None = None
+    # Runner version
+    runner_version: str | None = None
 
 
 class RegisterRequest(BaseModel):
@@ -398,6 +421,9 @@ class NodeResponse(BaseModel):
     current_max_temp: float | None
     numa_topology: dict[int, list[int]] | None
     gpu_info: list[dict]
+    vm_capable: bool = False
+    vfio_gpus: list[dict] | None = None
+    runner_version: str | None = None
 
 
 class NodeListResponse(BaseModel):
