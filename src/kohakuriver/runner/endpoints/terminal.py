@@ -1,4 +1,4 @@
-"""WebSocket terminal endpoint for task/VPS containers on the Runner."""
+"""WebSocket terminal endpoint for task/VPS containers and VMs on the Runner."""
 
 import asyncio
 import json
@@ -16,6 +16,8 @@ logger = get_logger(__name__)
 
 # Module-level dependencies (set by app on startup)
 _task_store: TaskStateStore | None = None
+
+VM_CONTAINER_PREFIX = "vm-"
 
 
 def set_dependencies(task_store: TaskStateStore):
@@ -46,14 +48,22 @@ class WebSocketOutputMessage(BaseModel):
 # --- Helper Functions ---
 
 
-def _resolve_container_name(task_id: int) -> str | None:
-    """Resolve task_id to container name using task_store."""
+def _resolve_task_data(task_id: int) -> dict | None:
+    """Resolve task_id to task data from task_store."""
     if not _task_store:
         return None
-    task_data = _task_store.get_task(task_id)
-    if not task_data:
-        return None
-    return task_data.get("container_name")
+    return _task_store.get_task(task_id)
+
+
+def _is_vm_task(task_data: dict) -> bool:
+    """Check if task is a VM (not Docker)."""
+    container_name = task_data.get("container_name", "")
+    return container_name.startswith(VM_CONTAINER_PREFIX)
+
+
+def _get_vm_ip(task_data: dict) -> str | None:
+    """Get VM IP from task data."""
+    return task_data.get("vm_ip")
 
 
 async def _send_error_and_close(
@@ -64,6 +74,203 @@ async def _send_error_and_close(
         WebSocketOutputMessage(type="error", data=message).model_dump()
     )
     await websocket.close(code=code)
+
+
+async def _close_websocket(websocket: WebSocket) -> None:
+    """Close websocket safely."""
+    try:
+        await websocket.close(code=1000)
+    except Exception:
+        pass
+
+
+# =============================================================================
+# Main Endpoint (dispatches to Docker or VM handler)
+# =============================================================================
+
+
+async def task_terminal_websocket_endpoint(
+    websocket: WebSocket,
+    task_id: int = Path(..., description="Task or VPS ID to connect to."),
+):
+    """
+    Handle WebSocket connection for interacting with a task/VPS shell.
+
+    Detects whether the task is Docker-based or VM-based and dispatches
+    to the appropriate handler.
+    """
+    await websocket.accept()
+    logger.info(f"WebSocket terminal connection accepted for task {task_id}")
+
+    task_data = _resolve_task_data(task_id)
+    if not task_data:
+        logger.warning(f"Task {task_id} not found on this runner")
+        await _send_error_and_close(
+            websocket, f"Task {task_id} not found on this runner.", 1008
+        )
+        return
+
+    if _is_vm_task(task_data):
+        vm_ip = _get_vm_ip(task_data)
+        if not vm_ip:
+            await _send_error_and_close(
+                websocket, f"VM {task_id} has no IP address.", 1008
+            )
+            return
+        await _handle_vm_terminal(websocket, task_id, vm_ip)
+    else:
+        container_name = task_data.get("container_name")
+        if not container_name:
+            await _send_error_and_close(
+                websocket, f"Task {task_id} has no container.", 1008
+            )
+            return
+        await _handle_docker_terminal(websocket, task_id, container_name)
+
+
+# =============================================================================
+# VM Terminal (SSH-based)
+# =============================================================================
+
+
+async def _handle_vm_terminal(websocket: WebSocket, task_id: int, vm_ip: str) -> None:
+    """Handle terminal for VM via SSH using asyncssh."""
+    conn = None
+    process = None
+
+    try:
+        from kohakuriver.runner.services.vm_ssh import ssh_connect
+
+        logger.info(f"Opening SSH terminal to VM {task_id} at {vm_ip}")
+        try:
+            conn = await ssh_connect(vm_ip, timeout=15.0)
+        except Exception as e:
+            logger.error(f"SSH connection failed for VM {task_id}: {e}")
+            await _send_error_and_close(websocket, f"SSH connection failed: {e}")
+            return
+
+        # Handle initial resize to get terminal size
+        term_width, term_height = 80, 24
+        try:
+            initial_msg = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
+            initial_data = json.loads(initial_msg)
+            if initial_data.get("type") == "resize":
+                term_width = initial_data.get("cols", 80)
+                term_height = initial_data.get("rows", 24)
+        except (asyncio.TimeoutError, Exception):
+            pass
+
+        # Open interactive shell session
+        process = await conn.create_process(
+            term_type="xterm-256color",
+            term_size=(term_width, term_height),
+        )
+
+        # Send acknowledgment
+        await websocket.send_json(
+            WebSocketOutputMessage(type="output", data="").model_dump()
+        )
+
+        # Run I/O loop
+        await _run_vm_terminal_io(websocket, process, task_id)
+
+    except asyncio.CancelledError:
+        logger.info(f"VM terminal session cancelled for task {task_id}")
+        raise
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected cleanly for VM {task_id}")
+    except Exception as e:
+        logger.exception(f"Unexpected error in VM terminal for task {task_id}: {e}")
+        try:
+            await websocket.send_json(
+                WebSocketOutputMessage(
+                    type="error", data=f"Error: {e}\r\n"
+                ).model_dump()
+            )
+        except Exception:
+            pass
+    finally:
+        logger.info(f"Cleaning up VM terminal session for task {task_id}")
+        if process:
+            try:
+                process.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        await _close_websocket(websocket)
+
+
+async def _run_vm_terminal_io(
+    websocket: WebSocket,
+    process,
+    task_id: int,
+) -> None:
+    """Run the VM terminal I/O loop via SSH process."""
+    stop_event = asyncio.Event()
+
+    async def handle_output():
+        """Read from SSH process stdout and send to WebSocket."""
+        try:
+            while not stop_event.is_set():
+                data = await process.stdout.read(4096)
+                if not data:
+                    logger.info(f"SSH session closed for VM {task_id}")
+                    break
+                await websocket.send_json(
+                    WebSocketOutputMessage(type="output", data=data).model_dump()
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            if not stop_event.is_set():
+                logger.info(f"SSH output error for VM {task_id}: {e}")
+
+    async def handle_input():
+        """Read from WebSocket and write to SSH process stdin."""
+        try:
+            while not stop_event.is_set():
+                message_text = await websocket.receive_text()
+                message_data = json.loads(message_text)
+                msg = WebSocketInputMessage(**message_data)
+
+                if msg.type == "input" and msg.data:
+                    process.stdin.write(msg.data)
+                elif msg.type == "resize" and msg.rows and msg.cols:
+                    try:
+                        process.change_terminal_size(msg.cols, msg.rows)
+                    except Exception as e:
+                        logger.debug(f"Failed to resize VM terminal: {e}")
+
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket disconnected (input) for VM {task_id}")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            if not stop_event.is_set():
+                logger.error(f"Error in VM input handler for task {task_id}: {e}")
+
+    input_task = asyncio.create_task(handle_input())
+    output_task = asyncio.create_task(handle_output())
+
+    _, pending = await asyncio.wait(
+        [input_task, output_task], return_when=asyncio.FIRST_COMPLETED
+    )
+
+    stop_event.set()
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
+    logger.info(f"VM terminal I/O finished for task {task_id}")
+
+
+# =============================================================================
+# Docker Terminal (existing docker exec-based approach)
+# =============================================================================
 
 
 async def _detect_shell(container) -> str | None:
@@ -105,22 +312,16 @@ async def _kill_exec_process(
         )
         container = client.containers.get(container_name)
 
-        # Kill the entire process group (negative PID)
-        # This ensures child processes (scripts running in shell) are also killed
-        # First try SIGHUP to process group, then SIGKILL
         exit_code, _ = await asyncio.to_thread(
             container.exec_run, f"kill -1 -{exec_pid}", demux=False
         )
         if exit_code != 0:
-            # Process group kill failed, try direct kill
             await asyncio.to_thread(
                 container.exec_run, f"kill -1 {exec_pid}", demux=False
             )
 
-        # Give processes a moment to handle SIGHUP
         await asyncio.sleep(0.1)
 
-        # Force kill if still running
         await asyncio.to_thread(
             container.exec_run,
             f"kill -9 -{exec_pid} 2>/dev/null || kill -9 {exec_pid} 2>/dev/null || true",
@@ -148,45 +349,15 @@ def _close_socket_stream(socket_stream, identifier: str) -> None:
         logger.warning(f"Error closing Docker exec socket for {identifier}: {e}")
 
 
-async def _close_websocket(websocket: WebSocket) -> None:
-    """Close websocket safely."""
-    try:
-        await websocket.close(code=1000)
-    except Exception:
-        pass
-
-
-# --- Main Endpoint ---
-
-
-async def task_terminal_websocket_endpoint(
-    websocket: WebSocket,
-    task_id: int = Path(..., description="Task or VPS ID to connect to."),
-):
-    """
-    Handle WebSocket connection for interacting with a task/VPS container shell.
-
-    Called by Host proxy when a user requests terminal access.
-    Validates the task is running on this runner and opens a docker exec session.
-    """
-    await websocket.accept()
-    logger.info(f"WebSocket terminal connection accepted for task {task_id}")
-
+async def _handle_docker_terminal(
+    websocket: WebSocket, task_id: int, container_name: str
+) -> None:
+    """Handle terminal for Docker container via docker exec."""
     socket_stream = None
     exec_id = None
     client = None
-    container_name = None
 
     try:
-        # Validate task and get container
-        container_name = _resolve_container_name(task_id)
-        if not container_name:
-            logger.warning(f"Task {task_id} not found on this runner")
-            await _send_error_and_close(
-                websocket, f"Task {task_id} not found on this runner.", 1008
-            )
-            return
-
         # Initialize Docker client
         try:
             client = docker.from_env(timeout=None)
@@ -249,7 +420,7 @@ async def task_terminal_websocket_endpoint(
         )
 
         # Run I/O loop
-        await _run_terminal_io(
+        await _run_docker_terminal_io(
             websocket, raw_socket, client, exec_id, task_id, socket_stream
         )
 
@@ -279,9 +450,11 @@ async def task_terminal_websocket_endpoint(
         except Exception:
             pass
     finally:
-        await _cleanup_terminal_session(
-            client, exec_id, container_name, socket_stream, websocket, task_id
-        )
+        logger.info(f"Cleaning up terminal session for task {task_id}")
+        if exec_id and client and container_name:
+            await _kill_exec_process(client, exec_id, container_name, f"task {task_id}")
+        _close_socket_stream(socket_stream, f"task {task_id}")
+        await _close_websocket(websocket)
 
 
 async def _handle_initial_resize(
@@ -305,7 +478,7 @@ async def _handle_initial_resize(
         logger.debug(f"Error processing initial resize: {e}")
 
 
-async def _run_terminal_io(
+async def _run_docker_terminal_io(
     websocket: WebSocket,
     raw_socket,
     client: docker.DockerClient,
@@ -313,7 +486,7 @@ async def _run_terminal_io(
     task_id: int,
     socket_stream,
 ) -> None:
-    """Run the terminal I/O loop."""
+    """Run the Docker terminal I/O loop."""
     stop_output = asyncio.Event()
 
     async def handle_output():
@@ -377,7 +550,6 @@ async def _run_terminal_io(
         [input_task, output_task], return_when=asyncio.FIRST_COMPLETED
     )
 
-    # Signal stop and close socket before cancelling tasks
     stop_output.set()
     _close_socket_stream(socket_stream, f"task {task_id}")
 
@@ -386,22 +558,3 @@ async def _run_terminal_io(
     await asyncio.gather(*pending, return_exceptions=True)
 
     logger.info(f"I/O tasks finished for task {task_id}")
-
-
-async def _cleanup_terminal_session(
-    client: docker.DockerClient | None,
-    exec_id: str | None,
-    container_name: str | None,
-    socket_stream,
-    websocket: WebSocket,
-    task_id: int,
-) -> None:
-    """Clean up terminal session resources."""
-    logger.info(f"Cleaning up terminal session for task {task_id}")
-
-    # Kill exec process to terminate any running scripts
-    if exec_id and client and container_name:
-        await _kill_exec_process(client, exec_id, container_name, f"task {task_id}")
-
-    _close_socket_stream(socket_stream, f"task {task_id}")
-    await _close_websocket(websocket)

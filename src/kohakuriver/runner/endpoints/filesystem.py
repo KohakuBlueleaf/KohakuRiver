@@ -9,6 +9,7 @@ Includes WebSocket endpoint for real-time file system change notifications.
 
 import asyncio
 import base64
+import contextlib
 import os
 import shlex
 from datetime import datetime
@@ -36,6 +37,8 @@ router = APIRouter()
 
 # Module-level dependencies (set by app on startup)
 _task_store: TaskStateStore | None = None
+
+VM_CONTAINER_PREFIX = "vm-"
 
 
 def set_dependencies(task_store: TaskStateStore):
@@ -142,16 +145,17 @@ class FileStatResponse(BaseModel):
 # =============================================================================
 
 
-def _resolve_container_name(task_id: int) -> str | None:
-    """Resolve task_id to container name using task_store."""
+def _resolve_task_data(task_id: int) -> dict | None:
+    """Resolve task_id to task data from task_store."""
     if not _task_store:
         return None
+    return _task_store.get_task(task_id)
 
-    task_data = _task_store.get_task(task_id)
-    if not task_data:
-        return None
 
-    return task_data.get("container_name")
+def _is_vm_task(task_data: dict) -> bool:
+    """Check if task is a VM (not Docker)."""
+    container_name = task_data.get("container_name", "")
+    return container_name.startswith(VM_CONTAINER_PREFIX)
 
 
 def _validate_path(path: str) -> tuple[bool, str | None]:
@@ -185,43 +189,6 @@ def _get_validated_path(path: str) -> str:
     return os.path.normpath(path)
 
 
-async def _get_container(task_id: int) -> tuple[docker.DockerClient, any]:
-    """
-    Get Docker client and container for a task.
-
-    Returns (client, container) tuple.
-    Raises HTTPException on error.
-    """
-    # Resolve container name
-    container_name = _resolve_container_name(task_id)
-    if not container_name:
-        raise HTTPException(
-            status_code=404, detail=f"Task {task_id} not found on this runner."
-        )
-
-    # Initialize Docker client
-    try:
-        client = docker.from_env(timeout=30)
-        client.ping()
-    except Exception as e:
-        logger.error(f"Failed to initialize Docker client: {e}")
-        raise HTTPException(status_code=500, detail=f"Docker connection error: {e}")
-
-    # Get container
-    try:
-        container = client.containers.get(container_name)
-        if container.status != "running":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Container is not running (status: {container.status}).",
-            )
-        return client, container
-    except DockerNotFound:
-        raise HTTPException(status_code=404, detail="Container not found.")
-    except DockerAPIError as e:
-        raise HTTPException(status_code=500, detail=f"Docker API error: {e}")
-
-
 async def _exec_in_container(
     container, cmd: list[str], timeout: int = 30
 ) -> tuple[int, str, str]:
@@ -251,6 +218,80 @@ async def _exec_in_container(
         return inspect.get("ExitCode", -1), stdout, stderr
 
     return await asyncio.to_thread(_run)
+
+
+async def _exec_in_vm(
+    vm_ip: str, cmd: list[str], timeout: int = 30
+) -> tuple[int, str, str]:
+    """Execute a command in VM via SSH."""
+    from kohakuriver.runner.services.vm_ssh import ssh_exec
+
+    return await ssh_exec(vm_ip, cmd, timeout=timeout)
+
+
+@contextlib.asynccontextmanager
+async def _exec_context(task_id: int):
+    """
+    Get an exec function for a task (Docker or VM).
+
+    Yields a callable with signature: (cmd: list[str], timeout: int) -> (exit_code, stdout, stderr)
+    Handles Docker client lifecycle automatically.
+    """
+    task_data = _resolve_task_data(task_id)
+    if not task_data:
+        raise HTTPException(
+            status_code=404, detail=f"Task {task_id} not found on this runner."
+        )
+
+    if _is_vm_task(task_data):
+        vm_ip = task_data.get("vm_ip")
+        if not vm_ip:
+            raise HTTPException(
+                status_code=500, detail=f"VM {task_id} has no IP address."
+            )
+
+        async def vm_exec(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
+            return await _exec_in_vm(vm_ip, cmd, timeout)
+
+        yield vm_exec
+    else:
+        container_name = task_data.get("container_name")
+        if not container_name:
+            raise HTTPException(
+                status_code=404, detail=f"Task {task_id} has no container."
+            )
+
+        try:
+            client = docker.from_env(timeout=30)
+            client.ping()
+        except Exception as e:
+            logger.error(f"Failed to initialize Docker client: {e}")
+            raise HTTPException(status_code=500, detail=f"Docker connection error: {e}")
+
+        try:
+            container = client.containers.get(container_name)
+            if container.status != "running":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Container is not running (status: {container.status}).",
+                )
+        except DockerNotFound:
+            client.close()
+            raise HTTPException(status_code=404, detail="Container not found.")
+        except DockerAPIError as e:
+            client.close()
+            raise HTTPException(status_code=500, detail=f"Docker API error: {e}")
+
+        try:
+
+            async def docker_exec(
+                cmd: list[str], timeout: int = 30
+            ) -> tuple[int, str, str]:
+                return await _exec_in_container(container, cmd, timeout)
+
+            yield docker_exec
+        finally:
+            client.close()
 
 
 def _parse_ls_output(output: str, base_path: str) -> list[FileEntry]:
@@ -359,22 +400,21 @@ async def list_directory(
     path: str = Query("/", description="Directory path to list"),
     show_hidden: bool = Query(False, description="Include hidden files"),
 ):
-    """List contents of a directory inside the container."""
+    """List contents of a directory inside the container or VM."""
     path = _get_validated_path(path)
-    client, container = await _get_container(task_id)
 
-    try:
+    async with _exec_context(task_id) as exec_fn:
         # Build ls command - try GNU ls first, fallback to BusyBox compatible
         flags = "-la" if show_hidden else "-lA"
 
         # Try GNU ls with --time-style first
         cmd = ["ls", flags, "--time-style=+%s", path]
-        exit_code, stdout, stderr = await _exec_in_container(container, cmd)
+        exit_code, stdout, stderr = await exec_fn(cmd)
 
         # If --time-style not supported (BusyBox), fallback to basic ls
         if exit_code != 0 and "unrecognized option" in stderr:
             cmd = ["ls", flags, path]
-            exit_code, stdout, stderr = await _exec_in_container(container, cmd)
+            exit_code, stdout, stderr = await exec_fn(cmd)
 
         if exit_code != 0:
             if "No such file or directory" in stderr:
@@ -402,9 +442,6 @@ async def list_directory(
 
         return ListDirectoryResponse(path=path, entries=entries, parent=parent)
 
-    finally:
-        client.close()
-
 
 @router.get("/fs/{task_id}/read", response_model=ReadFileResponse)
 async def read_file(
@@ -415,23 +452,22 @@ async def read_file(
     ),
     limit: int = Query(MAX_FILE_READ_SIZE, description="Max bytes to read"),
 ):
-    """Read contents of a file inside the container."""
+    """Read contents of a file inside the container or VM."""
     path = _get_validated_path(path)
-    client, container = await _get_container(task_id)
 
     # Clamp limit
     limit = min(limit, MAX_FILE_READ_SIZE)
 
-    try:
+    async with _exec_context(task_id) as exec_fn:
         # First check if it's a file and get size
         # Try GNU stat first, then BusyBox stat
         stat_cmd = ["stat", "--format=%F|%s", path]
-        exit_code, stdout, stderr = await _exec_in_container(container, stat_cmd)
+        exit_code, stdout, stderr = await exec_fn(stat_cmd)
 
         # Fallback to BusyBox stat format
         if exit_code != 0 and "unrecognized option" in stderr:
             stat_cmd = ["stat", "-c", "%F|%s", path]
-            exit_code, stdout, stderr = await _exec_in_container(container, stat_cmd)
+            exit_code, stdout, stderr = await exec_fn(stat_cmd)
 
         if exit_code != 0:
             if "No such file or directory" in stderr:
@@ -454,7 +490,7 @@ async def read_file(
 
         # Read file with size limit
         cmd = ["head", "-c", str(limit), path]
-        exit_code, stdout, stderr = await _exec_in_container(container, cmd)
+        exit_code, stdout, stderr = await exec_fn(cmd)
 
         if exit_code != 0:
             raise HTTPException(status_code=500, detail=f"read failed: {stderr}")
@@ -485,44 +521,38 @@ async def read_file(
             truncated=truncated,
         )
 
-    finally:
-        client.close()
-
 
 @router.post("/fs/{task_id}/write", response_model=WriteFileResponse)
 async def write_file(
     task_id: int = Path(..., description="Task ID"),
     request: WriteFileRequest = ...,
 ):
-    """Write contents to a file inside the container."""
+    """Write contents to a file inside the container or VM."""
     path = _get_validated_path(request.path)
-    client, container = await _get_container(task_id)
 
-    try:
-        # Decode content if base64
-        if request.encoding == "base64":
-            try:
-                content_bytes = base64.b64decode(request.content)
-            except Exception as e:
-                raise HTTPException(
-                    status_code=400, detail=f"Invalid base64 content: {e}"
-                )
-        else:
-            content_bytes = request.content.encode("utf-8")
+    # Decode content if base64
+    if request.encoding == "base64":
+        try:
+            content_bytes = base64.b64decode(request.content)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid base64 content: {e}")
+    else:
+        content_bytes = request.content.encode("utf-8")
 
-        # Check size limit
-        if len(content_bytes) > MAX_FILE_WRITE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File too large. Maximum size is {MAX_FILE_WRITE_SIZE} bytes.",
-            )
+    # Check size limit
+    if len(content_bytes) > MAX_FILE_WRITE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {MAX_FILE_WRITE_SIZE} bytes.",
+        )
 
+    async with _exec_context(task_id) as exec_fn:
         # Create parent directories if requested
         if request.create_parents:
             parent_dir = os.path.dirname(path)
             if parent_dir and parent_dir != "/":
                 mkdir_cmd = ["mkdir", "-p", parent_dir]
-                exit_code, _, stderr = await _exec_in_container(container, mkdir_cmd)
+                exit_code, _, stderr = await exec_fn(mkdir_cmd)
                 if exit_code != 0:
                     raise HTTPException(
                         status_code=500,
@@ -539,7 +569,7 @@ async def write_file(
             "-c",
             f'echo "{b64_content}" | base64 -d > {escaped_path}',
         ]
-        exit_code, stdout, stderr = await _exec_in_container(container, write_cmd)
+        exit_code, stdout, stderr = await exec_fn(write_cmd)
 
         if exit_code != 0:
             if "Permission denied" in stderr:
@@ -550,24 +580,20 @@ async def write_file(
 
         return WriteFileResponse(path=path, size=len(content_bytes), success=True)
 
-    finally:
-        client.close()
-
 
 @router.post("/fs/{task_id}/mkdir")
 async def create_directory(
     task_id: int = Path(..., description="Task ID"),
     request: MkdirRequest = ...,
 ):
-    """Create a directory inside the container."""
+    """Create a directory inside the container or VM."""
     path = _get_validated_path(request.path)
-    client, container = await _get_container(task_id)
 
-    try:
+    async with _exec_context(task_id) as exec_fn:
         flags = "-p" if request.parents else ""
         cmd = ["mkdir", flags, path] if flags else ["mkdir", path]
 
-        exit_code, stdout, stderr = await _exec_in_container(container, cmd)
+        exit_code, stdout, stderr = await exec_fn(cmd)
 
         if exit_code != 0:
             if "Permission denied" in stderr:
@@ -582,25 +608,21 @@ async def create_directory(
 
         return {"message": f"Directory created: {path}", "path": path}
 
-    finally:
-        client.close()
-
 
 @router.post("/fs/{task_id}/rename")
 async def rename_item(
     task_id: int = Path(..., description="Task ID"),
     request: RenameRequest = ...,
 ):
-    """Rename or move a file/directory inside the container."""
+    """Rename or move a file/directory inside the container or VM."""
     source = _get_validated_path(request.source)
     destination = _get_validated_path(request.destination)
-    client, container = await _get_container(task_id)
 
-    try:
+    async with _exec_context(task_id) as exec_fn:
         # Check if destination exists (unless overwrite is true)
         if not request.overwrite:
             check_cmd = ["test", "-e", destination]
-            exit_code, _, _ = await _exec_in_container(container, check_cmd)
+            exit_code, _, _ = await exec_fn(check_cmd)
             if exit_code == 0:
                 raise HTTPException(
                     status_code=409,
@@ -608,7 +630,7 @@ async def rename_item(
                 )
 
         cmd = ["mv", source, destination]
-        exit_code, stdout, stderr = await _exec_in_container(container, cmd)
+        exit_code, stdout, stderr = await exec_fn(cmd)
 
         if exit_code != 0:
             if "No such file or directory" in stderr:
@@ -625,9 +647,6 @@ async def rename_item(
             "destination": destination,
         }
 
-    finally:
-        client.close()
-
 
 @router.delete("/fs/{task_id}/delete")
 async def delete_item(
@@ -635,18 +654,17 @@ async def delete_item(
     path: str = Query(..., description="Path to delete"),
     recursive: bool = Query(False, description="Delete directories recursively"),
 ):
-    """Delete a file or directory inside the container."""
+    """Delete a file or directory inside the container or VM."""
     path = _get_validated_path(path)
-    client, container = await _get_container(task_id)
 
-    try:
+    async with _exec_context(task_id) as exec_fn:
         # Use rm with appropriate flags
         if recursive:
             cmd = ["rm", "-rf", path]
         else:
             cmd = ["rm", "-f", path]
 
-        exit_code, stdout, stderr = await _exec_in_container(container, cmd)
+        exit_code, stdout, stderr = await exec_fn(cmd)
 
         if exit_code != 0:
             if "No such file or directory" in stderr:
@@ -664,29 +682,25 @@ async def delete_item(
 
         return {"message": f"Deleted: {path}", "path": path}
 
-    finally:
-        client.close()
-
 
 @router.get("/fs/{task_id}/stat", response_model=FileStatResponse)
 async def stat_file(
     task_id: int = Path(..., description="Task ID"),
     path: str = Query(..., description="Path to stat"),
 ):
-    """Get file/directory metadata inside the container."""
+    """Get file/directory metadata inside the container or VM."""
     path = _get_validated_path(path)
-    client, container = await _get_container(task_id)
 
-    try:
+    async with _exec_context(task_id) as exec_fn:
         # stat with custom format: type|size|mtime|owner|group|permissions
         # Try GNU stat first, then BusyBox stat
         cmd = ["stat", "--format=%F|%s|%Y|%U|%G|%a", path]
-        exit_code, stdout, stderr = await _exec_in_container(container, cmd)
+        exit_code, stdout, stderr = await exec_fn(cmd)
 
         # Fallback to BusyBox stat format
         if exit_code != 0 and "unrecognized option" in stderr:
             cmd = ["stat", "-c", "%F|%s|%Y|%U|%G|%a", path]
-            exit_code, stdout, stderr = await _exec_in_container(container, cmd)
+            exit_code, stdout, stderr = await exec_fn(cmd)
 
         if exit_code != 0:
             if "No such file or directory" in stderr:
@@ -736,7 +750,7 @@ async def stat_file(
         except ValueError:
             permissions = permissions_octal
 
-        # Check if binary by looking at file extension or trying to read first bytes
+        # Check if binary by looking at file extension
         is_binary = False
         if file_type == "file":
             binary_extensions = {
@@ -796,9 +810,6 @@ async def stat_file(
             is_binary=is_binary,
         )
 
-    finally:
-        client.close()
-
 
 # =============================================================================
 # File System Watcher WebSocket Endpoint
@@ -814,8 +825,9 @@ async def watch_filesystem_handler(
     WebSocket handler for real-time filesystem change notifications.
 
     Called from main app.py with /ws prefix.
+    Supports both Docker containers and VMs.
 
-    Uses inotifywait inside the container to monitor file changes.
+    Uses inotifywait inside the container/VM to monitor file changes.
     Falls back to polling if inotifywait is not available.
 
     Events sent to client:
@@ -825,16 +837,48 @@ async def watch_filesystem_handler(
     """
     await websocket.accept()
 
-    # Resolve container
-    container_name = _resolve_container_name(task_id)
-    if not container_name:
+    # Resolve task
+    task_data = _resolve_task_data(task_id)
+    if not task_data:
         await websocket.send_json(
             {"type": "error", "message": f"Task {task_id} not found on this runner."}
         )
         await websocket.close()
         return
 
-    # Initialize Docker client
+    # Parse paths to watch
+    watch_paths = [p.strip() for p in paths.split(",") if p.strip()]
+    if not watch_paths:
+        watch_paths = ["/shared", "/local_temp"]
+
+    if _is_vm_task(task_data):
+        vm_ip = task_data.get("vm_ip")
+        if not vm_ip:
+            await websocket.send_json(
+                {"type": "error", "message": f"VM {task_id} has no IP address."}
+            )
+            await websocket.close()
+            return
+        await _watch_vm_filesystem(websocket, task_id, vm_ip, watch_paths)
+    else:
+        await _watch_docker_filesystem(websocket, task_id, task_data, watch_paths)
+
+
+async def _watch_docker_filesystem(
+    websocket: WebSocket,
+    task_id: int,
+    task_data: dict,
+    watch_paths: list[str],
+):
+    """Watch filesystem changes in a Docker container."""
+    container_name = task_data.get("container_name")
+    if not container_name:
+        await websocket.send_json(
+            {"type": "error", "message": f"Task {task_id} has no container."}
+        )
+        await websocket.close()
+        return
+
     try:
         client = docker.from_env(timeout=30)
         container = client.containers.get(container_name)
@@ -854,11 +898,6 @@ async def watch_filesystem_handler(
         await websocket.close()
         return
 
-    # Parse paths to watch
-    watch_paths = [p.strip() for p in paths.split(",") if p.strip()]
-    if not watch_paths:
-        watch_paths = ["/shared", "/local_temp"]
-
     # Validate paths exist
     valid_paths = []
     for path in watch_paths:
@@ -876,10 +915,11 @@ async def watch_filesystem_handler(
             {"type": "error", "message": "No valid paths to watch."}
         )
         await websocket.close()
+        client.close()
         return
 
     logger.info(
-        f"[FS Watch] Starting file watcher for task {task_id}, paths: {valid_paths}"
+        f"[FS Watch] Starting Docker file watcher for task {task_id}, paths: {valid_paths}"
     )
 
     # Check if inotifywait is available
@@ -894,6 +934,269 @@ async def watch_filesystem_handler(
         await _watch_with_polling(websocket, container, valid_paths, task_id)
 
     client.close()
+
+
+async def _watch_vm_filesystem(
+    websocket: WebSocket,
+    task_id: int,
+    vm_ip: str,
+    watch_paths: list[str],
+):
+    """Watch filesystem changes in a VM via SSH."""
+    from kohakuriver.runner.services.vm_ssh import ssh_connect, ssh_exec
+
+    # Validate paths exist
+    valid_paths = []
+    for path in watch_paths:
+        try:
+            exit_code, _, _ = await ssh_exec(vm_ip, ["test", "-d", path], timeout=5)
+            if exit_code == 0:
+                valid_paths.append(path)
+        except Exception:
+            pass
+
+    if not valid_paths:
+        await websocket.send_json(
+            {"type": "error", "message": "No valid paths to watch."}
+        )
+        await websocket.close()
+        return
+
+    logger.info(
+        f"[FS Watch] Starting VM file watcher for task {task_id}, paths: {valid_paths}"
+    )
+
+    # Check if inotifywait is available
+    exit_code, _, _ = await ssh_exec(vm_ip, ["which", "inotifywait"], timeout=5)
+    use_inotify = exit_code == 0
+
+    if use_inotify:
+        await _watch_vm_with_inotify(websocket, task_id, vm_ip, valid_paths)
+    else:
+        await _watch_vm_with_polling(websocket, task_id, vm_ip, valid_paths)
+
+
+async def _watch_vm_with_inotify(
+    websocket: WebSocket,
+    task_id: int,
+    vm_ip: str,
+    paths: list[str],
+):
+    """Watch filesystem in VM via SSH inotifywait."""
+    from kohakuriver.runner.services.vm_ssh import ssh_connect
+
+    conn = None
+    process = None
+
+    try:
+        conn = await ssh_connect(vm_ip, timeout=15.0)
+
+        # Build inotifywait command
+        paths_str = " ".join(shlex.quote(p) for p in paths)
+        cmd = (
+            f"inotifywait -m -r -e create,modify,delete,move "
+            f"--format '%e|%w%f|%:e' {paths_str}"
+        )
+        process = await conn.create_process(cmd)
+
+        logger.info(f"[FS Watch] Using inotifywait via SSH for VM {task_id}")
+        await websocket.send_json(
+            {"type": "watching", "paths": paths, "method": "inotify"}
+        )
+
+        stop_event = asyncio.Event()
+
+        async def read_output():
+            try:
+                while not stop_event.is_set():
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    parts = line.split("|")
+                    if len(parts) >= 2:
+                        events = parts[0]
+                        file_path = parts[1]
+                        is_dir = "ISDIR" in events if len(parts) > 2 else False
+
+                        event_type = "MODIFY"
+                        if "CREATE" in events:
+                            event_type = "CREATE"
+                        elif "DELETE" in events:
+                            event_type = "DELETE"
+                        elif "MOVE" in events:
+                            event_type = "MOVE"
+
+                        await websocket.send_json(
+                            {
+                                "type": "change",
+                                "event": event_type,
+                                "path": file_path,
+                                "is_dir": is_dir,
+                            }
+                        )
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                if not stop_event.is_set():
+                    logger.error(f"[FS Watch] VM inotify read error: {e}")
+
+        async def handle_ws():
+            try:
+                while not stop_event.is_set():
+                    try:
+                        message = await asyncio.wait_for(
+                            websocket.receive_json(), timeout=1.0
+                        )
+                        if message.get("type") == "ping":
+                            await websocket.send_json({"type": "pong"})
+                    except asyncio.TimeoutError:
+                        continue
+            except WebSocketDisconnect:
+                pass
+            finally:
+                stop_event.set()
+
+        read_task = asyncio.create_task(read_output())
+        ws_task = asyncio.create_task(handle_ws())
+        await asyncio.wait([read_task, ws_task], return_when=asyncio.FIRST_COMPLETED)
+
+    finally:
+        if process:
+            try:
+                process.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    logger.info(f"[FS Watch] Stopped VM inotify watcher for task {task_id}")
+
+
+async def _watch_vm_with_polling(
+    websocket: WebSocket,
+    task_id: int,
+    vm_ip: str,
+    paths: list[str],
+    interval: float = 2.0,
+):
+    """Watch filesystem in VM via SSH polling."""
+    from kohakuriver.runner.services.vm_ssh import ssh_exec
+
+    logger.info(
+        f"[FS Watch] Using polling via SSH for VM {task_id} (inotifywait not available)"
+    )
+    await websocket.send_json(
+        {"type": "watching", "paths": paths, "method": "polling", "interval": interval}
+    )
+
+    file_states: dict[str, dict[str, float]] = {}
+
+    async def get_file_list(path: str) -> dict[str, float]:
+        cmd = ["find", path, "-maxdepth", "3", "-printf", r"%p|%T@\n"]
+        exit_code, stdout, _ = await ssh_exec(vm_ip, cmd, timeout=30)
+
+        if exit_code != 0:
+            cmd = ["find", path, "-maxdepth", "3"]
+            exit_code, stdout, _ = await ssh_exec(vm_ip, cmd, timeout=30)
+            if exit_code != 0:
+                return {}
+            return {
+                line.strip(): 0 for line in stdout.strip().split("\n") if line.strip()
+            }
+
+        result = {}
+        for line in stdout.strip().split("\n"):
+            if "|" in line:
+                file_path, mtime_str = line.rsplit("|", 1)
+                try:
+                    result[file_path.strip()] = float(mtime_str.strip())
+                except ValueError:
+                    result[file_path.strip()] = 0
+        return result
+
+    async def is_dir(path: str) -> bool:
+        exit_code, _, _ = await ssh_exec(vm_ip, ["test", "-d", path], timeout=2)
+        return exit_code == 0
+
+    # Get initial state
+    for path in paths:
+        file_states[path] = await get_file_list(path)
+
+    stop_event = asyncio.Event()
+
+    async def poll_changes():
+        while not stop_event.is_set():
+            await asyncio.sleep(interval)
+            for path in paths:
+                try:
+                    new_state = await get_file_list(path)
+                    old_state = file_states.get(path, {})
+                    old_files = set(old_state.keys())
+                    new_files = set(new_state.keys())
+
+                    for f in new_files - old_files:
+                        await websocket.send_json(
+                            {
+                                "type": "change",
+                                "event": "CREATE",
+                                "path": f,
+                                "is_dir": await is_dir(f),
+                            }
+                        )
+                    for f in old_files - new_files:
+                        await websocket.send_json(
+                            {
+                                "type": "change",
+                                "event": "DELETE",
+                                "path": f,
+                                "is_dir": False,
+                            }
+                        )
+                    for f in old_files & new_files:
+                        if old_state[f] != new_state[f]:
+                            await websocket.send_json(
+                                {
+                                    "type": "change",
+                                    "event": "MODIFY",
+                                    "path": f,
+                                    "is_dir": await is_dir(f),
+                                }
+                            )
+                    file_states[path] = new_state
+                except Exception as e:
+                    logger.warning(f"[FS Watch] VM poll error for {path}: {e}")
+
+    async def handle_ws():
+        try:
+            while not stop_event.is_set():
+                try:
+                    message = await asyncio.wait_for(
+                        websocket.receive_json(), timeout=1.0
+                    )
+                    if message.get("type") == "ping":
+                        await websocket.send_json({"type": "pong"})
+                except asyncio.TimeoutError:
+                    continue
+        except WebSocketDisconnect:
+            pass
+        finally:
+            stop_event.set()
+
+    try:
+        poll_task = asyncio.create_task(poll_changes())
+        ws_task = asyncio.create_task(handle_ws())
+        await asyncio.wait([poll_task, ws_task], return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        stop_event.set()
+
+    logger.info(f"[FS Watch] Stopped VM polling for task {task_id}")
 
 
 async def _watch_with_inotify(

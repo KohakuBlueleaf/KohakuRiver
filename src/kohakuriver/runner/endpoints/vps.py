@@ -45,6 +45,32 @@ def set_dependencies(store):
     task_store = store
 
 
+@router.get("/vm/images")
+async def list_vm_images():
+    """List available VM base images (qcow2 files) on this runner."""
+    images_dir = config.VM_IMAGES_DIR
+    images = []
+
+    if not os.path.isdir(images_dir):
+        return {"images": [], "images_dir": images_dir}
+
+    for entry in os.scandir(images_dir):
+        if entry.name.endswith(".qcow2") and entry.is_file():
+            stat = entry.stat()
+            name = entry.name.removesuffix(".qcow2")
+            images.append(
+                {
+                    "name": name,
+                    "filename": entry.name,
+                    "size_bytes": stat.st_size,
+                    "modified_at": stat.st_mtime,
+                }
+            )
+
+    images.sort(key=lambda x: x["name"])
+    return {"images": images, "images_dir": images_dir}
+
+
 @router.post("/vps/create")
 async def create_vps_endpoint(request: VPSCreateRequest):
     """Create a VPS container or VM."""
@@ -128,6 +154,7 @@ async def _create_vm_vps(request: VPSCreateRequest):
         disk_size=disk_size,
         gpu_ids=request.required_gpus,
         ssh_public_key=request.ssh_public_key,
+        ssh_port=request.ssh_port,
         task_store=task_store,
     )
 
