@@ -73,6 +73,7 @@ def initialize_database(db_path: str) -> None:
 
         # Run migrations for new columns
         _run_migrations(Task)
+        _run_node_migrations()
 
         logger.info(f"Database initialized: {db_path}")
 
@@ -146,6 +147,45 @@ def _run_migrations(Task) -> None:
     if migrations:
         migrate(*migrations)
         logger.info(f"Ran {len(migrations)} database migration(s)")
+
+
+def _run_node_migrations() -> None:
+    """Add any missing columns to the nodes table."""
+    cursor = db.execute_sql(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'"
+    )
+    if not cursor.fetchone():
+        return
+
+    from playhouse.migrate import SqliteMigrator, migrate
+
+    migrator = SqliteMigrator(db)
+
+    cursor = db.execute_sql("PRAGMA table_info(nodes)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+
+    migrations = []
+
+    if "vm_capable" not in existing_columns:
+        migrations.append(
+            migrator.add_column(
+                "nodes", "vm_capable", peewee.BooleanField(default=False)
+            )
+        )
+
+    if "vfio_gpus" not in existing_columns:
+        migrations.append(
+            migrator.add_column("nodes", "vfio_gpus", peewee.TextField(null=True))
+        )
+
+    if "runner_version" not in existing_columns:
+        migrations.append(
+            migrator.add_column("nodes", "runner_version", peewee.CharField(null=True))
+        )
+
+    if migrations:
+        migrate(*migrations)
+        logger.info(f"Ran {len(migrations)} node table migration(s)")
 
 
 def close_database() -> None:

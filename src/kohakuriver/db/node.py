@@ -71,6 +71,19 @@ class Node(BaseModel):
     numa_topology = peewee.TextField(null=True)
     gpu_info = peewee.TextField(null=True)
 
+    # -------------------------------------------------------------------------
+    # VM Capability
+    # -------------------------------------------------------------------------
+
+    vm_capable = peewee.BooleanField(default=False)
+    vfio_gpus = peewee.TextField(null=True)  # JSON list of VFIO-capable GPUs
+
+    # -------------------------------------------------------------------------
+    # Runner Version
+    # -------------------------------------------------------------------------
+
+    runner_version = peewee.CharField(null=True)  # KohakuRiver version string
+
     class Meta:
         table_name = "nodes"
 
@@ -122,6 +135,22 @@ class Node(BaseModel):
         else:
             self.gpu_info = json.dumps(gpus)
 
+    def get_vfio_gpus(self) -> list[dict]:
+        """Parse stored VFIO GPU info JSON into a list of dictionaries."""
+        if not self.vfio_gpus:
+            return []
+        try:
+            return json.loads(self.vfio_gpus)
+        except json.JSONDecodeError:
+            return []
+
+    def set_vfio_gpus(self, gpus: list[dict] | None) -> None:
+        """Store VFIO GPU info as JSON."""
+        if gpus is None:
+            self.vfio_gpus = None
+        else:
+            self.vfio_gpus = json.dumps(gpus)
+
     # =========================================================================
     # Status Helpers
     # =========================================================================
@@ -168,4 +197,7 @@ class Node(BaseModel):
             "current_max_temp": self.current_max_temp,
             "numa_topology": self.get_numa_topology(),
             "gpu_info": self.get_gpu_info(),
+            "vm_capable": self.vm_capable,
+            "vfio_gpus": self.get_vfio_gpus(),
+            "runner_version": self.runner_version,
         }

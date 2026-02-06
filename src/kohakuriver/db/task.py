@@ -107,6 +107,10 @@ class Task(BaseModel):
     # -------------------------------------------------------------------------
 
     ssh_port = peewee.IntegerField(null=True)
+    vps_backend = peewee.CharField(default="docker")  # "docker" or "qemu"
+    vm_image = peewee.CharField(null=True)  # Base VM image name (qemu only)
+    vm_disk_size = peewee.CharField(null=True)  # VM disk size e.g. "50G" (qemu only)
+    vm_ip = peewee.CharField(null=True)  # VM IP address (qemu only)
 
     # -------------------------------------------------------------------------
     # Output Paths
@@ -293,6 +297,10 @@ class Task(BaseModel):
             "docker_privileged": self.docker_privileged,
             "docker_mount_dirs": self.get_docker_mount_dirs(),
             "ssh_port": self.ssh_port,
+            "vps_backend": self.vps_backend,
+            "vm_image": self.vm_image,
+            "vm_disk_size": self.vm_disk_size,
+            "vm_ip": self.vm_ip,
             "stdout_path": self.stdout_path,
             "stderr_path": self.stderr_path,
             "exit_code": self.exit_code,
