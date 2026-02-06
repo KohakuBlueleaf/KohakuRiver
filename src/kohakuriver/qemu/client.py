@@ -10,6 +10,7 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +53,8 @@ class VMInstance:
     # Runtime state
     ssh_ready: bool = False
     last_heartbeat: float | None = None
+    vm_gpu_info: list[dict] = field(default_factory=list)
+    vm_system_info: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -65,12 +68,16 @@ class VMCreateOptions:
     disk_size: str
     gpu_pci_addresses: list[str]
     ssh_public_key: str
+    mac_address: str
     vm_ip: str
     tap_device: str
     gateway: str
     prefix_len: int
     dns_servers: list[str]
     runner_url: str
+    runner_public_key: str = ""
+    shared_dir_host: str = ""  # Host path for /shared (empty = skip)
+    local_temp_dir_host: str = ""  # Host path for /local_temp (empty = skip)
 
 
 class QEMUManager:
@@ -129,6 +136,19 @@ class QEMUManager:
                 base_image_path, root_disk, options.disk_size
             )
 
+            # Detect host NVIDIA driver version BEFORE VFIO binding
+            # (binding unbinds GPU from nvidia driver, so detection must happen first)
+            nvidia_driver_version = None
+            if options.gpu_pci_addresses:
+                from kohakuriver.qemu.capability import detect_nvidia_driver_version
+
+                nvidia_driver_version = detect_nvidia_driver_version()
+                if nvidia_driver_version:
+                    logger.info(
+                        f"VM {options.task_id}: will install NVIDIA driver "
+                        f"{nvidia_driver_version} in guest"
+                    )
+
             # Step 2: Bind GPUs to VFIO (group-aware: binds all non-bridge
             # endpoints in each IOMMU group together)
             bound_devices = set()
@@ -137,17 +157,19 @@ class QEMUManager:
                     group_bound = await vfio.bind_iommu_group(pci_addr)
                     bound_devices.update(group_bound)
 
-            # Step 3: Generate cloud-init ISO
             cloud_init_path = vm_cloud_init_path(instance_dir)
             ci_config = CloudInitConfig(
                 task_id=options.task_id,
                 hostname=vm_name(options.task_id),
+                mac_address=options.mac_address,
                 vm_ip=options.vm_ip,
                 gateway=options.gateway,
                 prefix_len=options.prefix_len,
                 dns_servers=options.dns_servers,
                 ssh_public_key=options.ssh_public_key,
+                runner_public_key=options.runner_public_key,
                 runner_url=options.runner_url,
+                nvidia_driver_version=nvidia_driver_version,
             )
             await create_cloud_init_iso(cloud_init_path, ci_config)
 
@@ -155,27 +177,57 @@ class QEMUManager:
             qemu_cmd = self._build_qemu_command(options, instance_dir)
 
             # Step 5: Start QEMU process
+            # With -daemonize, QEMU forks a daemon child and the parent exits
+            # with 0 on success, non-zero on failure. The real daemon PID is
+            # written to the pidfile.
+            #
+            # IMPORTANT: Do NOT use asyncio PIPE here. QEMU -daemonize forks
+            # a child that may inherit pipe FDs, preventing EOF and causing
+            # communicate() to hang indefinitely. Use file-based stderr instead.
             logger.info(f"Starting VM {options.task_id}: {' '.join(qemu_cmd[:5])}...")
-            process = await asyncio.create_subprocess_exec(
-                *qemu_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            stderr_path = os.path.join(instance_dir, "qemu_start.err")
 
-            # Give QEMU a moment to start
-            await asyncio.sleep(2)
+            def _start_qemu():
+                with open(stderr_path, "w") as err_file:
+                    return subprocess.run(
+                        qemu_cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=err_file,
+                        timeout=30,
+                    )
 
-            if process.returncode is not None:
-                _, stderr = await process.communicate()
+            result = await asyncio.to_thread(_start_qemu)
+            if result.returncode != 0:
+                error = Path(stderr_path).read_text(errors="replace").strip()
                 raise VMCreationError(
-                    f"QEMU exited immediately: {stderr.decode(errors='replace')}",
+                    (
+                        f"QEMU failed to start: {error}"
+                        if error
+                        else f"QEMU failed (exit code {result.returncode})"
+                    ),
+                    options.task_id,
+                )
+
+            # Read real daemon PID from pidfile
+            pidfile = vm_pidfile_path(instance_dir)
+            try:
+                pid = int(Path(pidfile).read_text().strip())
+            except (FileNotFoundError, ValueError) as e:
+                raise VMCreationError(
+                    f"QEMU started but cannot read PID file {pidfile}: {e}",
+                    options.task_id,
+                )
+
+            if not self._is_process_running(pid):
+                raise VMCreationError(
+                    "QEMU daemon exited immediately after daemonize",
                     options.task_id,
                 )
 
             # Step 6: Track VM instance
             vm = VMInstance(
                 task_id=options.task_id,
-                pid=process.pid,
+                pid=pid,
                 vm_ip=options.vm_ip,
                 tap_device=options.tap_device,
                 gpu_pci_addresses=options.gpu_pci_addresses,
@@ -186,9 +238,7 @@ class QEMUManager:
             async with self._lock:
                 self._vms[options.task_id] = vm
 
-            logger.info(
-                f"VM {options.task_id} started: PID={process.pid}, IP={options.vm_ip}"
-            )
+            logger.info(f"VM {options.task_id} started: PID={pid}, IP={options.vm_ip}")
             return vm
 
         except VMCreationError:
@@ -278,6 +328,51 @@ class QEMUManager:
     def vm_exists(self, task_id: int) -> bool:
         """Check if VM exists."""
         return task_id in self._vms
+
+    # --- VM Recovery ---
+
+    def recover_vm(self, task_id: int, vm_data: dict) -> VMInstance | None:
+        """
+        Re-adopt a running VM from persisted state (startup recovery).
+
+        Reads the daemon PID from pidfile, verifies it's running,
+        and re-creates the VMInstance in the tracking dict.
+
+        Args:
+            task_id: The task ID.
+            vm_data: Persisted task data from KohakuVault.
+
+        Returns:
+            VMInstance if recovery succeeded, None otherwise.
+        """
+        instance_dir = vm_instance_dir(self.config.VM_INSTANCES_DIR, task_id)
+        pidfile = vm_pidfile_path(instance_dir)
+
+        try:
+            pid = int(Path(pidfile).read_text().strip())
+        except (FileNotFoundError, ValueError):
+            logger.warning(f"VM {task_id}: no valid pidfile at {pidfile}")
+            return None
+
+        if not self._is_process_running(pid):
+            logger.warning(f"VM {task_id}: PID {pid} not running")
+            return None
+
+        qmp_socket = vm_qmp_socket_path(task_id)
+        vm = VMInstance(
+            task_id=task_id,
+            pid=pid,
+            vm_ip=vm_data.get("vm_ip", ""),
+            tap_device=vm_data.get("tap_device", ""),
+            gpu_pci_addresses=vm_data.get("gpu_pci_addresses", []),
+            instance_dir=instance_dir,
+            qmp_socket=qmp_socket,
+        )
+        vm.ssh_ready = True  # If it survived restart, SSH was working
+
+        self._vms[task_id] = vm
+        logger.info(f"VM {task_id}: recovered (PID={pid}, IP={vm.vm_ip})")
+        return vm
 
     # --- QMP Control ---
 
@@ -400,7 +495,7 @@ class QEMUManager:
                 "-netdev",
                 f"tap,id=net0,ifname={options.tap_device},script=no,downscript=no",
                 "-device",
-                "virtio-net-pci,netdev=net0",
+                f"virtio-net-pci,netdev=net0,mac={options.mac_address}",
                 # QMP control socket
                 "-qmp",
                 f"unix:{qmp_socket},server,nowait",
@@ -415,6 +510,26 @@ class QEMUManager:
                 "std",
             ]
         )
+
+        # Shared filesystems via virtio-9p
+        if options.shared_dir_host:
+            cmd.extend(
+                [
+                    "-fsdev",
+                    f"local,id=fs_shared,path={options.shared_dir_host},security_model=passthrough",
+                    "-device",
+                    "virtio-9p-pci,fsdev=fs_shared,mount_tag=kohaku_shared",
+                ]
+            )
+        if options.local_temp_dir_host:
+            cmd.extend(
+                [
+                    "-fsdev",
+                    f"local,id=fs_local,path={options.local_temp_dir_host},security_model=passthrough",
+                    "-device",
+                    "virtio-9p-pci,fsdev=fs_local,mount_tag=kohaku_local",
+                ]
+            )
 
         # GPU passthrough via VFIO — vm_vps_manager already resolves the
         # complete list of PCI addresses (GPUs + audio + IOMMU group peers)

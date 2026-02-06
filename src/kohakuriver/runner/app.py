@@ -22,6 +22,7 @@ from kohakuriver.runner.endpoints import filesystem, tasks, terminal, vps
 from kohakuriver.runner.services.tunnel_server import (
     handle_container_tunnel,
     handle_port_forward,
+    set_dependencies as tunnel_set_dependencies,
 )
 from kohakuriver.tunnel.protocol import PROTO_TCP, PROTO_UDP
 from kohakuriver.runner.numa.detector import detect_numa_topology
@@ -265,6 +266,7 @@ async def startup_event():
     vps.set_dependencies(task_store)
     terminal.set_dependencies(task_store)
     filesystem.set_dependencies(task_store)
+    tunnel_set_dependencies(task_store)
 
     # Detect NUMA topology
     logger.info("Detecting NUMA topology...")
@@ -291,8 +293,13 @@ async def startup_event():
             "Runner may not function correctly."
         )
     else:
-        # Set up overlay network if configured
-        if overlay_info and config.OVERLAY_ENABLED:
+        # Set up overlay network if host provides overlay config
+        if overlay_info:
+            if not config.OVERLAY_ENABLED:
+                logger.info(
+                    "Host provided overlay config — auto-enabling overlay on runner"
+                )
+                config.OVERLAY_ENABLED = True
             await _setup_overlay_network(overlay_info)
 
         # Apply ACS override if configured (splits IOMMU groups for individual GPU allocation)

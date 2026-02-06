@@ -26,12 +26,14 @@ class CloudInitConfig:
 
     task_id: int
     hostname: str
+    mac_address: str
     vm_ip: str
     gateway: str
     prefix_len: int
     dns_servers: list[str]
     ssh_public_key: str
     runner_url: str
+    runner_public_key: str = ""
     nvidia_driver_version: str | None = None
 
 
@@ -247,10 +249,17 @@ def build_user_data(config: CloudInitConfig) -> str:
 
     Includes:
     - User setup (kohaku user with sudo)
-    - SSH authorized_keys
+    - SSH authorized_keys (user key + runner key for TTY/filesystem access)
     - VM agent installation
     - Phone-home callback
     """
+    # Collect all SSH keys: user key + runner internal key
+    ssh_keys = []
+    if config.ssh_public_key:
+        ssh_keys.append(config.ssh_public_key)
+    if config.runner_public_key:
+        ssh_keys.append(config.runner_public_key)
+
     user_data = {
         "users": [
             {
@@ -258,15 +267,11 @@ def build_user_data(config: CloudInitConfig) -> str:
                 "sudo": "ALL=(ALL) NOPASSWD:ALL",
                 "shell": "/bin/bash",
                 "lock_passwd": True,
-                "ssh_authorized_keys": (
-                    [config.ssh_public_key] if config.ssh_public_key else []
-                ),
+                "ssh_authorized_keys": ssh_keys.copy(),
             },
             {
                 "name": "root",
-                "ssh_authorized_keys": (
-                    [config.ssh_public_key] if config.ssh_public_key else []
-                ),
+                "ssh_authorized_keys": ssh_keys.copy(),
             },
         ],
         "ssh_pwauth": not config.ssh_public_key,
@@ -275,6 +280,14 @@ def build_user_data(config: CloudInitConfig) -> str:
                 "path": "/usr/local/bin/kohakuriver-vm-agent",
                 "permissions": "0755",
                 "content": VM_AGENT_SCRIPT,
+            },
+            {
+                "path": "/etc/fstab",
+                "append": True,
+                "content": (
+                    "kohaku_shared /shared 9p trans=virtio,version=9p2000.L,msize=524288,nofail,_netdev 0 0\n"
+                    "kohaku_local /local_temp 9p trans=virtio,version=9p2000.L,msize=524288,nofail,_netdev 0 0\n"
+                ),
             },
             {
                 "path": "/etc/systemd/system/kohakuriver-vm-agent.service",
@@ -300,11 +313,53 @@ def build_user_data(config: CloudInitConfig) -> str:
                 ),
             },
         ],
+        "package_update": True,
+        "packages": [
+            "qemu-guest-agent",
+            "net-tools",
+        ],
         "runcmd": [
+            # 9p kernel modules + mount shared filesystems
+            "modprobe 9p 9pnet 9pnet_virtio || true",
+            "mkdir -p /shared /local_temp",
+            "mount -t 9p -o trans=virtio,version=9p2000.L,msize=524288 kohaku_shared /shared || true",
+            "mount -t 9p -o trans=virtio,version=9p2000.L,msize=524288 kohaku_local /local_temp || true",
             "systemctl daemon-reload",
             "systemctl enable --now kohakuriver-vm-agent",
+            "systemctl enable --now qemu-guest-agent",
         ],
     }
+
+    # If GPU passthrough, install NVIDIA driver + pynvml for VM agent
+    if config.nvidia_driver_version:
+        ver = config.nvidia_driver_version
+        driver_url = f"https://us.download.nvidia.com/XFree86/Linux-x86_64/{ver}/NVIDIA-Linux-x86_64-{ver}.run"
+        user_data["packages"].extend(
+            [
+                "build-essential",
+                "dkms",
+                "linux-headers-generic",
+                "pkg-config",
+                "libglvnd-dev",
+                "python3-pip",
+            ]
+        )
+        # Insert NVIDIA install steps before the VM agent starts
+        nvidia_cmds = [
+            f"wget -q -O /tmp/nvidia.run {driver_url}",
+            "chmod +x /tmp/nvidia.run",
+            "/tmp/nvidia.run --silent --dkms --no-cc-version-check",
+            "rm -f /tmp/nvidia.run",
+            "pip3 install nvidia-ml-py --break-system-packages",
+        ]
+        # Insert before "systemctl enable --now kohakuriver-vm-agent"
+        runcmd = user_data["runcmd"]
+        agent_idx = next(
+            (i for i, c in enumerate(runcmd) if "kohakuriver-vm-agent" in c),
+            len(runcmd),
+        )
+        for j, cmd in enumerate(nvidia_cmds):
+            runcmd.insert(agent_idx + j, cmd)
 
     # If no SSH key, enable password-less root login
     if not config.ssh_public_key:
@@ -315,13 +370,19 @@ def build_user_data(config: CloudInitConfig) -> str:
 
 
 def build_network_config(config: CloudInitConfig) -> str:
-    """Generate network-config for static IP."""
+    """Generate network-config for static IP.
+
+    Uses MAC address matching instead of a hardcoded device name
+    to avoid issues with PCI-based naming (enp0s2, ens3, etc.).
+    Uses 'routes' instead of deprecated 'gateway4'.
+    """
     net_config = {
         "version": 2,
         "ethernets": {
-            "ens3": {
+            "vmnic0": {
+                "match": {"macaddress": config.mac_address},
                 "addresses": [f"{config.vm_ip}/{config.prefix_len}"],
-                "gateway4": config.gateway,
+                "routes": [{"to": "default", "via": config.gateway}],
                 "nameservers": {"addresses": config.dns_servers},
             }
         },
