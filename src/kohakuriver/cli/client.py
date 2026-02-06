@@ -340,6 +340,10 @@ def create_vps(
     privileged: bool | None = None,
     additional_mounts: list[str] | None = None,
     gpu_ids: list[int] | None = None,
+    vps_backend: str = "docker",
+    vm_image: str | None = None,
+    vm_disk_size: str | None = None,
+    memory_mb: int | None = None,
 ) -> dict:
     """
     Create a VPS task.
@@ -354,6 +358,10 @@ def create_vps(
         privileged: Run with --privileged
         additional_mounts: Additional mount directories
         gpu_ids: List of GPU IDs to allocate
+        vps_backend: "docker" or "qemu"
+        vm_image: Base VM image name (qemu only)
+        vm_disk_size: VM disk size e.g. "50G" (qemu only)
+        memory_mb: VM memory in MB (qemu only)
 
     Returns:
         Dict with task_id, ssh_port, and optionally ssh_private_key/ssh_public_key.
@@ -384,7 +392,14 @@ def create_vps(
         "container_name": container_name,
         "registry_image": registry_image,
         "required_gpus": gpu_ids if gpu_ids else None,
+        "vps_backend": vps_backend,
     }
+
+    # Add VM-specific fields
+    if vps_backend == "qemu":
+        payload["vm_image"] = vm_image
+        payload["vm_disk_size"] = vm_disk_size
+        payload["memory_mb"] = memory_mb
 
     try:
         # No timeout - VPS creation can take a long time

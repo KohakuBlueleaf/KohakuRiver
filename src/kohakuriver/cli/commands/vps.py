@@ -107,11 +107,34 @@ def create_vps(
         str | None,
         typer.Option("--key-out-file", help="Output path for generated key"),
     ] = None,
+    # VM backend options
+    backend: Annotated[
+        str,
+        typer.Option("--backend", "-b", help="VPS backend: docker or qemu"),
+    ] = "docker",
+    vm_image: Annotated[
+        str | None,
+        typer.Option("--vm-image", help="Base VM image (qemu only, e.g. ubuntu-24.04)"),
+    ] = None,
+    vm_disk: Annotated[
+        str | None,
+        typer.Option(
+            "--vm-disk",
+            help="Maximum virtual disk size, thin-provisioned (qemu only, e.g. 500G)",
+        ),
+    ] = None,
+    vm_memory_mb: Annotated[
+        int | None,
+        typer.Option("--vm-memory", help="VM memory in MB (qemu only)"),
+    ] = None,
 ):
     """Create a new VPS instance.
 
     By default, VPS is created without SSH (TTY-only mode, faster startup).
     Use --ssh or one of the SSH key options to enable SSH server.
+
+    Use --backend=qemu to create a QEMU/KVM VM instead of a Docker container.
+    VM backend supports full GPU passthrough via VFIO.
     """
     from kohakuriver.utils.cli import parse_memory_string
     from kohakuriver.utils.ssh_key import (
@@ -180,6 +203,10 @@ def create_vps(
             privileged=privileged if privileged else None,
             additional_mounts=mount,
             gpu_ids=gpu_ids,
+            vps_backend=backend,
+            vm_image=vm_image,
+            vm_disk_size=vm_disk,
+            memory_mb=vm_memory_mb,
         )
 
         if not result.get("task_id"):
