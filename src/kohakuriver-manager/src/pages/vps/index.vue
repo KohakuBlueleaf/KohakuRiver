@@ -46,6 +46,7 @@ const selectedVps = ref(null)
 // Create form
 const createForm = ref({
   name: '',
+  vps_backend: 'docker', // 'docker' or 'qemu'
   required_cores: 0,
   required_memory_bytes: null,
   imageSource: 'tarball', // 'tarball' or 'registry'
@@ -59,6 +60,10 @@ const createForm = ref({
   gpuFeatureEnabled: false,
   selectedGpus: {}, // { hostname: [gpu_id1, gpu_id2], ... }
   ip_reservation_token: null, // Token from IP reservation
+  // VM-specific options (qemu backend)
+  vm_image: 'ubuntu-24.04',
+  vm_disk_size: '500G',
+  vm_memory_mb: 4096,
 })
 
 // Expanded GPU node panels
@@ -190,19 +195,28 @@ async function handleCreate() {
       targetHostname = createForm.value.target_hostname || null
     }
 
+    const isVm = createForm.value.vps_backend === 'qemu'
+
     const data = {
       name: createForm.value.name || null,
+      vps_backend: createForm.value.vps_backend,
       required_cores: createForm.value.required_cores,
       required_memory_bytes: createForm.value.required_memory_bytes || null,
-      container_name: createForm.value.imageSource === 'tarball' ? createForm.value.container_name || null : null,
-      registry_image: createForm.value.imageSource === 'registry' ? createForm.value.registry_image || null : null,
+      container_name:
+        !isVm && createForm.value.imageSource === 'tarball' ? createForm.value.container_name || null : null,
+      registry_image:
+        !isVm && createForm.value.imageSource === 'registry' ? createForm.value.registry_image || null : null,
       target_hostname: targetHostname,
       target_numa_node_id: createForm.value.target_numa_node_id,
       ssh_key_mode: createForm.value.ssh_key_mode,
       ssh_public_key: createForm.value.ssh_key_mode === 'upload' ? createForm.value.ssh_public_key : null,
-      privileged: createForm.value.privileged || null,
+      privileged: !isVm ? createForm.value.privileged || null : null,
       required_gpus: requiredGpus,
       ip_reservation_token: createForm.value.ip_reservation_token || null,
+      // VM-specific fields
+      vm_image: isVm ? createForm.value.vm_image : null,
+      vm_disk_size: isVm ? createForm.value.vm_disk_size : null,
+      memory_mb: isVm ? createForm.value.vm_memory_mb : null,
     }
 
     const result = await vpsStore.createVps(data)
@@ -223,6 +237,7 @@ async function handleCreate() {
 function resetCreateForm() {
   createForm.value = {
     name: '',
+    vps_backend: 'docker',
     required_cores: 0,
     required_memory_bytes: null,
     imageSource: 'tarball',
@@ -236,6 +251,9 @@ function resetCreateForm() {
     gpuFeatureEnabled: false,
     selectedGpus: {},
     ip_reservation_token: null,
+    vm_image: 'ubuntu-24.04',
+    vm_disk_size: '500G',
+    vm_memory_mb: 4096,
   }
   expandedGpuNodes.value = []
 }
@@ -439,12 +457,32 @@ function copyVpsId(taskId) {
           <!-- Info -->
           <div class="space-y-2 text-sm flex-1">
             <div class="flex justify-between">
+              <span class="text-muted">Backend</span>
+              <el-tag
+                :type="vps.vps_backend === 'qemu' ? 'warning' : 'info'"
+                size="small">
+                {{ vps.vps_backend === 'qemu' ? 'VM (QEMU)' : 'Docker' }}
+              </el-tag>
+            </div>
+            <div class="flex justify-between">
               <span class="text-muted">Node</span>
               <span>{{ getNodeHostname(vps.assigned_node) }}</span>
             </div>
             <div class="flex justify-between">
               <span class="text-muted">CPU Cores</span>
               <span>{{ vps.required_cores }}</span>
+            </div>
+            <div
+              v-if="vps.vps_backend === 'qemu' && vps.vm_ip"
+              class="flex justify-between">
+              <span class="text-muted">VM IP</span>
+              <span class="font-mono">{{ vps.vm_ip }}</span>
+            </div>
+            <div
+              v-if="vps.vps_backend === 'qemu' && vps.vm_image"
+              class="flex justify-between">
+              <span class="text-muted">VM Image</span>
+              <span>{{ vps.vm_image }}</span>
             </div>
             <div
               v-if="vps.required_memory_bytes"
@@ -696,6 +734,19 @@ function copyVpsId(taskId) {
           </div>
         </el-form-item>
 
+        <el-form-item label="Backend">
+          <el-radio-group v-model="createForm.vps_backend">
+            <el-radio value="docker">
+              <span>Docker Container</span>
+              <span class="text-xs text-gray-400 ml-1">(default)</span>
+            </el-radio>
+            <el-radio value="qemu">
+              <span>QEMU VM</span>
+              <span class="text-xs text-gray-400 ml-1">(full GPU passthrough)</span>
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
+
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <el-form-item label="CPU Cores (0 = no limit)">
             <el-input-number
@@ -714,7 +765,10 @@ function copyVpsId(taskId) {
           </el-form-item>
         </div>
 
-        <el-form-item label="Image Source">
+        <!-- Docker Image Source (docker backend only) -->
+        <el-form-item
+          v-if="createForm.vps_backend === 'docker'"
+          label="Image Source">
           <el-radio-group
             v-model="createForm.imageSource"
             class="mb-2">
@@ -738,6 +792,29 @@ function copyVpsId(taskId) {
             v-model="createForm.registry_image"
             placeholder="e.g. ubuntu:22.04, nvidia/cuda:12.0-base" />
         </el-form-item>
+
+        <!-- VM Options (qemu backend only) -->
+        <template v-if="createForm.vps_backend === 'qemu'">
+          <el-form-item label="VM Image">
+            <el-input
+              v-model="createForm.vm_image"
+              placeholder="e.g. ubuntu-24.04" />
+          </el-form-item>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <el-form-item label="Max Disk Size (thin-provisioned)">
+              <el-input
+                v-model="createForm.vm_disk_size"
+                placeholder="e.g. 500G" />
+            </el-form-item>
+            <el-form-item label="VM Memory (MB)">
+              <el-input-number
+                v-model="createForm.vm_memory_mb"
+                :min="512"
+                :step="1024"
+                class="w-full" />
+            </el-form-item>
+          </div>
+        </template>
 
         <!-- GPU Feature Toggle -->
         <el-form-item label="Enable GPU Selection">
@@ -877,7 +954,7 @@ function copyVpsId(taskId) {
             @update:token="handleIpTokenUpdate" />
         </el-form-item>
 
-        <el-form-item>
+        <el-form-item v-if="createForm.vps_backend === 'docker'">
           <el-checkbox v-model="createForm.privileged">Run with privileged mode</el-checkbox>
         </el-form-item>
       </el-form>

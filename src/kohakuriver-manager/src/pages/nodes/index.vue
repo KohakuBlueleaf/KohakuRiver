@@ -109,6 +109,28 @@ function getGpuSummary(gpuInfo) {
           <StatusBadge :status="node.status" />
         </div>
 
+        <!-- Badges -->
+        <div class="flex items-center gap-2 mb-3 flex-wrap">
+          <el-tag
+            v-if="node.runner_version"
+            size="small"
+            type="info">
+            v{{ node.runner_version }}
+          </el-tag>
+          <el-tag
+            v-if="node.vm_capable"
+            size="small"
+            type="success">
+            VM Ready
+          </el-tag>
+          <el-tag
+            v-if="node.vfio_gpus && node.vfio_gpus.length > 0"
+            size="small"
+            type="warning">
+            {{ node.vfio_gpus.length }} VFIO GPUs
+          </el-tag>
+        </div>
+
         <!-- Resources -->
         <div class="space-y-3">
           <!-- CPU -->
@@ -207,6 +229,8 @@ function getGpuSummary(gpuInfo) {
           <tr>
             <th class="table-cell">Hostname</th>
             <th class="table-cell">Status</th>
+            <th class="table-cell">Version</th>
+            <th class="table-cell">Capabilities</th>
             <th class="table-cell">Cores</th>
             <th class="table-cell">CPU %</th>
             <th class="table-cell">Memory</th>
@@ -225,6 +249,39 @@ function getGpuSummary(gpuInfo) {
               <StatusBadge
                 :status="node.status"
                 size="sm" />
+            </td>
+            <td class="table-cell">
+              <span
+                v-if="node.runner_version"
+                class="text-sm">
+                v{{ node.runner_version }}
+              </span>
+              <span
+                v-else
+                class="text-muted">
+                -
+              </span>
+            </td>
+            <td class="table-cell">
+              <div class="flex items-center gap-1 flex-wrap">
+                <el-tag
+                  v-if="node.vm_capable"
+                  size="small"
+                  type="success">
+                  VM
+                </el-tag>
+                <el-tag
+                  v-if="node.vfio_gpus && node.vfio_gpus.length > 0"
+                  size="small"
+                  type="warning">
+                  {{ node.vfio_gpus.length }} VFIO
+                </el-tag>
+                <span
+                  v-if="!node.vm_capable && !(node.vfio_gpus && node.vfio_gpus.length > 0)"
+                  class="text-muted">
+                  -
+                </span>
+              </div>
             </td>
             <td class="table-cell">{{ node.total_cores }}</td>
             <td class="table-cell">
