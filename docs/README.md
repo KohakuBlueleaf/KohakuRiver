@@ -7,7 +7,7 @@ KohakuRiver is a lightweight, self-hosted cluster manager designed for distribut
 ## Key Features
 
 - **Container as Portable Environment** - Docker containers auto-sync across nodes as versioned tarballs
-- **Task/VPS System** - Batch tasks and persistent interactive sessions for R&D workflows
+- **Task/VPS System** - Batch tasks and persistent interactive sessions (Docker or QEMU/KVM) for R&D workflows
 - **TTY Forwarding** - WebSocket terminal access without Docker port mapping
 - **Port Forwarding** - Dynamic TCP/UDP tunneling to container services
 - **Web UI & Terminal TUI** - Visual dashboard and VSCode-like terminal interface
@@ -30,7 +30,8 @@ docs/
 │   ├── 2. runner-setup.md        # Runner node setup
 │   ├── 3. shared-storage.md      # Shared storage configuration
 │   ├── 4. systemd-integration.md # Running as systemd services
-│   └── 5. security.md            # Security considerations
+│   ├── 5. security.md            # Security considerations
+│   └── 6. qemu-setup.md          # QEMU/KVM setup for VM VPS
 ├── 3. user-guides/               # Task and environment management
 │   ├── 1. container-workflow.md  # Docker environment workflow
 │   ├── 2. command-tasks/         # Command task guides
@@ -53,8 +54,17 @@ docs/
 │   └── 2. cli-reference.md       # CLI command reference (consolidated)
 ├── 5. troubleshooting/           # Problem solving
 │   └── 1. troubleshooting.md     # Troubleshooting guide (consolidated)
-└── 6. integration-guides/        # External integrations
-    └── 1. integration.md         # Integration guide (consolidated)
+├── 6. integration-guides/        # External integrations
+│   └── 1. integration.md         # Integration guide (consolidated)
+└── 7. tech-report/               # Technical deep-dives
+    ├── 1. architecture/          # System architecture and design
+    ├── 2. task-system/           # Task lifecycle and scheduling
+    ├── 3. container-system/      # Container management and sync
+    ├── 4. vps-system/            # Docker VPS lifecycle
+    ├── 5. qemu-virtualization/   # QEMU/KVM VM backend and VFIO
+    ├── 6. networking/            # VXLAN overlay and VM networking
+    ├── 7. tunnel-system/         # Port forwarding tunnel protocol
+    └── 8. authentication/        # Auth, roles, tokens, groups
 ```
 
 ## Quick Links
@@ -135,6 +145,8 @@ Key settings to configure:
 - **[5. Troubleshooting](5.%20troubleshooting/1.%20troubleshooting.md)**: Diagnosing and resolving common problems with startup, tasks, networking, and permissions.
 
 - **[6. Integration Guides](6.%20integration-guides/1.%20integration.md)**: Integrating KohakuRiver with external monitoring systems, workflow managers, and notification services.
+
+- **[7. Tech Report](7.%20tech-report/README.md)**: Deep-dive technical documentation covering system architecture, task scheduling, container management, VPS lifecycle, QEMU/KVM virtualization, VXLAN overlay networking, tunnel protocol, and authentication.
 
 ---
 
