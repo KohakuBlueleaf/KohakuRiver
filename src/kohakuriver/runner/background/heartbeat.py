@@ -67,6 +67,21 @@ async def send_heartbeat(
         stats = get_system_stats()
         gpu_info = get_gpu_stats()
 
+        # Merge GPU info from VM agents (VFIO-passthrough GPUs)
+        try:
+            from kohakuriver.qemu import get_qemu_manager
+
+            qemu_mgr = get_qemu_manager()
+            for vm in qemu_mgr.list_vms():
+                if vm.vm_gpu_info:
+                    for gpu in vm.vm_gpu_info:
+                        gpu["vm_task_id"] = vm.task_id
+                    gpu_info.extend(vm.vm_gpu_info)
+        except ImportError:
+            pass  # qemu module not available
+        except Exception as e:
+            logger.debug(f"Failed to merge VM GPU info: {e}")
+
         # Gather VM capability info
         vm_capable = False
         vfio_gpus = None
@@ -84,13 +99,15 @@ async def send_heartbeat(
                         "vendor_id": g.vendor_id,
                         "device_id": g.device_id,
                         "iommu_group": g.iommu_group,
-                        "bound_to_vfio": g.bound_to_vfio,
                         "audio_pci": g.audio_pci,
+                        "iommu_group_peers": g.iommu_group_peers,
                     }
                     for g in cap.vfio_gpus
                 ]
-        except Exception:
-            pass  # qemu module not available or check failed
+        except ImportError as e:
+            logger.warning(f"QEMU module not available, VM capability disabled: {e}")
+        except Exception as e:
+            logger.warning(f"VM capability check failed: {e}")
 
         # Build heartbeat payload (matches old HeartbeatData)
         payload = HeartbeatRequest(

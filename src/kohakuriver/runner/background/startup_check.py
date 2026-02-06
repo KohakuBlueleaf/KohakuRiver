@@ -1,14 +1,15 @@
 """
 Startup check background task.
 
-Verifies running containers on startup and reports status.
-Handles VPS port recovery after runner restart.
+Verifies running containers and VMs on startup and reports status.
+Handles VPS port recovery and VM re-adoption after runner restart.
 
 All Docker operations are wrapped in asyncio.to_thread to prevent blocking.
 """
 
 import asyncio
 import datetime
+import os
 import subprocess
 
 from kohakuriver.docker.client import DockerManager
@@ -23,6 +24,8 @@ from kohakuriver.storage.vault import TaskStateStore
 from kohakuriver.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+VM_CONTAINER_PREFIX = "vm-"
 
 
 def _find_ssh_port(container_name: str) -> int:
@@ -71,27 +74,242 @@ def _stop_and_remove_container(container_name: str, timeout: int = 10):
     docker_manager.remove_container(container_name)
 
 
+def _is_process_running(pid: int) -> bool:
+    """Check if a process is running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+# =============================================================================
+# VM Recovery
+# =============================================================================
+
+
+async def _recover_vm_task(
+    task_id: int, task_data: dict, task_store: TaskStateStore
+) -> None:
+    """
+    Recover a VM task on startup.
+
+    If the QEMU daemon is still running (PID from pidfile alive):
+    - Re-adopt into QEMUManager
+    - Re-register network allocation
+    - Report running to host
+
+    If dead:
+    - Clean up VFIO GPUs, TAP devices, QMP sockets
+    - Report stopped to host
+    - Remove from vault
+    """
+    from kohakuriver.qemu.naming import vm_instance_dir, vm_pidfile_path
+    from kohakuriver.runner.config import config
+
+    instance_dir = vm_instance_dir(config.VM_INSTANCES_DIR, task_id)
+    pidfile = vm_pidfile_path(instance_dir)
+
+    # Read PID from pidfile
+    pid = None
+    try:
+        pid = int(open(pidfile).read().strip())
+    except (FileNotFoundError, ValueError):
+        pass
+
+    if pid and _is_process_running(pid):
+        # VM is still running — re-adopt
+        await _readopt_running_vm(task_id, task_data, task_store)
+    else:
+        # VM is dead — clean up
+        logger.warning(
+            f"[VM Recovery] VM {task_id} not running (PID={pid}). Cleaning up."
+        )
+        await _cleanup_dead_vm(task_id, task_data, task_store)
+
+
+async def _readopt_running_vm(
+    task_id: int, task_data: dict, task_store: TaskStateStore
+) -> None:
+    """Re-adopt a running VM into QEMUManager and network manager."""
+    from kohakuriver.qemu import get_qemu_manager
+    from kohakuriver.runner.services.vm_network_manager import get_vm_network_manager
+
+    qemu = get_qemu_manager()
+    vm = qemu.recover_vm(task_id, task_data)
+    if not vm:
+        logger.warning(f"[VM Recovery] Failed to re-adopt VM {task_id}")
+        await _cleanup_dead_vm(task_id, task_data, task_store)
+        return
+
+    # Re-register network allocation so cleanup works on stop
+    net_manager = get_vm_network_manager()
+    _recover_network_allocation(net_manager, task_id, task_data)
+
+    # Restart SSH port proxy if ssh_port is known
+    ssh_port = task_data.get("ssh_port")
+    if ssh_port and vm.vm_ip:
+        from kohakuriver.runner.services.vm_ssh import start_ssh_proxy
+
+        await start_ssh_proxy(task_id, ssh_port, vm.vm_ip)
+
+    logger.info(f"[VM Recovery] Re-adopted VM {task_id} (PID={vm.pid}, IP={vm.vm_ip})")
+
+    # Report running to host
+    await report_status_to_host(
+        TaskStatusUpdate(
+            task_id=task_id,
+            status="running",
+            message="VM recovered after runner restart",
+        )
+    )
+
+
+def _recover_network_allocation(net_manager, task_id: int, task_data: dict) -> None:
+    """Re-register VM network allocation in VMNetworkManager so cleanup works."""
+    from kohakuriver.runner.services.vm_network_manager import VMNetworkInfo
+
+    vm_ip = task_data.get("vm_ip", "")
+    if not vm_ip:
+        return
+
+    info = VMNetworkInfo(
+        tap_device=task_data.get("tap_device", ""),
+        mac_address=task_data.get("mac_address", ""),
+        vm_ip=vm_ip,
+        gateway=task_data.get("gateway", ""),
+        bridge_name=task_data.get("bridge_name", ""),
+        netmask="",  # Not needed for cleanup
+        prefix_len=task_data.get("prefix_len", 24),
+        dns_servers=[],
+        mode=task_data.get("network_mode", "standard"),
+        runner_url="",
+    )
+    net_manager._allocations[task_id] = info
+
+    # Re-register IP in standard mode pool so it doesn't get double-allocated
+    if info.mode == "standard":
+        net_manager._used_local_ips.add(vm_ip)
+
+
+async def _cleanup_dead_vm(
+    task_id: int, task_data: dict, task_store: TaskStateStore
+) -> None:
+    """Clean up a dead VM: unbind VFIO GPUs, remove TAP, report stopped."""
+    # Stop SSH proxy if it was running
+    try:
+        from kohakuriver.runner.services.vm_ssh import stop_ssh_proxy
+
+        await stop_ssh_proxy(task_id)
+    except Exception:
+        pass
+
+    # Unbind VFIO GPUs
+    gpu_addrs = task_data.get("gpu_pci_addresses", [])
+    if gpu_addrs:
+        try:
+            from kohakuriver.qemu import vfio
+
+            unbound = set()
+            for addr in gpu_addrs:
+                if addr not in unbound:
+                    try:
+                        group_unbound = await vfio.unbind_iommu_group(addr)
+                        unbound.update(group_unbound)
+                    except Exception as e:
+                        logger.warning(
+                            f"[VM Recovery] Failed to unbind VFIO for {addr}: {e}"
+                        )
+        except ImportError:
+            pass
+
+    # Delete TAP device
+    tap = task_data.get("tap_device", "")
+    if tap:
+        try:
+            subprocess.run(
+                ["ip", "link", "del", tap],
+                capture_output=True,
+                timeout=5,
+            )
+            logger.info(f"[VM Recovery] Deleted TAP {tap}")
+        except Exception:
+            pass
+
+    # Clean up QMP socket
+    from kohakuriver.qemu.naming import vm_qmp_socket_path
+
+    try:
+        os.unlink(vm_qmp_socket_path(task_id))
+    except OSError:
+        pass
+
+    # Report stopped to host
+    await report_status_to_host(
+        TaskStatusUpdate(
+            task_id=task_id,
+            status="stopped",
+            exit_code=-1,
+            message="VM not running on runner startup (runner or machine restarted).",
+            completed_at=datetime.datetime.now(),
+        )
+    )
+
+    # Remove from vault
+    task_store.remove_task(task_id)
+    logger.info(f"[VM Recovery] Cleaned up dead VM {task_id}")
+
+
+# =============================================================================
+# Main Startup Check
+# =============================================================================
+
+
 async def startup_check(task_store: TaskStateStore):
     """
-    Check all running containers on startup and reconcile state.
+    Check all running containers and VMs on startup and reconcile state.
 
     This function:
     1. Gets all tracked tasks from the store
-    2. Checks if their containers are still running
-    3. Reports stopped status for missing containers
-    4. For VPS containers still running, recovers SSH port binding
-    5. Updates store for containers that are still running
+    2. For VM tasks (container_name starts with "vm-"):
+       - Check QEMU pidfile, re-adopt if running, cleanup if dead
+    3. For Docker tasks:
+       - Check if containers are still running
+       - Report stopped for missing, recover SSH ports for running VPS
+    4. Check for orphan Docker containers
     """
-    # Get all running containers in executor
+    # Separate VM tasks from Docker tasks
+    tracked_tasks = list(task_store.items())
+    vm_tasks = []
+    docker_tasks = []
+
+    for task_id_str, task_data in tracked_tasks:
+        container_name = task_data.get("container_name", "")
+        if container_name.startswith(VM_CONTAINER_PREFIX):
+            vm_tasks.append((int(task_id_str), task_data))
+        else:
+            docker_tasks.append((int(task_id_str), task_data))
+
+    # --- Phase 1: Recover VM tasks ---
+    if vm_tasks:
+        logger.info(f"[VM Recovery] Found {len(vm_tasks)} VM task(s) in vault")
+        for task_id, task_data in vm_tasks:
+            try:
+                await _recover_vm_task(task_id, task_data, task_store)
+            except Exception as e:
+                logger.error(f"[VM Recovery] Error recovering VM {task_id}: {e}")
+                # Still try to report stopped and clean up
+                try:
+                    await _cleanup_dead_vm(task_id, task_data, task_store)
+                except Exception:
+                    task_store.remove_task(task_id)
+
+    # --- Phase 2: Recover Docker tasks ---
     all_running, running_container_names = await asyncio.to_thread(
         _get_running_containers
     )
 
-    # Check tracked tasks
-    tracked_tasks = list(task_store.items())  # Copy to avoid mutation during iteration
-
-    for task_id_str, task_data in tracked_tasks:
-        task_id = int(task_id_str)
+    for task_id, task_data in docker_tasks:
         container_name = task_data.get("container_name")
 
         if container_name not in running_container_names:
@@ -124,7 +342,6 @@ async def startup_check(task_store: TaskStateStore):
                         f"SSH port: {ssh_port}"
                     )
                 else:
-                    # VPS without SSH port - still usable via TTY
                     logger.warning(
                         f"VPS container {container_name} for task {task_id} has no SSH port. "
                         "VPS will work via TTY only."
@@ -146,49 +363,30 @@ async def startup_check(task_store: TaskStateStore):
                         ssh_port=ssh_port if ssh_port > 0 else None,
                     )
                 )
-                logger.info(
-                    f"[VPS Recovery] Successfully reported tracked VPS {task_id} recovery to host."
-                )
 
             logger.info(
                 f"Container {container_name} for task {task_id} is still running."
             )
 
-    # Check for orphan HakuRiver containers (running but not tracked)
-    # For VPS containers, try to recover them; for task containers, clean them up
+    # --- Phase 3: Check for orphan Docker containers ---
     for container in all_running:
-        # Check name matches HakuRiver pattern
         if not is_kohakuriver_container(container.name):
             continue
 
-        # Extract task ID from container name
         task_id = extract_task_id_from_name(container.name)
         if task_id is None:
-            logger.warning(
-                f"Could not extract task ID from container name: {container.name}. "
-                "Skipping."
-            )
             continue
 
-        # Check if tracked in our store
         task_data = task_store.get_task(task_id)
         if task_data is None:
-            # Orphan container - check if it's a VPS
+            # Orphan container
             if container.name.startswith(VPS_PREFIX):
-                # Try to recover VPS - it can work without SSH port via TTY
                 ssh_port = _find_ssh_port(container.name)
-                if ssh_port > 0:
-                    logger.info(
-                        f"Recovering orphan VPS container {container.name} "
-                        f"(task_id={task_id}), SSH port: {ssh_port}"
-                    )
-                else:
-                    logger.info(
-                        f"Recovering orphan VPS container {container.name} "
-                        f"(task_id={task_id}), no SSH port (TTY-only mode)"
-                    )
+                logger.info(
+                    f"Recovering orphan VPS container {container.name} "
+                    f"(task_id={task_id}), SSH port: {ssh_port}"
+                )
 
-                # Add back to tracking (works with or without SSH)
                 task_store.add_task(
                     task_id=task_id,
                     container_name=container.name,
@@ -196,17 +394,9 @@ async def startup_check(task_store: TaskStateStore):
                     allocated_gpus=None,
                     numa_node=None,
                 )
-                logger.debug(
-                    f"[VPS Recovery] Added VPS {task_id} back to local task store."
-                )
 
-                # Report running status to host with SSH port (0 means no SSH)
                 recovery_message = f"VPS recovered after runner restart" + (
                     "" if ssh_port > 0 else " (TTY-only, no SSH)"
-                )
-                logger.info(
-                    f"[VPS Recovery] Reporting VPS {task_id} as 'running' to host. "
-                    f"Message: {recovery_message}"
                 )
                 await report_status_to_host(
                     TaskStatusUpdate(
@@ -215,9 +405,6 @@ async def startup_check(task_store: TaskStateStore):
                         message=recovery_message,
                         ssh_port=ssh_port if ssh_port > 0 else None,
                     )
-                )
-                logger.info(
-                    f"[VPS Recovery] Successfully reported VPS {task_id} recovery to host."
                 )
             else:
                 # Regular task container - clean up
@@ -228,9 +415,6 @@ async def startup_check(task_store: TaskStateStore):
                 try:
                     await asyncio.to_thread(
                         _stop_and_remove_container, container.name, 10
-                    )
-                    logger.info(
-                        f"Successfully cleaned up orphan container {container.name}"
                     )
                 except Exception as e:
                     logger.error(
