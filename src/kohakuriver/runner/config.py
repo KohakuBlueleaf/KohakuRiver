@@ -64,6 +64,28 @@ class RunnerConfig:
     LOG_LEVEL: LogLevel = LogLevel.INFO
 
     # -------------------------------------------------------------------------
+    # VM (QEMU/KVM) Configuration
+    # -------------------------------------------------------------------------
+
+    VM_IMAGES_DIR: str = "/var/lib/kohakuriver/vm-images"
+    VM_INSTANCES_DIR: str = "/var/lib/kohakuriver/vm-instances"
+    VM_DEFAULT_MEMORY_MB: int = 4096
+    VM_DEFAULT_DISK_SIZE: str = (
+        "500G"  # Virtual max, thin-provisioned (host usage grows on demand)
+    )
+    VM_ACS_OVERRIDE: bool = (
+        False  # Disable ACS on PCI bridges at startup (splits IOMMU groups for individual GPU allocation)
+    )
+    VM_BOOT_TIMEOUT_SECONDS: int = 120
+    VM_SSH_READY_TIMEOUT_SECONDS: int = 120
+    VM_HEARTBEAT_TIMEOUT_SECONDS: int = 60
+
+    # NAT bridge for VMs in standard (non-overlay) mode
+    VM_BRIDGE_NAME: str = "kohaku-br0"
+    VM_BRIDGE_SUBNET: str = "10.200.0.0/24"
+    VM_BRIDGE_GATEWAY: str = "10.200.0.1"
+
+    # -------------------------------------------------------------------------
     # Overlay Network Configuration (VXLAN Hub)
     # -------------------------------------------------------------------------
 

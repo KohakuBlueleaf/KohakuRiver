@@ -15,6 +15,7 @@ from kohakuriver.runner.config import config
 from kohakuriver.runner.services.resource_monitor import get_gpu_stats, get_system_stats
 from kohakuriver.storage.vault import TaskStateStore
 from kohakuriver.utils.logger import get_logger
+from kohakuriver.version import __version__
 
 logger = get_logger(__name__)
 
@@ -66,6 +67,31 @@ async def send_heartbeat(
         stats = get_system_stats()
         gpu_info = get_gpu_stats()
 
+        # Gather VM capability info
+        vm_capable = False
+        vfio_gpus = None
+        try:
+            from kohakuriver.qemu import get_vm_capability
+
+            cap = get_vm_capability()
+            vm_capable = cap.vm_capable
+            if cap.vfio_gpus:
+                vfio_gpus = [
+                    {
+                        "gpu_id": g.gpu_id,
+                        "pci_address": g.pci_address,
+                        "name": g.name,
+                        "vendor_id": g.vendor_id,
+                        "device_id": g.device_id,
+                        "iommu_group": g.iommu_group,
+                        "bound_to_vfio": g.bound_to_vfio,
+                        "audio_pci": g.audio_pci,
+                    }
+                    for g in cap.vfio_gpus
+                ]
+        except Exception:
+            pass  # qemu module not available or check failed
+
         # Build heartbeat payload (matches old HeartbeatData)
         payload = HeartbeatRequest(
             running_tasks=running_task_ids,
@@ -77,6 +103,9 @@ async def send_heartbeat(
             current_avg_temp=stats["current_avg_temp"],
             current_max_temp=stats["current_max_temp"],
             gpu_info=gpu_info,
+            vm_capable=vm_capable,
+            vfio_gpus=vfio_gpus,
+            runner_version=__version__,
         )
 
         try:

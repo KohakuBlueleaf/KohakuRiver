@@ -295,6 +295,13 @@ async def startup_event():
         if overlay_info and config.OVERLAY_ENABLED:
             await _setup_overlay_network(overlay_info)
 
+        # Apply ACS override if configured (splits IOMMU groups for individual GPU allocation)
+        if config.VM_ACS_OVERRIDE:
+            await _apply_acs_override()
+
+        # Initialize VM network manager (after overlay setup)
+        await _setup_vm_network()
+
         # Run startup check
         logger.info("Running startup check...")
         await startup_check(task_store)
@@ -316,6 +323,45 @@ async def startup_event():
         )
         background_tasks.add(heartbeat_task)
         heartbeat_task.add_done_callback(background_tasks.discard)
+
+
+async def _apply_acs_override() -> None:
+    """Apply ACS override to split IOMMU groups for individual GPU allocation."""
+    try:
+        from kohakuriver.qemu.capability import apply_acs_override
+
+        def _apply():
+            return apply_acs_override()
+
+        results = await asyncio.to_thread(_apply)
+        total = results["root_ports"] + results["plx_switches"] + results["pci_bridges"]
+        if total > 0:
+            logger.info(
+                f"ACS override applied: {results['root_ports']} root ports, "
+                f"{results['plx_switches']} PLX switches, "
+                f"{results['pci_bridges']} PCI bridges"
+            )
+        else:
+            logger.debug("ACS override: no PCI bridges/switches found to modify")
+        if results["errors"]:
+            for err in results["errors"]:
+                logger.warning(f"ACS override warning: {err}")
+    except Exception as e:
+        logger.warning(f"ACS override failed: {e}")
+
+
+async def _setup_vm_network() -> None:
+    """Initialize VM network manager for QEMU VMs."""
+    try:
+        from kohakuriver.runner.services.vm_network_manager import (
+            get_vm_network_manager,
+        )
+
+        net_manager = get_vm_network_manager()
+        await net_manager.setup()
+        logger.info("VM network manager initialized")
+    except Exception as e:
+        logger.debug(f"VM network manager setup skipped: {e}")
 
 
 async def _setup_overlay_network(overlay_info: dict) -> None:
