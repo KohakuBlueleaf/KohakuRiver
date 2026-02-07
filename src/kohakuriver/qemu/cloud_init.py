@@ -290,6 +290,10 @@ def build_user_data(config: CloudInitConfig) -> str:
                 ),
             },
             {
+                "path": "/etc/ssh/sshd_config.d/99-kohakuriver.conf",
+                "content": ("PermitRootLogin yes\n" "PasswordAuthentication yes\n"),
+            },
+            {
                 "path": "/etc/systemd/system/kohakuriver-vm-agent.service",
                 "content": textwrap.dedent(
                     f"""\
@@ -325,6 +329,7 @@ def build_user_data(config: CloudInitConfig) -> str:
             "mount -t 9p -o trans=virtio,version=9p2000.L,msize=524288 kohaku_shared /shared || true",
             "mount -t 9p -o trans=virtio,version=9p2000.L,msize=524288 kohaku_local /local_temp || true",
             "systemctl daemon-reload",
+            "systemctl restart sshd || systemctl restart ssh || true",
             "systemctl enable --now kohakuriver-vm-agent",
             "systemctl enable --now qemu-guest-agent",
         ],

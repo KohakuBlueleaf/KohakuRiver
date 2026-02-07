@@ -259,18 +259,6 @@ def image_create(
         str,
         typer.Option("--images-dir", help="Output directory for base images"),
     ] = "/var/lib/kohakuriver/vm-images",
-    with_nvidia: Annotated[
-        bool,
-        typer.Option(
-            "--with-nvidia", help="Auto-detect host NVIDIA driver and install in image"
-        ),
-    ] = False,
-    nvidia_version: Annotated[
-        str | None,
-        typer.Option(
-            "--nvidia-version", help="Override NVIDIA driver version (e.g. 550.90.07)"
-        ),
-    ] = None,
 ):
     """Create a VM base image from Ubuntu cloud image."""
     import urllib.request
@@ -279,8 +267,6 @@ def image_create(
     if not shutil.which("qemu-img"):
         print_error("qemu-img not found. Install: apt install qemu-utils")
         raise typer.Exit(1)
-
-    has_virt_customize = shutil.which("virt-customize") is not None
 
     output_path = os.path.join(images_dir, f"{name}.qcow2")
     cache_dir = "/tmp/kohakuriver-vm-cache"
@@ -296,9 +282,7 @@ def image_create(
             f"[bold]Image Name:[/bold] {name}\n"
             f"[bold]Ubuntu Version:[/bold] {ubuntu_version}\n"
             f"[bold]Max Disk Size:[/bold] {size} (thin-provisioned)\n"
-            f"[bold]Output Path:[/bold] {output_path}\n"
-            f"[bold]virt-customize:[/bold] {'available' if has_virt_customize else 'not found (image will be minimal)'}\n"
-            f"[bold]NVIDIA Driver:[/bold] {'yes' if with_nvidia else 'no'}",
+            f"[bold]Output Path:[/bold] {output_path}",
             title="VM Base Image Creator",
         )
     )
@@ -338,177 +322,11 @@ def image_create(
         print_error(f"Failed to create base image: {e}")
         raise typer.Exit(1)
 
-    # Customize with virt-customize
-    customize_ok = False
-    if has_virt_customize:
-        console.print("\n[bold]Customizing image...[/bold]")
-        customize_cmd = [
-            "virt-customize",
-            "-a",
-            output_path,
-            "--run-command",
-            "systemctl enable ssh",
-            "--run-command",
-            "sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
-            "--run-command",
-            "sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
-            "--run-command",
-            "mkdir -p /etc/ssh/sshd_config.d && echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config.d/99-kohakuriver.conf",
-            "--run-command",
-            "cloud-init clean",
-            "--truncate",
-            "/etc/machine-id",
-            # Try installing packages (requires dhcpcd-base on host for
-            # libguestfs appliance network — if this fails, cloud-init
-            # installs them on first boot instead)
-            "--install",
-            "qemu-guest-agent,net-tools",
-            "--run-command",
-            "systemctl enable qemu-guest-agent || true",
-        ]
-        result = subprocess.run(customize_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            # Package install likely failed due to no network in appliance.
-            # Re-run without --install (config-only).
-            console.print(
-                "[yellow]Package installation failed (appliance has no network).[/yellow]\n"
-                "[dim]Fix: sudo apt install dhcpcd-base\n"
-                "Packages will be installed on first VM boot via cloud-init instead.[/dim]"
-            )
-            config_only_cmd = [
-                "virt-customize",
-                "-a",
-                output_path,
-                "--run-command",
-                "systemctl enable ssh",
-                "--run-command",
-                "sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
-                "--run-command",
-                "sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
-                "--run-command",
-                "mkdir -p /etc/ssh/sshd_config.d && echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config.d/99-kohakuriver.conf",
-                "--run-command",
-                "cloud-init clean",
-                "--truncate",
-                "/etc/machine-id",
-            ]
-            result = subprocess.run(config_only_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                console.print(f"[red]Customization failed:[/red]\n{result.stderr}")
-            else:
-                console.print(
-                    "[green]Config customization complete (packages deferred to first boot).[/green]"
-                )
-                customize_ok = True
-        else:
-            console.print("[green]Image customization complete.[/green]")
-            customize_ok = True
-    else:
-        console.print(
-            "\n[yellow]virt-customize not found. Skipping image customization.[/yellow]\n"
-            "[dim]Install: apt install libguestfs-tools[/dim]"
-        )
-
-    # NVIDIA driver installation
-    if with_nvidia:
-        if not has_virt_customize:
-            print_error(
-                "--with-nvidia requires virt-customize (apt install libguestfs-tools)"
-            )
-            raise typer.Exit(1)
-
-        # Detect driver version
-        driver_version = nvidia_version
-        if not driver_version:
-            from kohakuriver.qemu.capability import detect_nvidia_driver_version
-
-            driver_version = detect_nvidia_driver_version()
-            if not driver_version:
-                print_error(
-                    "Could not detect NVIDIA driver version on host. "
-                    "Use --nvidia-version to specify manually."
-                )
-                raise typer.Exit(1)
-            console.print(
-                f"\n[bold]Detected host NVIDIA driver:[/bold] {driver_version}"
-            )
-
-        # Resolve download URL
-        driver_filename = f"NVIDIA-Linux-x86_64-{driver_version}.run"
-        driver_urls = [
-            f"https://us.download.nvidia.com/tesla/{driver_version}/{driver_filename}",
-            f"https://us.download.nvidia.com/XFree86/Linux-x86_64/{driver_version}/{driver_filename}",
-        ]
-
-        driver_url = None
-        for url in driver_urls:
-            try:
-                req = urllib.request.Request(url, method="HEAD")
-                resp = urllib.request.urlopen(req, timeout=10)
-                if resp.status == 200:
-                    driver_url = url
-                    break
-            except Exception:
-                continue
-
-        if not driver_url:
-            print_error(
-                f"Could not find NVIDIA driver download for version {driver_version}. "
-                f"Tried:\n  " + "\n  ".join(driver_urls)
-            )
-            raise typer.Exit(1)
-
-        console.print(f"[bold]Downloading NVIDIA driver {driver_version}...[/bold]")
-        console.print(f"[dim]{driver_url}[/dim]")
-
-        driver_cache = os.path.join(cache_dir, driver_filename)
-        if not os.path.exists(driver_cache):
-            try:
-                urllib.request.urlretrieve(driver_url, driver_cache)
-            except Exception as e:
-                print_error(f"Failed to download NVIDIA driver: {e}")
-                raise typer.Exit(1)
-        else:
-            console.print(f"[dim]Using cached driver: {driver_cache}[/dim]")
-
-        console.print(
-            "[bold]Installing NVIDIA driver in image (this may take several minutes)...[/bold]"
-        )
-        nvidia_cmd = [
-            "virt-customize",
-            "-a",
-            output_path,
-            "--install",
-            "build-essential,dkms,linux-headers-generic,pkg-config,libglvnd-dev",
-            "--upload",
-            f"{driver_cache}:/tmp/nvidia.run",
-            "--run-command",
-            "chmod +x /tmp/nvidia.run && /tmp/nvidia.run --silent --dkms --no-cc-version-check",
-            "--run-command",
-            "rm /tmp/nvidia.run",
-        ]
-        result = subprocess.run(nvidia_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            console.print(
-                f"[red]NVIDIA driver installation failed:[/red]\n{result.stderr}"
-            )
-            console.print(
-                "[yellow]The base image was created but without NVIDIA drivers.\n"
-                "If this failed due to network, install dhcpcd-base: sudo apt install dhcpcd-base[/yellow]"
-            )
-        else:
-            console.print(
-                f"[green]NVIDIA driver {driver_version} installed successfully.[/green]"
-            )
-
     # Summary
-    if has_virt_customize and not customize_ok:
-        title = "Image Created (customization failed)"
-        border_style = "yellow"
-    else:
-        title = "Image Created Successfully"
-        border_style = "green"
-
+    console.print(
+        "\n[dim]All packages (SSH config, qemu-guest-agent, NVIDIA drivers) "
+        "will be installed automatically via cloud-init on first VM boot.[/dim]"
+    )
     try:
         result = subprocess.run(
             ["qemu-img", "info", "--output=json", output_path],
@@ -528,14 +346,14 @@ def image_create(
                     f"[bold]Path:[/bold] {output_path}\n"
                     f"[bold]Virtual Size:[/bold] {virtual_gb:.1f} GB\n"
                     f"[bold]Actual Size:[/bold] {actual_mb:.1f} MB (thin-provisioned)",
-                    title=title,
-                    border_style=border_style,
+                    title="Image Created Successfully",
+                    border_style="green",
                 )
             )
         else:
-            console.print(f"[{border_style}]{title}: {output_path}[/{border_style}]")
+            console.print(f"[green]Image created: {output_path}[/green]")
     except Exception:
-        console.print(f"[{border_style}]{title}: {output_path}[/{border_style}]")
+        console.print(f"[green]Image created: {output_path}[/green]")
 
 
 @image_app.command("list")
@@ -597,3 +415,142 @@ def image_list(
         table.add_row(name, virtual_size, actual_size, modified)
 
     console.print(table)
+
+
+def _format_bytes(n: int) -> str:
+    """Format bytes to human-readable string."""
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024**2:
+        return f"{n / 1024:.1f} KB"
+    if n < 1024**3:
+        return f"{n / 1024**2:.1f} MB"
+    return f"{n / 1024**3:.2f} GB"
+
+
+@app.command("instances")
+def instances():
+    """List VM instance directories across all nodes."""
+    from kohakuriver.cli.client import APIError, get_vm_instances
+
+    try:
+        data = get_vm_instances()
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+    if not data:
+        print_error("No data returned from host")
+        raise typer.Exit(1)
+
+    summary = data.get("summary", {})
+    console.print(
+        Panel.fit(
+            f"[bold]Total Instances:[/bold] {summary.get('total_instances', 0)}\n"
+            f"[bold]Orphaned:[/bold] [red]{summary.get('orphaned_count', 0)}[/red]\n"
+            f"[bold]Total Disk:[/bold] {_format_bytes(summary.get('total_disk_usage_bytes', 0))}",
+            title="VM Instances Summary",
+        )
+    )
+
+    table = Table(title="VM Instances", show_lines=True)
+    table.add_column("Task ID", style="bold")
+    table.add_column("Node")
+    table.add_column("Disk Usage", justify="right")
+    table.add_column("QEMU", justify="center")
+    table.add_column("DB Status")
+    table.add_column("Name")
+    table.add_column("Files")
+
+    for node in data.get("nodes", []):
+        hostname = node["hostname"]
+        if node["status"] != "online" or not node.get("instances"):
+            if node["status"] != "online":
+                table.add_row(
+                    "-",
+                    hostname,
+                    "-",
+                    "-",
+                    f"[dim]{node['status']}[/dim]",
+                    "-",
+                    "-",
+                )
+            continue
+
+        for inst in node["instances"]:
+            db_status = inst.get("db_status", "unknown")
+            if db_status == "orphaned":
+                status_str = "[red]orphaned[/red]"
+            elif db_status == "running":
+                status_str = "[green]running[/green]"
+            elif db_status in ("stopped", "failed", "killed"):
+                status_str = f"[dim]{db_status}[/dim]"
+            else:
+                status_str = db_status
+
+            qemu_str = (
+                "[green]Running[/green]"
+                if inst.get("qemu_running")
+                else "[dim]Stopped[/dim]"
+            )
+
+            meta = inst.get("task_metadata")
+            name = meta.get("name", "-") if meta else "-"
+            files = ", ".join(inst.get("files", []))
+
+            table.add_row(
+                str(inst["task_id"]),
+                hostname,
+                _format_bytes(inst.get("disk_usage_bytes", 0)),
+                qemu_str,
+                status_str,
+                name,
+                files,
+            )
+
+    console.print(table)
+
+
+@app.command("cleanup")
+def cleanup(
+    task_id: Annotated[
+        str,
+        typer.Argument(help="Task ID of the VM instance to delete"),
+    ],
+    hostname: Annotated[
+        str,
+        typer.Option(
+            "--hostname", "-n", help="Runner hostname (required for orphaned instances)"
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Force delete even if QEMU is running"),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip confirmation prompt"),
+    ] = False,
+):
+    """Delete a VM instance directory to free disk space."""
+    from kohakuriver.cli.client import APIError, delete_vm_instance
+
+    if not yes:
+        confirm = typer.confirm(
+            f"Delete VM instance {task_id}"
+            + (f" on {hostname}" if hostname else "")
+            + ("(force)" if force else "")
+            + "?"
+        )
+        if not confirm:
+            console.print("[dim]Cancelled.[/dim]")
+            raise typer.Exit(0)
+
+    try:
+        result = delete_vm_instance(task_id, hostname=hostname, force=force)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+    freed = result.get("freed_bytes", 0)
+    print_success(f"VM instance {task_id} deleted. Freed {_format_bytes(freed)}.")
