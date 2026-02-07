@@ -74,11 +74,11 @@ class RunnerConfig:
         "500G"  # Virtual max, thin-provisioned (host usage grows on demand)
     )
     VM_ACS_OVERRIDE: bool = (
-        False  # Disable ACS on PCI bridges at startup (splits IOMMU groups for individual GPU allocation)
+        True  # Disable ACS on PCI bridges at startup (splits IOMMU groups for individual GPU allocation)
     )
-    VM_BOOT_TIMEOUT_SECONDS: int = 120
-    VM_SSH_READY_TIMEOUT_SECONDS: int = 120
-    VM_HEARTBEAT_TIMEOUT_SECONDS: int = 60
+    VM_BOOT_TIMEOUT_SECONDS: int = 600
+    VM_SSH_READY_TIMEOUT_SECONDS: int = 600
+    VM_HEARTBEAT_TIMEOUT_SECONDS: int = 120
 
     # NAT bridge for VMs in standard (non-overlay) mode
     VM_BRIDGE_NAME: str = "kohaku-br0"

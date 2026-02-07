@@ -1251,7 +1251,7 @@ async def _fetch_runner_vm_instances(node: Node) -> dict:
 
 def _enrich_instance_with_db(instance: dict) -> dict:
     """Cross-reference a VM instance with the Task database."""
-    task_id = instance["task_id"]
+    task_id = int(instance["task_id"])
     task = Task.get_or_none(Task.task_id == task_id)
 
     if task:

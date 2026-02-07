@@ -467,7 +467,7 @@ def _scan_instance_dir(instances_dir: str, task_store) -> dict:
         total_disk_usage += disk_usage
         instances.append(
             {
-                "task_id": tid,
+                "task_id": str(tid),
                 "disk_usage_bytes": disk_usage,
                 "files": sorted(files),
                 "qemu_running": qemu_running,
@@ -476,7 +476,7 @@ def _scan_instance_dir(instances_dir: str, task_store) -> dict:
             }
         )
 
-    instances.sort(key=lambda x: x["task_id"])
+    instances.sort(key=lambda x: int(x["task_id"]))
 
     return {
         "instances_dir": instances_dir,
@@ -573,6 +573,6 @@ async def delete_vm_instance(task_id: int, force: bool = False):
 
     return {
         "message": f"VM instance {task_id} deleted.",
-        "task_id": task_id,
+        "task_id": str(task_id),
         "freed_bytes": freed_bytes,
     }
