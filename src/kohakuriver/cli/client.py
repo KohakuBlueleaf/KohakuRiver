@@ -430,6 +430,41 @@ def get_vm_images(hostname: str) -> list[dict]:
     return []
 
 
+def get_vm_instances() -> dict:
+    """Get VM instances across all nodes (admin only)."""
+    url = f"{_get_host_url()}/vps/vm-instances"
+    try:
+        response = _make_request("get", url, timeout=30.0)
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        _handle_http_error(e, "get VM instances")
+    except httpx.RequestError as e:
+        logger.error(f"Request error: {e}")
+        raise APIError(f"Network error: {e}")
+    return {}
+
+
+def delete_vm_instance(
+    task_id: str, hostname: str | None = None, force: bool = False
+) -> dict:
+    """Delete a VM instance directory (admin only)."""
+    url = f"{_get_host_url()}/vps/vm-instances/{task_id}"
+    params = {"force": str(force).lower()}
+    if hostname:
+        params["hostname"] = hostname
+    try:
+        response = _make_request("delete", url, params=params, timeout=60.0)
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        _handle_http_error(e, f"delete VM instance {task_id}")
+    except httpx.RequestError as e:
+        logger.error(f"Request error: {e}")
+        raise APIError(f"Network error: {e}")
+    return {}
+
+
 def get_vps_list(active_only: bool = False) -> list[dict]:
     """Get VPS list."""
     if active_only:
