@@ -133,6 +133,15 @@ def check_qemu() -> tuple[bool, str | None]:
     return True, None
 
 
+def _check_nvidia_drm_modeset() -> bool:
+    """Check if nvidia_drm.modeset=1 (blocks GPU unbinding on consumer cards)."""
+    try:
+        with open("/sys/module/nvidia_drm/parameters/modeset") as f:
+            return f.read().strip() == "Y"
+    except OSError:
+        return False  # Module not loaded — no issue
+
+
 # --- ACS Override ---
 
 
@@ -496,6 +505,14 @@ def check_vm_capability() -> VMCapability:
     vfio_ok, vfio_err = check_vfio_modules()
     if not vfio_ok:
         warnings.append(f"VFIO: {vfio_err}")
+
+    # Check nvidia_drm.modeset — blocks GPU unbinding on consumer cards
+    drm_modeset = _check_nvidia_drm_modeset()
+    if drm_modeset:
+        warnings.append(
+            "nvidia_drm.modeset=Y: GPU unbinding will hang on consumer cards. "
+            "Set nvidia_drm.modeset=0 in kernel params for headless compute nodes"
+        )
 
     # Discover VFIO-capable GPUs
     vfio_gpus = []

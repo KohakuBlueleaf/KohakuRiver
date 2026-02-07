@@ -8,6 +8,7 @@ group must be bound to vfio-pci together (VFIO kernel requirement).
 
 import asyncio
 import subprocess
+import threading
 from pathlib import Path
 
 from kohakuriver.qemu.exceptions import VFIOBindError
@@ -23,6 +24,35 @@ def _write_sysfs(path: str, value: str) -> None:
             f.write(value)
     except OSError as e:
         raise VFIOBindError(f"Failed to write '{value}' to {path}: {e}", path)
+
+
+def _write_sysfs_timeout(path: str, value: str, timeout: float = 5.0) -> bool:
+    """Write to a sysfs file with a timeout.
+
+    Consumer NVIDIA cards can hang on the unbind sysfs write even after
+    the driver has actually released the device.  Returns True if the
+    write completed within *timeout* seconds, False if it timed out
+    (the daemon thread is left behind — it will finish eventually or be
+    cleaned up at process exit).
+    """
+    error: OSError | None = None
+
+    def _do_write():
+        nonlocal error
+        try:
+            with open(path, "w") as f:
+                f.write(value)
+        except OSError as e:
+            error = e
+
+    t = threading.Thread(target=_do_write, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    if error:
+        raise VFIOBindError(f"Failed to write '{value}' to {path}: {error}", path)
+
+    return not t.is_alive()
 
 
 def get_current_driver(pci_address: str) -> str | None:
@@ -118,14 +148,38 @@ async def bind_to_vfio(pci_address: str) -> None:
 
             logger.info(f"Unbinding {pci_address} from {current}")
             unbind_path = f"/sys/bus/pci/devices/{pci_address}/driver/unbind"
-            _write_sysfs(unbind_path, pci_address)
+            completed = _write_sysfs_timeout(unbind_path, pci_address, timeout=5.0)
+
+            if not completed:
+                # Consumer NVIDIA cards: write hangs but unbind may have succeeded
+                actual = get_current_driver(pci_address)
+                if actual is None:
+                    logger.info(
+                        f"Unbind write timed out but {pci_address} is now unbound — continuing"
+                    )
+                else:
+                    raise VFIOBindError(
+                        f"Unbind timed out and {pci_address} still bound to {actual}",
+                        pci_address,
+                    )
 
         # Set driver override to vfio-pci
         override_path = f"/sys/bus/pci/devices/{pci_address}/driver_override"
-        _write_sysfs(override_path, "vfio-pci")
+        if not _write_sysfs_timeout(override_path, "vfio-pci", timeout=5.0):
+            logger.warning(f"driver_override write timed out for {pci_address}")
 
-        # Probe to bind the new driver
-        _write_sysfs("/sys/bus/pci/drivers_probe", pci_address)
+        # Try drivers_probe first, then explicit bind as fallback.
+        # Newer kernels may not honour drivers_probe alone after
+        # driver_override — explicit vfio-pci/bind is more reliable.
+        _write_sysfs_timeout("/sys/bus/pci/drivers_probe", pci_address, timeout=5.0)
+
+        if get_current_driver(pci_address) != "vfio-pci":
+            logger.info(
+                f"drivers_probe did not bind {pci_address}, trying explicit vfio-pci/bind"
+            )
+            _write_sysfs_timeout(
+                "/sys/bus/pci/drivers/vfio-pci/bind", pci_address, timeout=5.0
+            )
 
         # Verify binding
         new_driver = get_current_driver(pci_address)
@@ -157,22 +211,49 @@ async def unbind_from_vfio(pci_address: str) -> None:
             logger.info(f"{pci_address} not bound to vfio-pci (current: {current})")
             return
 
+        # Stop nvidia-persistenced before rebinding — it holds fds that
+        # block the nvidia driver from re-attaching to the device.
+        _stop_nvidia_persistenced()
+
         # Unbind from vfio-pci
         logger.info(f"Unbinding {pci_address} from vfio-pci")
         unbind_path = f"/sys/bus/pci/devices/{pci_address}/driver/unbind"
-        _write_sysfs(unbind_path, pci_address)
+        completed = _write_sysfs_timeout(unbind_path, pci_address, timeout=5.0)
+
+        if not completed:
+            actual = get_current_driver(pci_address)
+            if actual is None or actual != "vfio-pci":
+                logger.info(
+                    f"Unbind write timed out but {pci_address} is now unbound — continuing"
+                )
+            else:
+                raise VFIOBindError(
+                    f"Unbind timed out and {pci_address} still bound to {actual}",
+                    pci_address,
+                )
 
         # Clear driver override to allow default driver
         override_path = f"/sys/bus/pci/devices/{pci_address}/driver_override"
         try:
-            _write_sysfs(override_path, "\n")
+            if not _write_sysfs_timeout(override_path, "\n", timeout=5.0):
+                logger.warning(f"driver_override write timed out for {pci_address}")
         except VFIOBindError:
             pass  # Some devices don't support clearing override
 
-        # Probe to rebind default driver
-        _write_sysfs("/sys/bus/pci/drivers_probe", pci_address)
+        # Try drivers_probe first, then explicit nvidia/bind as fallback
+        _write_sysfs_timeout("/sys/bus/pci/drivers_probe", pci_address, timeout=5.0)
 
         new_driver = get_current_driver(pci_address)
+        if new_driver != "nvidia":
+            logger.info(
+                f"drivers_probe did not restore nvidia for {pci_address} "
+                f"(driver: {new_driver}), trying explicit nvidia/bind"
+            )
+            _write_sysfs_timeout(
+                "/sys/bus/pci/drivers/nvidia/bind", pci_address, timeout=5.0
+            )
+            new_driver = get_current_driver(pci_address)
+
         logger.info(f"{pci_address} rebound to: {new_driver or 'none'}")
 
     await asyncio.to_thread(_unbind_sync)
@@ -222,11 +303,18 @@ async def unbind_iommu_group(pci_address: str) -> list[str]:
     """
     devices = get_iommu_group_non_bridge_devices(pci_address)
     unbound = []
-    for dev in devices:
-        try:
-            await unbind_from_vfio(dev)
-            unbound.append(dev)
-        except Exception as e:
-            logger.warning(f"Failed to unbind {dev} from vfio-pci: {e}")
+    try:
+        for dev in devices:
+            try:
+                await unbind_from_vfio(dev)
+                unbound.append(dev)
+            except Exception as e:
+                logger.warning(f"Failed to unbind {dev} from vfio-pci: {e}")
+    finally:
+        # Restart nvidia-persistenced so restored GPUs get persistence mode.
+        # unbind_from_vfio stops it before rebinding to nvidia; we restart
+        # after the group is done so it grabs all newly-available GPUs.
+        if unbound:
+            await asyncio.to_thread(_start_nvidia_persistenced)
     logger.info(f"Unbound IOMMU group for {pci_address}: {unbound}")
     return unbound

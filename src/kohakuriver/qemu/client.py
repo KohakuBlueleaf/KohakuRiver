@@ -198,7 +198,9 @@ class QEMUManager:
 
             result = await asyncio.to_thread(_start_qemu)
             if result.returncode != 0:
-                error = Path(stderr_path).read_text(errors="replace").strip()
+                error = await asyncio.to_thread(
+                    lambda: Path(stderr_path).read_text(errors="replace").strip()
+                )
                 raise VMCreationError(
                     (
                         f"QEMU failed to start: {error}"
@@ -211,7 +213,9 @@ class QEMUManager:
             # Read real daemon PID from pidfile
             pidfile = vm_pidfile_path(instance_dir)
             try:
-                pid = int(Path(pidfile).read_text().strip())
+                pid = int(
+                    await asyncio.to_thread(lambda: Path(pidfile).read_text().strip())
+                )
             except (FileNotFoundError, ValueError) as e:
                 raise VMCreationError(
                     f"QEMU started but cannot read PID file {pidfile}: {e}",
@@ -585,18 +589,22 @@ class QEMUManager:
 
     async def _wait_for_ssh(self, vm_ip: str, timeout: int = 120) -> bool:
         """Wait for SSH to become available."""
-        start = time.time()
-        while time.time() - start < timeout:
+
+        def _probe() -> bool:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(2)
                 result = sock.connect_ex((vm_ip, 22))
                 sock.close()
-                if result == 0:
-                    logger.info(f"SSH is ready on {vm_ip}")
-                    return True
+                return result == 0
             except (socket.error, OSError):
-                pass
+                return False
+
+        start = time.time()
+        while time.time() - start < timeout:
+            if await asyncio.to_thread(_probe):
+                logger.info(f"SSH is ready on {vm_ip}")
+                return True
             await asyncio.sleep(3)
 
         logger.warning(f"SSH not available on {vm_ip} after {timeout}s")

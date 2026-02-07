@@ -6,8 +6,39 @@
 # 1. GPUs still bound to vfio-pci driver
 # 2. GPUs unbound from vfio but driver_override still set (no driver at all)
 # 3. Orphaned QEMU processes, TAP devices, NAT bridge
+#
+# Consumer NVIDIA cards: sysfs writes (unbind, driver_override, drivers_probe)
+# can hang indefinitely even after succeeding. We use background writes with
+# timeouts to avoid getting stuck.
 
-set -euo pipefail
+set -uo pipefail
+
+SYSFS_TIMEOUT=5  # seconds to wait for each sysfs write
+
+# Write to a sysfs file with a timeout.
+# Consumer NVIDIA cards can hang on sysfs writes even after the operation
+# succeeds. Run the write in background, wait up to SYSFS_TIMEOUT seconds,
+# then proceed regardless — caller should verify the result.
+sysfs_write() {
+    local path="$1"
+    local value="$2"
+    # Run write in background subshell
+    ( echo "$value" > "$path" ) &
+    local pid=$!
+    local i=0
+    local max=$((SYSFS_TIMEOUT * 10))  # poll every 0.1s
+    while [ $i -lt $max ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" 2>/dev/null
+            return 0  # completed
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    # Timed out — write is hung but may have succeeded
+    echo "    (sysfs write to $path timed out after ${SYSFS_TIMEOUT}s — checking result)"
+    return 1
+}
 
 echo "=== Killing any remaining QEMU VMs ==="
 QEMU_PIDS=$(pgrep -f qemu-system || true)
@@ -22,14 +53,35 @@ else
 fi
 
 echo ""
+echo "=== Stopping nvidia-persistenced ==="
+systemctl stop nvidia-persistenced 2>/dev/null || true
+sleep 1
+
+echo ""
 echo "=== Phase 1: Unbind devices still on vfio-pci ==="
 for dev in $(ls /sys/bus/pci/drivers/vfio-pci/ 2>/dev/null | grep ':'); do
     echo "Unbinding $dev from vfio-pci..."
-    echo "$dev" > /sys/bus/pci/drivers/vfio-pci/unbind || true
-    echo "Clearing driver_override for $dev..."
-    echo "" > /sys/bus/pci/devices/$dev/driver_override || true
-    echo "Reprobing $dev..."
-    echo "$dev" > /sys/bus/pci/drivers_probe || true
+    sysfs_write "/sys/bus/pci/drivers/vfio-pci/unbind" "$dev" || true
+
+    # Verify unbind
+    if [ -L "/sys/bus/pci/devices/$dev/driver" ]; then
+        cur=$(basename "$(readlink "/sys/bus/pci/devices/$dev/driver")")
+        if [ "$cur" = "vfio-pci" ]; then
+            echo "  WARNING: $dev still bound to vfio-pci after unbind"
+            continue
+        fi
+    fi
+
+    echo "  Clearing driver_override for $dev..."
+    sysfs_write "/sys/bus/pci/devices/$dev/driver_override" "" || true
+    echo "  Reprobing $dev..."
+    sysfs_write "/sys/bus/pci/drivers_probe" "$dev" || true
+
+    # Fallback: explicit nvidia/bind if probe didn't work
+    if [ ! -L "/sys/bus/pci/devices/$dev/driver" ]; then
+        echo "  drivers_probe did not bind, trying explicit nvidia/bind..."
+        sysfs_write "/sys/bus/pci/drivers/nvidia/bind" "$dev" || true
+    fi
     echo "  Done: $dev"
 done
 
@@ -62,9 +114,15 @@ for dev_path in /sys/bus/pci/devices/*; do
 
     # Clear override and reprobe
     echo "  Clearing driver_override for $dev..."
-    echo "" > "$dev_path/driver_override" 2>/dev/null || true
+    sysfs_write "$dev_path/driver_override" "" || true
     echo "  Reprobing $dev..."
-    echo "$dev" > /sys/bus/pci/drivers_probe 2>/dev/null || true
+    sysfs_write "/sys/bus/pci/drivers_probe" "$dev" || true
+
+    # Fallback: explicit nvidia/bind if probe didn't work
+    if [ ! -L "$dev_path/driver" ]; then
+        echo "  drivers_probe did not bind, trying explicit nvidia/bind..."
+        sysfs_write "/sys/bus/pci/drivers/nvidia/bind" "$dev" || true
+    fi
 
     # Verify
     if [ -L "$dev_path/driver" ]; then
@@ -95,6 +153,10 @@ fi
 echo ""
 echo "=== Cleaning up QMP sockets ==="
 rm -f /tmp/kohakuriver-qmp-*.sock 2>/dev/null || true
+
+echo ""
+echo "=== Restarting nvidia-persistenced ==="
+systemctl restart nvidia-persistenced 2>/dev/null || true
 
 echo ""
 echo "=== Current NVIDIA GPU status ==="

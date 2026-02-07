@@ -292,7 +292,7 @@ async def create_snapshot_endpoint(
         )
 
     message = request.message if request else None
-    snapshot_tag = create_snapshot(task_id, message=message or "")
+    snapshot_tag = await asyncio.to_thread(create_snapshot, task_id, message or "")
 
     if not snapshot_tag:
         raise HTTPException(
@@ -311,7 +311,7 @@ async def delete_snapshot_endpoint(task_id: int, timestamp: int):
     """Delete a specific snapshot by timestamp."""
     logger.info(f"Deleting snapshot {timestamp} for VPS {task_id}")
 
-    success = delete_snapshot(task_id, timestamp)
+    success = await asyncio.to_thread(delete_snapshot, task_id, timestamp)
     if not success:
         raise HTTPException(
             status_code=404,
@@ -326,7 +326,7 @@ async def delete_all_snapshots_endpoint(task_id: int):
     """Delete all snapshots for a VPS."""
     logger.info(f"Deleting all snapshots for VPS {task_id}")
 
-    count = delete_all_snapshots(task_id)
+    count = await asyncio.to_thread(delete_all_snapshots, task_id)
     return {
         "message": f"Deleted {count} snapshot(s) for VPS {task_id}",
         "deleted_count": count,
@@ -338,7 +338,7 @@ async def get_latest_snapshot_endpoint(task_id: int):
     """Get the latest snapshot for a VPS."""
     logger.info(f"Getting latest snapshot for VPS {task_id}")
 
-    tag = get_latest_snapshot(task_id)
+    tag = await asyncio.to_thread(get_latest_snapshot, task_id)
     if not tag:
         raise HTTPException(
             status_code=404,
