@@ -7,6 +7,7 @@ group must be bound to vfio-pci together (VFIO kernel requirement).
 """
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 from kohakuriver.qemu.exceptions import VFIOBindError
@@ -53,6 +54,41 @@ def _get_device_ids(pci_address: str) -> tuple[str, str]:
         raise VFIOBindError(f"Cannot read device IDs: {e}", pci_address)
 
 
+def _stop_nvidia_persistenced() -> bool:
+    """Stop nvidia-persistenced if running. Returns True if it was stopped."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "nvidia-persistenced"],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return False
+
+        logger.info("Stopping nvidia-persistenced to release GPU fds")
+        subprocess.run(
+            ["systemctl", "stop", "nvidia-persistenced"],
+            capture_output=True,
+            timeout=10,
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to stop nvidia-persistenced: {e}")
+        return False
+
+
+def _start_nvidia_persistenced() -> None:
+    """Start nvidia-persistenced (will only grab GPUs still bound to nvidia)."""
+    try:
+        subprocess.run(
+            ["systemctl", "start", "nvidia-persistenced"],
+            capture_output=True,
+            timeout=10,
+        )
+        logger.info("Restarted nvidia-persistenced")
+    except Exception as e:
+        logger.warning(f"Failed to restart nvidia-persistenced: {e}")
+
+
 async def bind_to_vfio(pci_address: str) -> None:
     """
     Unbind GPU from nvidia and bind to vfio-pci.
@@ -75,6 +111,11 @@ async def bind_to_vfio(pci_address: str) -> None:
 
         # Unbind from current driver
         if current:
+            # nvidia-persistenced holds /dev/nvidia* fds open, which blocks
+            # the sysfs unbind write indefinitely. Stop it first.
+            if current == "nvidia":
+                _stop_nvidia_persistenced()
+
             logger.info(f"Unbinding {pci_address} from {current}")
             unbind_path = f"/sys/bus/pci/devices/{pci_address}/driver/unbind"
             _write_sysfs(unbind_path, pci_address)
@@ -160,9 +201,16 @@ async def bind_iommu_group(pci_address: str) -> list[str]:
     """
     devices = get_iommu_group_non_bridge_devices(pci_address)
     bound = []
-    for dev in devices:
-        await bind_to_vfio(dev)
-        bound.append(dev)
+    try:
+        for dev in devices:
+            await bind_to_vfio(dev)
+            bound.append(dev)
+    finally:
+        # Restart nvidia-persistenced so remaining GPUs keep persistence mode.
+        # bind_to_vfio stops it when unbinding from nvidia; we restart after
+        # the group is done so it only grabs GPUs still bound to nvidia.
+        if bound:
+            await asyncio.to_thread(_start_nvidia_persistenced)
     logger.info(f"Bound IOMMU group for {pci_address}: {bound}")
     return bound
 

@@ -65,6 +65,7 @@ const createForm = ref({
   vm_image: 'ubuntu-24.04',
   vm_disk_size: '500G',
   vm_memory_mb: 4096,
+  vm_cores: 0,
 })
 
 // Expanded GPU node panels
@@ -102,10 +103,24 @@ async function fetchVmImages(hostname) {
   }
 }
 
-// Fetch VM images when runner selection changes and backend is qemu
+// Fetch VM images and compute defaults when runner selection changes and backend is qemu
 watch([selectedRunner, () => createForm.value.vps_backend], ([runner, backend]) => {
   if (backend === 'qemu' && runner) {
     fetchVmImages(runner)
+    // Compute 25% defaults from selected node
+    const node = clusterStore.onlineNodes.find((n) => n.hostname === runner)
+    if (node) {
+      if (node.total_cores) {
+        createForm.value.vm_cores = Math.max(1, Math.floor(node.total_cores * 0.25))
+      }
+      if (node.memory_total_bytes) {
+        // 25% of total, rounded down to nearest GB
+        createForm.value.vm_memory_mb = Math.max(
+          1024,
+          Math.floor(((node.memory_total_bytes / 1024 / 1024) * 0.25) / 1024) * 1024
+        )
+      }
+    }
   } else {
     vmImages.value = []
   }
@@ -230,8 +245,8 @@ async function handleCreate() {
     const data = {
       name: createForm.value.name || null,
       vps_backend: createForm.value.vps_backend,
-      required_cores: createForm.value.required_cores,
-      required_memory_bytes: createForm.value.required_memory_bytes || null,
+      required_cores: isVm ? createForm.value.vm_cores : createForm.value.required_cores,
+      required_memory_bytes: isVm ? null : createForm.value.required_memory_bytes || null,
       container_name:
         !isVm && createForm.value.imageSource === 'tarball' ? createForm.value.container_name || null : null,
       registry_image:
@@ -284,6 +299,7 @@ function resetCreateForm() {
     vm_image: 'ubuntu-24.04',
     vm_disk_size: '500G',
     vm_memory_mb: 4096,
+    vm_cores: 0,
   }
   expandedGpuNodes.value = []
 }
@@ -786,7 +802,9 @@ function copyVpsId(taskId) {
           </el-radio-group>
         </el-form-item>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div
+          v-if="createForm.vps_backend !== 'qemu'"
+          class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <el-form-item label="CPU Cores (0 = no limit)">
             <el-input-number
               v-model="createForm.required_cores"
@@ -857,11 +875,13 @@ function copyVpsId(taskId) {
               Select a node or GPU first to load available images
             </p>
           </el-form-item>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <el-form-item label="Max Disk Size (thin-provisioned)">
-              <el-input
-                v-model="createForm.vm_disk_size"
-                placeholder="e.g. 500G" />
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <el-form-item label="VM CPU Cores">
+              <el-input-number
+                v-model="createForm.vm_cores"
+                :min="1"
+                :max="256"
+                class="w-full" />
             </el-form-item>
             <el-form-item label="VM Memory (MB)">
               <el-input-number
@@ -869,6 +889,11 @@ function copyVpsId(taskId) {
                 :min="512"
                 :step="1024"
                 class="w-full" />
+            </el-form-item>
+            <el-form-item label="Max Disk Size">
+              <el-input
+                v-model="createForm.vm_disk_size"
+                placeholder="e.g. 500G" />
             </el-form-item>
           </div>
         </template>

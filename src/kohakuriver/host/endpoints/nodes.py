@@ -170,12 +170,35 @@ async def heartbeat(hostname: str, request: HeartbeatRequest):
 
 
 async def _mark_overlay_active(hostname: str) -> None:
-    """Mark runner's overlay allocation as active on heartbeat."""
+    """Mark runner's overlay allocation as active on heartbeat.
+
+    If the runner has no allocation (e.g. host restarted and allocation
+    is under a placeholder name), trigger a full allocate_for_runner
+    which will remap the placeholder to the real hostname.
+    """
     from kohakuriver.host.app import get_overlay_manager
 
     overlay_manager = get_overlay_manager()
-    if overlay_manager:
+    if not overlay_manager:
+        return
+
+    # Fast path: runner already has allocation under its real name
+    existing = await overlay_manager.get_allocation(hostname)
+    if existing:
         await overlay_manager.mark_runner_active(hostname)
+        return
+
+    # Slow path: allocation may be under a placeholder name (post-host-restart).
+    # Use the node's URL to extract physical IP and call allocate_for_runner
+    # which handles placeholder remapping.
+    node = Node.get_or_none(Node.hostname == hostname)
+    if node and node.url:
+        try:
+            physical_ip = _extract_ip_from_url(node.url)
+            await overlay_manager.allocate_for_runner(hostname, physical_ip)
+            logger.info(f"Recovered overlay allocation for {hostname} during heartbeat")
+        except Exception as e:
+            logger.warning(f"Failed to recover overlay allocation for {hostname}: {e}")
 
 
 def _update_node_metrics(
