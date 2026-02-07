@@ -19,6 +19,8 @@ import json
 import os
 import signal
 import sys
+import termios
+import tty
 from datetime import datetime
 from typing import Annotated
 
@@ -241,8 +243,6 @@ def container_shell(
 
     Connects to the container via WebSocket terminal.
     """
-    import asyncio
-
     try:
         console.print(f"[dim]Opening shell in environment '{name}'...[/dim]")
 
@@ -284,9 +284,6 @@ async def _run_terminal_shell(container_name: str):
         - TUI apps like vim, htop, nano, screen
         - Exit by typing 'exit' command in shell
     """
-    import termios
-    import tty
-
     import websockets
 
     ws_url = (
@@ -425,8 +422,6 @@ async def _send_resize_events(websocket, resize_queue: asyncio.Queue):
 
 def _cleanup_terminal(old_settings):
     """Restore terminal settings and reset signal handler."""
-    import termios
-
     if old_settings:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
     if hasattr(signal, "SIGWINCH"):

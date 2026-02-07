@@ -39,6 +39,7 @@ from kohakuriver.host.auth.dependencies import (
     OptionalUser,
     is_auth_enabled,
 )
+from kohakuriver.host.config import config as _host_config
 from kohakuriver.host.auth.utils import (
     generate_invitation_token,
     generate_session_id,
@@ -155,9 +156,7 @@ class InvitationResponse(BaseModel):
 
 def _get_config():
     """Get host config."""
-    from kohakuriver.host.config import config
-
-    return config
+    return _host_config
 
 
 def _set_session_cookie(response: Response, session_id: str) -> None:

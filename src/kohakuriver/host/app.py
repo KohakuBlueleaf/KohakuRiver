@@ -258,7 +258,7 @@ async def _initialize_overlay_network():
         overlay_manager = OverlayNetworkManager(config)
         await overlay_manager.initialize()
 
-        # Store in app.state for access from endpoints
+        # Store in app.state and shared state module
         app.state.overlay_manager = overlay_manager
 
         # Initialize IP reservation manager
@@ -267,6 +267,15 @@ async def _initialize_overlay_network():
         ip_reservation_manager = IPReservationManager(overlay_manager)
         app.state.ip_reservation_manager = ip_reservation_manager
         logger.info("IP reservation manager initialized")
+
+        # Publish to state module so endpoints can import without cycle
+        from kohakuriver.host.state import (
+            set_overlay_manager,
+            set_ip_reservation_manager,
+        )
+
+        set_overlay_manager(overlay_manager)
+        set_ip_reservation_manager(ip_reservation_manager)
 
         logger.info(
             f"Overlay network initialized: subnet={config.OVERLAY_SUBNET}, "
@@ -279,28 +288,11 @@ async def _initialize_overlay_network():
         app.state.ip_reservation_manager = None
 
 
-def get_overlay_manager():
-    """
-    Get the overlay network manager instance.
-
-    Returns:
-        OverlayNetworkManager or None if overlay is disabled or not initialized.
-    """
-    if not config.OVERLAY_ENABLED:
-        return None
-    return getattr(app.state, "overlay_manager", None)
-
-
-def get_ip_reservation_manager():
-    """
-    Get the IP reservation manager instance.
-
-    Returns:
-        IPReservationManager or None if overlay is disabled or not initialized.
-    """
-    if not config.OVERLAY_ENABLED:
-        return None
-    return getattr(app.state, "ip_reservation_manager", None)
+# Re-export from state module for backwards compatibility
+from kohakuriver.host.state import (
+    get_overlay_manager,
+    get_ip_reservation_manager,
+)  # noqa: E402,F401
 
 
 # =============================================================================

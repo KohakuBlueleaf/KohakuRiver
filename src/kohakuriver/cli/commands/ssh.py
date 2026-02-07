@@ -9,6 +9,8 @@ import typer
 
 from kohakuriver.cli import client, config as cli_config
 from kohakuriver.cli.output import console, print_error, print_success
+from kohakuriver.ssh_proxy.client import ClientProxy
+from kohakuriver.utils.ssh_key import get_default_key_output_path
 
 app = typer.Typer(help="SSH commands")
 
@@ -24,8 +26,6 @@ async def _run_ssh_with_proxy(
     """
     Start the client proxy server and the local SSH subprocess concurrently.
     """
-    from kohakuriver.ssh_proxy.client import ClientProxy
-
     proxy = ClientProxy(task_id, host, proxy_port, local_port, user)
     if not local_port:
         local_port = proxy.local_port
@@ -107,8 +107,6 @@ def ssh_connect(
     ] = "root",
 ):
     """SSH connect to a VPS instance via the host proxy."""
-    from kohakuriver.utils.ssh_key import get_default_key_output_path
-
     try:
         vps = client.get_task_status(task_id)
 
@@ -170,8 +168,6 @@ def ssh_config(
     which is the recommended way to connect to VPS instances.
     """
     try:
-        from kohakuriver.utils.ssh_key import get_default_key_output_path
-
         vps_list = client.get_vps_list(active_only=True)
 
         if not vps_list:

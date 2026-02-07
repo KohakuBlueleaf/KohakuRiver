@@ -1,6 +1,8 @@
 """Config management commands."""
 
 import os
+import subprocess
+import sys
 from typing import Annotated
 
 import typer
@@ -63,9 +65,6 @@ def generate_completion(
     ] = None,
 ):
     """Generate shell completion script."""
-    import subprocess
-    import sys
-
     try:
         # Get the path to the kohakuriver entry point
         result = subprocess.run(

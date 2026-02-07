@@ -1,10 +1,15 @@
 """Interactive prompts for complex commands."""
 
+import os
+
 from rich.prompt import Confirm, IntPrompt, Prompt
 
 from kohakuriver.cli import client
 from kohakuriver.cli.formatters.node import format_node_table
+from kohakuriver.cli.formatters.vps import format_vps_created
 from kohakuriver.cli.output import console, print_error, print_success
+from kohakuriver.utils.cli import parse_memory_string
+from kohakuriver.utils.ssh_key import get_default_key_output_path, read_public_key_file
 
 
 def interactive_task_submit() -> dict | None:
@@ -60,8 +65,6 @@ def interactive_task_submit() -> dict | None:
         return None
 
     # Parse memory
-    from kohakuriver.utils.cli import parse_memory_string
-
     memory_bytes = None
     if memory:
         try:
@@ -110,9 +113,6 @@ def interactive_vps_create() -> dict | None:
     public_key = None
 
     if key_choice == "1":
-        import os
-        from kohakuriver.utils.ssh_key import read_public_key_file
-
         key_path = Prompt.ask(
             "Public key path",
             default="~/.ssh/id_ed25519.pub",
@@ -172,8 +172,6 @@ def interactive_vps_create() -> dict | None:
         return None
 
     # Parse memory
-    from kohakuriver.utils.cli import parse_memory_string
-
     memory_bytes = None
     if memory:
         try:
@@ -194,16 +192,11 @@ def interactive_vps_create() -> dict | None:
         )
 
         if result.get("task_id"):
-            from kohakuriver.cli.formatters.vps import format_vps_created
-
             panel = format_vps_created(result)
             console.print(panel)
 
             # Handle generated key
             if ssh_key_mode == "generate" and result.get("ssh_private_key"):
-                import os
-                from kohakuriver.utils.ssh_key import get_default_key_output_path
-
                 task_id = result["task_id"]
                 out_path = get_default_key_output_path(task_id)
                 out_path = os.path.expanduser(out_path)

@@ -11,9 +11,15 @@ Features:
 - Interactive task/VPS creation
 """
 
+import json
 import os
+import select
+import shlex
+import subprocess
 import sys
+import termios
 import time
+import tty
 from datetime import datetime
 from enum import Enum
 
@@ -76,8 +82,6 @@ class InputReader:
 
     def read_key(self, timeout: float = 0.1) -> str | None:
         """Read a key with proper escape sequence handling."""
-        import select
-
         # Check if input available
         if not select.select([sys.stdin], [], [], timeout)[0]:
             return None
@@ -491,8 +495,6 @@ class TUIApp:
 
             gpus = task.get("required_gpus", [])
             if isinstance(gpus, str):
-                import json
-
                 try:
                     gpus = json.loads(gpus)
                 except:
@@ -682,8 +684,6 @@ class TUIApp:
 
         gpus = task.get("required_gpus", [])
         if isinstance(gpus, str):
-            import json
-
             try:
                 gpus = json.loads(gpus)
             except:
@@ -927,16 +927,11 @@ class TUIApp:
 
     def _restore_terminal(self):
         """Restore terminal to normal mode for input."""
-        import termios
-
         if self.old_settings:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
 
     def _setup_terminal(self):
         """Setup terminal for raw input mode."""
-        import termios
-        import tty
-
         self.old_settings = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin.fileno())
 
@@ -1006,8 +1001,6 @@ class TUIApp:
         # Parse arguments - split by spaces, respecting quotes
         args_str = (result.get("arguments") or "").strip()
         if args_str:
-            import shlex
-
             try:
                 arguments = shlex.split(args_str)
             except ValueError:
@@ -1577,8 +1570,6 @@ class TUIApp:
             self.console.print(f"[dim]Container: {container_name}[/dim]")
             self.console.print("[dim]Type 'exit' to return to TUI...[/dim]\n")
 
-            import subprocess
-
             # Run docker exec interactively
             subprocess.run(
                 ["docker", "exec", "-it", container_name, "/bin/bash"],
@@ -1619,9 +1610,6 @@ class TUIApp:
 
     def run(self) -> None:
         """Run the TUI application."""
-        import termios
-        import tty
-
         # Initial data fetch
         self.fetch_data()
 

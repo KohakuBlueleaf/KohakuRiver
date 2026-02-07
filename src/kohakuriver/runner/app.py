@@ -14,16 +14,23 @@ import psutil
 from fastapi import FastAPI, Path, Query, WebSocket
 
 from kohakuriver.docker.client import DockerManager
+from kohakuriver.models.enums import LogLevel
+from kohakuriver.qemu.capability import apply_acs_override
 from kohakuriver.runner.background.heartbeat import send_heartbeat
 from kohakuriver.runner.background.startup_check import startup_check
 from kohakuriver.runner.config import config
 from kohakuriver.runner.endpoints import docker as docker_endpoints
 from kohakuriver.runner.endpoints import filesystem, tasks, terminal, vps
+from kohakuriver.runner.services.overlay_manager import (
+    OverlayConfig,
+    RunnerOverlayManager,
+)
 from kohakuriver.runner.services.tunnel_server import (
     handle_container_tunnel,
     handle_port_forward,
     set_dependencies as tunnel_set_dependencies,
 )
+from kohakuriver.runner.services.vm_network_manager import get_vm_network_manager
 from kohakuriver.tunnel.protocol import PROTO_TCP, PROTO_UDP
 from kohakuriver.runner.numa.detector import detect_numa_topology
 from kohakuriver.runner.services.resource_monitor import get_gpu_stats, get_total_cores
@@ -335,7 +342,6 @@ async def startup_event():
 async def _apply_acs_override() -> None:
     """Apply ACS override to split IOMMU groups for individual GPU allocation."""
     try:
-        from kohakuriver.qemu.capability import apply_acs_override
 
         def _apply():
             return apply_acs_override()
@@ -360,10 +366,6 @@ async def _apply_acs_override() -> None:
 async def _setup_vm_network() -> None:
     """Initialize VM network manager for QEMU VMs."""
     try:
-        from kohakuriver.runner.services.vm_network_manager import (
-            get_vm_network_manager,
-        )
-
         net_manager = get_vm_network_manager()
         await net_manager.setup()
         logger.info("VM network manager initialized")
@@ -378,21 +380,21 @@ async def _setup_overlay_network(overlay_info: dict) -> None:
     Args:
         overlay_info: Overlay configuration from Host registration response
     """
-    from kohakuriver.runner.services.overlay_manager import (
-        OverlayConfig,
-        RunnerOverlayManager,
-    )
-
     logger.info("Setting up VXLAN overlay network...")
 
     # Get runner's physical IP (same logic as get_runner_url)
     runner_ip = config.RUNNER_BIND_IP
     if runner_ip == "0.0.0.0":
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect((config.HOST_ADDRESS, config.HOST_PORT))
-            runner_ip = s.getsockname()[0]
-            s.close()
+
+            def _detect_ip():
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect((config.HOST_ADDRESS, config.HOST_PORT))
+                ip = s.getsockname()[0]
+                s.close()
+                return ip
+
+            runner_ip = await asyncio.to_thread(_detect_ip)
         except Exception:
             runner_ip = "127.0.0.1"
 
@@ -468,8 +470,6 @@ app.add_event_handler("shutdown", shutdown_event)
 def run():
     """Run the runner server using uvicorn."""
     import uvicorn
-
-    from kohakuriver.models.enums import LogLevel
 
     log_level = config.LOG_LEVEL
 

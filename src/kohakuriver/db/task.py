@@ -7,9 +7,11 @@ in the cluster, including both command execution and VPS sessions.
 
 import datetime
 import json
+import logging
 
 import peewee
 
+from kohakuriver.db.auth import User
 from kohakuriver.db.base import BaseModel
 from kohakuriver.models.enums import TaskStatus, TaskType
 
@@ -317,8 +319,6 @@ class Task(BaseModel):
         # Fetch owner and approver usernames
         if include_owner:
             try:
-                from kohakuriver.db.auth import User
-
                 if self.owner_id:
                     user = User.get_or_none(User.id == self.owner_id)
                     if user:
@@ -332,8 +332,6 @@ class Task(BaseModel):
                 pass  # Auth module not available (auth disabled)
             except Exception as e:
                 # Log other errors but don't fail the whole response
-                import logging
-
                 logging.getLogger(__name__).warning(
                     f"Error fetching user info for task {self.task_id}: {e}"
                 )

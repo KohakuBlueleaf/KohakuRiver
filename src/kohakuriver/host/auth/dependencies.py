@@ -13,6 +13,7 @@ from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 
 from kohakuriver.db.auth import Session, Token, User, UserRole
 from kohakuriver.host.auth.utils import hash_token
+from kohakuriver.host.config import config as _host_config
 from kohakuriver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,9 +27,7 @@ logger = get_logger(__name__)
 @lru_cache()
 def _get_config():
     """Get host config (cached)."""
-    from kohakuriver.host.config import config
-
-    return config
+    return _host_config
 
 
 def is_auth_enabled() -> bool:

@@ -8,7 +8,10 @@ Usage:
 """
 
 import os
+import shutil
 import subprocess
+import sys
+import tempfile
 from typing import Annotated
 
 import typer
@@ -415,8 +418,6 @@ def init_service(
 
     Use --no-install to only generate the files without registering.
     """
-    import sys
-
     if not any([host, runner, all_services]):
         print_error("You must specify --host, --runner, or --all")
         raise typer.Exit(1)
@@ -437,8 +438,6 @@ def init_service(
     env_path = os.environ.get("PATH", "") if capture_env else ""
 
     # Use temp directory for service files
-    import tempfile
-
     output_dir = tempfile.mkdtemp() if not no_install else "."
 
     if no_install:
@@ -545,8 +544,6 @@ WantedBy=multi-user.target
             success = False
 
     # Cleanup temp files
-    import shutil
-
     if output_dir != ".":
         shutil.rmtree(output_dir, ignore_errors=True)
 

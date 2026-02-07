@@ -14,6 +14,9 @@ Key Features:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import shutil
+import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -237,8 +240,6 @@ class RunnerOverlayManager:
         Since our local subnet has a more specific route (via bridge),
         we can add a catch-all for the overlay network via host_gateway.
         """
-        import ipaddress
-
         try:
             # Parse overlay network CIDR
             overlay_net = ipaddress.IPv4Network(config.overlay_network_cidr)
@@ -275,9 +276,6 @@ class RunnerOverlayManager:
         1. Cross-node communication works even when firewalld blocks forwarding
         2. Containers can access external networks (internet) via NAT/masquerade
         """
-        import shutil
-        import subprocess
-
         config = self._config
         if config is None:
             raise RuntimeError("OverlayConfig not set")

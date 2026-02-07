@@ -1,6 +1,7 @@
 """TUI dashboard for cluster monitoring."""
 
 import time
+from datetime import datetime
 
 from rich.layout import Layout
 from rich.live import Live
@@ -28,8 +29,6 @@ def create_dashboard_layout() -> Layout:
 
 def create_header() -> Panel:
     """Create the dashboard header."""
-    from datetime import datetime
-
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return Panel(
         f"[bold blue]HakuRiver Cluster Dashboard[/bold blue] | {now}",

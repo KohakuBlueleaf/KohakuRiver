@@ -1,6 +1,7 @@
 """VPS management commands."""
 
 import os
+import subprocess
 from typing import Annotated
 
 import typer
@@ -12,6 +13,8 @@ from kohakuriver.cli.formatters.vps import (
     format_vps_table,
 )
 from kohakuriver.cli.output import console, print_error, print_success
+from kohakuriver.utils.cli import parse_memory_string
+from kohakuriver.utils.ssh_key import get_default_key_output_path, read_public_key_file
 
 app = typer.Typer(help="VPS management commands")
 
@@ -136,12 +139,6 @@ def create_vps(
     Use --backend=qemu to create a QEMU/KVM VM instead of a Docker container.
     VM backend supports full GPU passthrough via VFIO.
     """
-    from kohakuriver.utils.cli import parse_memory_string
-    from kohakuriver.utils.ssh_key import (
-        get_default_key_output_path,
-        read_public_key_file,
-    )
-
     if image and container:
         print_error("--image and --container are mutually exclusive")
         raise typer.Exit(1)
@@ -331,10 +328,6 @@ def connect_vps(
 
     For VPS created without SSH (TTY-only mode), use 'kohakuriver terminal <task_id>' instead.
     """
-    import subprocess
-
-    from kohakuriver.utils.ssh_key import get_default_key_output_path
-
     try:
         vps = client.get_task_status(task_id)
 

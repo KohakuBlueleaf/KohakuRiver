@@ -13,6 +13,11 @@ from pathlib import Path
 
 from kohakuriver.utils.logger import get_logger
 
+try:
+    import pynvml
+except ImportError:
+    pynvml = None
+
 logger = get_logger(__name__)
 
 
@@ -567,17 +572,16 @@ def detect_nvidia_driver_version() -> str | None:
         pass
 
     # Method 3: pynvml
-    try:
-        import pynvml
-
-        pynvml.nvmlInit()
-        version = pynvml.nvmlSystemGetDriverVersion()
-        pynvml.nvmlShutdown()
-        if isinstance(version, bytes):
-            version = version.decode()
-        return version
-    except Exception:
-        pass
+    if pynvml is not None:
+        try:
+            pynvml.nvmlInit()
+            version = pynvml.nvmlSystemGetDriverVersion()
+            pynvml.nvmlShutdown()
+            if isinstance(version, bytes):
+                version = version.decode()
+            return version
+        except Exception:
+            pass
 
     return None
 

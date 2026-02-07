@@ -28,6 +28,7 @@ from fastapi import (
 )
 from pydantic import BaseModel
 
+from kohakuriver.runner.services.vm_ssh import ssh_connect, ssh_exec
 from kohakuriver.storage.vault import TaskStateStore
 from kohakuriver.utils.logger import get_logger
 
@@ -224,8 +225,6 @@ async def _exec_in_vm(
     vm_ip: str, cmd: list[str], timeout: int = 30
 ) -> tuple[int, str, str]:
     """Execute a command in VM via SSH."""
-    from kohakuriver.runner.services.vm_ssh import ssh_exec
-
     return await ssh_exec(vm_ip, cmd, timeout=timeout)
 
 
@@ -943,8 +942,6 @@ async def _watch_vm_filesystem(
     watch_paths: list[str],
 ):
     """Watch filesystem changes in a VM via SSH."""
-    from kohakuriver.runner.services.vm_ssh import ssh_connect, ssh_exec
-
     # Validate paths exist
     valid_paths = []
     for path in watch_paths:
@@ -983,8 +980,6 @@ async def _watch_vm_with_inotify(
     paths: list[str],
 ):
     """Watch filesystem in VM via SSH inotifywait."""
-    from kohakuriver.runner.services.vm_ssh import ssh_connect
-
     conn = None
     process = None
 
@@ -1087,8 +1082,6 @@ async def _watch_vm_with_polling(
     interval: float = 2.0,
 ):
     """Watch filesystem in VM via SSH polling."""
-    from kohakuriver.runner.services.vm_ssh import ssh_exec
-
     logger.info(
         f"[FS Watch] Using polling via SSH for VM {task_id} (inotifywait not available)"
     )

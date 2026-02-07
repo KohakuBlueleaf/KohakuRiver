@@ -5,8 +5,9 @@ from typing import Annotated
 
 import typer
 
-from kohakuriver.cli import client
+from kohakuriver.cli import client, config as cli_config
 from kohakuriver.cli.output import console, print_error
+from kohakuriver.docker.naming import task_container_name, vps_container_name
 
 app = typer.Typer(
     help="Terminal UI and container access",
@@ -45,8 +46,6 @@ def terminal_main(
       r - Refresh data
       q - Quit
     """
-    from kohakuriver.cli import config as cli_config
-
     # Apply host/port overrides
     if host:
         cli_config.HOST_ADDRESS = host
@@ -85,8 +84,6 @@ def attach_terminal(
     ] = "/bin/bash",
 ):
     """Attach to a running task's container."""
-    from kohakuriver.docker.naming import task_container_name, vps_container_name
-
     try:
         task = client.get_task_status(task_id)
 

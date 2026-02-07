@@ -3,6 +3,7 @@ Modal dialogs for creating tasks, VPS, and containers.
 """
 
 import os
+import shlex
 from typing import Any
 
 from textual import on, work
@@ -143,8 +144,6 @@ class CreateTaskModal(ModalScreen[dict | None]):
         # Parse arguments
         arguments = []
         if args_str:
-            import shlex
-
             try:
                 arguments = shlex.split(args_str)
             except ValueError:

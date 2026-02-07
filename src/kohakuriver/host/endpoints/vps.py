@@ -696,11 +696,9 @@ async def assign_vps_to_users(
     if not task:
         raise HTTPException(status_code=404, detail="VPS not found.")
 
-    from kohakuriver.db.auth import User as UserModel
-
     # Validate all users exist
     for user_id in user_ids:
-        user = UserModel.get_or_none(UserModel.id == user_id)
+        user = User.get_or_none(User.id == user_id)
         if not user:
             raise HTTPException(
                 status_code=404,
@@ -787,11 +785,9 @@ async def get_vps_assignments(
     if not task:
         raise HTTPException(status_code=404, detail="VPS not found.")
 
-    from kohakuriver.db.auth import User as UserModel
-
     assignments = (
-        VpsAssignment.select(VpsAssignment, UserModel)
-        .join(UserModel)
+        VpsAssignment.select(VpsAssignment, User)
+        .join(User)
         .where(VpsAssignment.vps_task_id == task_id)
     )
 

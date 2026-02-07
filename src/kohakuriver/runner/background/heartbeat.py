@@ -11,6 +11,7 @@ from typing import Callable
 import httpx
 
 from kohakuriver.models.requests import HeartbeatKilledTaskInfo, HeartbeatRequest
+from kohakuriver.qemu import get_qemu_manager, get_vm_capability
 from kohakuriver.runner.config import config
 from kohakuriver.runner.services.resource_monitor import get_gpu_stats, get_system_stats
 from kohakuriver.storage.vault import TaskStateStore
@@ -69,8 +70,6 @@ async def send_heartbeat(
 
         # Merge GPU info from VM agents (VFIO-passthrough GPUs)
         try:
-            from kohakuriver.qemu import get_qemu_manager
-
             qemu_mgr = get_qemu_manager()
             for vm in qemu_mgr.list_vms():
                 if vm.vm_gpu_info:
@@ -86,8 +85,6 @@ async def send_heartbeat(
         vm_capable = False
         vfio_gpus = None
         try:
-            from kohakuriver.qemu import get_vm_capability
-
             cap = get_vm_capability()
             vm_capable = cap.vm_capable
             if cap.vfio_gpus:

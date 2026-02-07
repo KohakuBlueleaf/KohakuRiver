@@ -19,7 +19,15 @@ from kohakuriver.docker.naming import (
     is_kohakuriver_container,
 )
 from kohakuriver.models.requests import TaskStatusUpdate
+from kohakuriver.qemu import get_qemu_manager, vfio
+from kohakuriver.qemu.naming import vm_instance_dir, vm_pidfile_path, vm_qmp_socket_path
+from kohakuriver.runner.config import config
 from kohakuriver.runner.services.task_executor import report_status_to_host
+from kohakuriver.runner.services.vm_network_manager import (
+    VMNetworkInfo,
+    get_vm_network_manager,
+)
+from kohakuriver.runner.services.vm_ssh import start_ssh_proxy, stop_ssh_proxy
 from kohakuriver.storage.vault import TaskStateStore
 from kohakuriver.utils.logger import get_logger
 
@@ -104,16 +112,17 @@ async def _recover_vm_task(
     - Report stopped to host
     - Remove from vault
     """
-    from kohakuriver.qemu.naming import vm_instance_dir, vm_pidfile_path
-    from kohakuriver.runner.config import config
-
     instance_dir = vm_instance_dir(config.VM_INSTANCES_DIR, task_id)
     pidfile = vm_pidfile_path(instance_dir)
 
     # Read PID from pidfile
     pid = None
     try:
-        pid = int(open(pidfile).read().strip())
+
+        def _read_pidfile():
+            return int(open(pidfile).read().strip())
+
+        pid = await asyncio.to_thread(_read_pidfile)
     except (FileNotFoundError, ValueError):
         pass
 
@@ -132,9 +141,6 @@ async def _readopt_running_vm(
     task_id: int, task_data: dict, task_store: TaskStateStore
 ) -> None:
     """Re-adopt a running VM into QEMUManager and network manager."""
-    from kohakuriver.qemu import get_qemu_manager
-    from kohakuriver.runner.services.vm_network_manager import get_vm_network_manager
-
     qemu = get_qemu_manager()
     vm = qemu.recover_vm(task_id, task_data)
     if not vm:
@@ -149,8 +155,6 @@ async def _readopt_running_vm(
     # Restart SSH port proxy if ssh_port is known
     ssh_port = task_data.get("ssh_port")
     if ssh_port and vm.vm_ip:
-        from kohakuriver.runner.services.vm_ssh import start_ssh_proxy
-
         await start_ssh_proxy(task_id, ssh_port, vm.vm_ip)
 
     logger.info(f"[VM Recovery] Re-adopted VM {task_id} (PID={vm.pid}, IP={vm.vm_ip})")
@@ -167,8 +171,6 @@ async def _readopt_running_vm(
 
 def _recover_network_allocation(net_manager, task_id: int, task_data: dict) -> None:
     """Re-register VM network allocation in VMNetworkManager so cleanup works."""
-    from kohakuriver.runner.services.vm_network_manager import VMNetworkInfo
-
     vm_ip = task_data.get("vm_ip", "")
     if not vm_ip:
         return
@@ -198,8 +200,6 @@ async def _cleanup_dead_vm(
     """Clean up a dead VM: unbind VFIO GPUs, remove TAP, report stopped."""
     # Stop SSH proxy if it was running
     try:
-        from kohakuriver.runner.services.vm_ssh import stop_ssh_proxy
-
         await stop_ssh_proxy(task_id)
     except Exception:
         pass
@@ -208,8 +208,6 @@ async def _cleanup_dead_vm(
     gpu_addrs = task_data.get("gpu_pci_addresses", [])
     if gpu_addrs:
         try:
-            from kohakuriver.qemu import vfio
-
             unbound = set()
             for addr in gpu_addrs:
                 if addr not in unbound:
@@ -227,18 +225,20 @@ async def _cleanup_dead_vm(
     tap = task_data.get("tap_device", "")
     if tap:
         try:
-            subprocess.run(
-                ["ip", "link", "del", tap],
-                capture_output=True,
-                timeout=5,
+            proc = await asyncio.create_subprocess_exec(
+                "ip",
+                "link",
+                "del",
+                tap,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
+            await asyncio.wait_for(proc.communicate(), timeout=5)
             logger.info(f"[VM Recovery] Deleted TAP {tap}")
         except Exception:
             pass
 
     # Clean up QMP socket
-    from kohakuriver.qemu.naming import vm_qmp_socket_path
-
     try:
         os.unlink(vm_qmp_socket_path(task_id))
     except OSError:

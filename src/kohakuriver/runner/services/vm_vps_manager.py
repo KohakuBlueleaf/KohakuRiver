@@ -8,8 +8,10 @@ Called by vps.py endpoints when vps_backend="qemu".
 import asyncio
 import datetime
 import os
+import time as _time
 
 from kohakuriver.models.requests import TaskStatusUpdate
+from kohakuriver.qemu import VMCreateOptions, get_qemu_manager, get_vm_capability
 from kohakuriver.runner.config import config
 from kohakuriver.runner.services.task_executor import report_status_to_host
 from kohakuriver.runner.services.vm_network_manager import get_vm_network_manager
@@ -61,8 +63,6 @@ async def create_vm_vps(
 
     try:
         # Check VM capability
-        from kohakuriver.qemu import get_vm_capability
-
         capability = get_vm_capability()
         if not capability.vm_capable:
             error_msg = f"Node is not VM-capable: {'; '.join(capability.errors)}"
@@ -135,8 +135,6 @@ async def create_vm_vps(
             logger.warning(f"VM VPS {task_id}: could not get runner pubkey: {e}")
 
         # Create VM
-        from kohakuriver.qemu import VMCreateOptions, get_qemu_manager
-
         # Shared filesystem paths (mirror Docker bind mounts)
         shared_host = os.path.join(config.SHARED_DIR, "shared_data")
         local_temp_host = os.path.join(config.LOCAL_TEMP_DIR, str(task_id))
@@ -274,8 +272,6 @@ async def stop_vm_vps(
 ) -> bool:
     """Stop a VM VPS instance."""
     try:
-        from kohakuriver.qemu import get_qemu_manager
-
         qemu = get_qemu_manager()
 
         # Stop VM
@@ -302,8 +298,6 @@ async def stop_vm_vps(
 async def restart_vm_vps(task_id: int) -> bool:
     """Restart a VM VPS instance."""
     try:
-        from kohakuriver.qemu import get_qemu_manager
-
         qemu = get_qemu_manager()
         return await qemu.restart_vm(task_id)
     except Exception as e:
@@ -313,8 +307,6 @@ async def restart_vm_vps(task_id: int) -> bool:
 
 async def get_vm_status(task_id: int) -> dict | None:
     """Get VM status."""
-    from kohakuriver.qemu import get_qemu_manager
-
     qemu = get_qemu_manager()
     vm = qemu.get_vm(task_id)
     if not vm:
@@ -333,10 +325,6 @@ async def get_vm_status(task_id: int) -> dict | None:
 
 async def receive_vm_heartbeat(task_id: int, payload: dict) -> None:
     """Process heartbeat from VM agent. Stores GPU and system info for aggregation."""
-    import time as _time
-
-    from kohakuriver.qemu import get_qemu_manager
-
     qemu = get_qemu_manager()
     vm = qemu.get_vm(task_id)
     if vm:
@@ -361,8 +349,6 @@ async def mark_vm_ready(task_id: int) -> None:
     This is called when the VM agent starts — the last step in cloud-init
     runcmd, meaning all packages/drivers are installed.
     """
-    from kohakuriver.qemu import get_qemu_manager
-
     qemu = get_qemu_manager()
     vm = qemu.get_vm(task_id)
     if vm:

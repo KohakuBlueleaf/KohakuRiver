@@ -1,5 +1,6 @@
 """Task management commands."""
 
+import shlex
 from typing import Annotated
 
 import typer
@@ -10,7 +11,13 @@ from kohakuriver.cli.formatters.task import (
     format_task_list_compact,
     format_task_table,
 )
+from kohakuriver.cli.interactive.monitor import (
+    follow_task_logs,
+    wait_for_task,
+    watch_task_status,
+)
 from kohakuriver.cli.output import console, print_error, print_success
+from kohakuriver.utils.cli import parse_memory_string
 
 app = typer.Typer(help="Task management commands")
 
@@ -109,10 +116,6 @@ def submit_task(
         kohakuriver task submit -t node1 -c 4 -- python -c "print('hello')"
         kohakuriver task submit --container my-env -- python /shared/script.py --arg1 val1
     """
-    import shlex
-
-    from kohakuriver.utils.cli import parse_memory_string
-
     if not command:
         print_error("No command provided")
         raise typer.Exit(1)
@@ -161,8 +164,6 @@ def submit_task(
             print_success(f"Task(s) submitted: {', '.join(map(str, task_ids))}")
 
             if wait and len(task_ids) == 1:
-                from kohakuriver.cli.interactive.monitor import wait_for_task
-
                 wait_for_task(str(task_ids[0]))
         else:
             print_error("No task IDs returned")
@@ -244,8 +245,6 @@ def task_logs(
             console.print("[dim]No output available.[/dim]")
 
         if follow:
-            from kohakuriver.cli.interactive.monitor import follow_task_logs
-
             follow_task_logs(task_id, stderr=stderr)
 
     except client.APIError as e:
@@ -259,8 +258,6 @@ def watch_task(
 ):
     """Live monitor a task's status."""
     try:
-        from kohakuriver.cli.interactive.monitor import watch_task_status
-
         watch_task_status(task_id)
 
     except client.APIError as e:

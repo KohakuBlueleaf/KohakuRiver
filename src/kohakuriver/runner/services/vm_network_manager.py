@@ -16,12 +16,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import ipaddress
+import socket
 import subprocess
 from dataclasses import dataclass
 
 import httpx
 
+from kohakuriver.models.overlay_subnet import OverlaySubnetConfig
 from kohakuriver.runner.config import config
+from kohakuriver.runner.services.overlay_manager import RunnerOverlayManager
 from kohakuriver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -109,10 +112,6 @@ class VMNetworkManager:
         )
 
         if self._is_overlay:
-            from kohakuriver.runner.services.overlay_manager import (
-                RunnerOverlayManager,
-            )
-
             logger.info("VM network: overlay mode -- using kohaku-overlay bridge")
             # Verify bridge exists
             exists = await asyncio.to_thread(
@@ -304,10 +303,6 @@ class VMNetworkManager:
 
         Uses same IPReservationManager API as Docker containers.
         """
-        from kohakuriver.runner.services.overlay_manager import (
-            RunnerOverlayManager,
-        )
-
         vm_ip, token = await self._reserve_overlay_ip(task_id)
         tap_name = _tap_name(task_id)
         mac = _generate_mac(task_id)
@@ -316,8 +311,6 @@ class VMNetworkManager:
 
         gateway = config._overlay_gateway
         # Derive prefix from overlay subnet config
-        from kohakuriver.models.overlay_subnet import OverlaySubnetConfig
-
         subnet_cfg = OverlaySubnetConfig.parse(config.OVERLAY_SUBNET)
         prefix_len = subnet_cfg.runner_prefix
         network = ipaddress.IPv4Network(f"{gateway}/{prefix_len}", strict=False)
@@ -338,9 +331,7 @@ class VMNetworkManager:
 
     async def _reserve_overlay_ip(self, task_id: int) -> tuple[str, str]:
         """Reserve IP from host's IPReservationManager via HTTP API."""
-        import socket
-
-        hostname = socket.gethostname()
+        hostname = await asyncio.to_thread(socket.gethostname)
         host_url = config.get_host_url()
 
         try:

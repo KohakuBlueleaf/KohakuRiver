@@ -16,6 +16,7 @@ from kohakuriver.db.node import Node
 from kohakuriver.db.task import Task
 from kohakuriver.host.config import config
 from kohakuriver.host.services.node_manager import get_all_nodes_status
+from kohakuriver.host.state import get_ip_reservation_manager, get_overlay_manager
 from kohakuriver.models.requests import HeartbeatRequest, RegisterRequest
 from kohakuriver.utils.logger import get_logger
 
@@ -99,7 +100,6 @@ async def _allocate_overlay_for_runner(hostname: str, url: str) -> dict | None:
 
     Returns overlay info dict or None if overlay manager is not available.
     """
-    from kohakuriver.host.app import get_overlay_manager
 
     overlay_manager = get_overlay_manager()
     if not overlay_manager:
@@ -176,7 +176,6 @@ async def _mark_overlay_active(hostname: str) -> None:
     is under a placeholder name), trigger a full allocate_for_runner
     which will remap the placeholder to the real hostname.
     """
-    from kohakuriver.host.app import get_overlay_manager
 
     overlay_manager = get_overlay_manager()
     if not overlay_manager:
@@ -391,8 +390,6 @@ async def get_overlay_status():
     if not config.OVERLAY_ENABLED:
         return {"enabled": False}
 
-    from kohakuriver.host.app import get_overlay_manager
-
     overlay_manager = get_overlay_manager()
     if not overlay_manager:
         return {"enabled": True, "error": "Overlay manager not initialized"}
@@ -432,8 +429,6 @@ async def release_overlay_allocation(runner_name: str = Path(...)):
     if not config.OVERLAY_ENABLED:
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
-    from kohakuriver.host.app import get_overlay_manager
-
     overlay_manager = get_overlay_manager()
     if not overlay_manager:
         raise HTTPException(status_code=500, detail="Overlay manager not initialized")
@@ -457,8 +452,6 @@ async def cleanup_overlay():
     """
     if not config.OVERLAY_ENABLED:
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
-
-    from kohakuriver.host.app import get_overlay_manager
 
     overlay_manager = get_overlay_manager()
     if not overlay_manager:
@@ -487,8 +480,6 @@ async def get_available_ips(
     if not config.OVERLAY_ENABLED:
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
-    from kohakuriver.host.app import get_ip_reservation_manager
-
     ip_manager = get_ip_reservation_manager()
     if not ip_manager:
         raise HTTPException(
@@ -508,8 +499,6 @@ async def get_runner_ip_info(runner_name: str = Path(...)):
     """
     if not config.OVERLAY_ENABLED:
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
-
-    from kohakuriver.host.app import get_ip_reservation_manager
 
     ip_manager = get_ip_reservation_manager()
     if not ip_manager:
@@ -543,8 +532,6 @@ async def reserve_ip(
     """
     if not config.OVERLAY_ENABLED:
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
-
-    from kohakuriver.host.app import get_ip_reservation_manager
 
     ip_manager = get_ip_reservation_manager()
     if not ip_manager:
@@ -580,8 +567,6 @@ async def release_ip_reservation(
     if not config.OVERLAY_ENABLED:
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
-    from kohakuriver.host.app import get_ip_reservation_manager
-
     ip_manager = get_ip_reservation_manager()
     if not ip_manager:
         raise HTTPException(
@@ -608,8 +593,6 @@ async def list_ip_reservations(
     """
     if not config.OVERLAY_ENABLED:
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
-
-    from kohakuriver.host.app import get_ip_reservation_manager
 
     ip_manager = get_ip_reservation_manager()
     if not ip_manager:
@@ -650,8 +633,6 @@ async def validate_ip_token(
     if not config.OVERLAY_ENABLED:
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
-    from kohakuriver.host.app import get_ip_reservation_manager
-
     ip_manager = get_ip_reservation_manager()
     if not ip_manager:
         raise HTTPException(
@@ -681,8 +662,6 @@ async def get_ip_reservation_stats():
     """
     if not config.OVERLAY_ENABLED:
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
-
-    from kohakuriver.host.app import get_ip_reservation_manager
 
     ip_manager = get_ip_reservation_manager()
     if not ip_manager:

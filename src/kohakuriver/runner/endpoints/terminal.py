@@ -9,6 +9,7 @@ from docker.errors import NotFound as DockerNotFound
 from fastapi import Path, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from kohakuriver.runner.services.vm_ssh import ssh_connect
 from kohakuriver.storage.vault import TaskStateStore
 from kohakuriver.utils.logger import get_logger
 
@@ -139,8 +140,6 @@ async def _handle_vm_terminal(websocket: WebSocket, task_id: int, vm_ip: str) ->
     process = None
 
     try:
-        from kohakuriver.runner.services.vm_ssh import ssh_connect
-
         logger.info(f"Opening SSH terminal to VM {task_id} at {vm_ip}")
         try:
             conn = await ssh_connect(vm_ip, timeout=15.0)

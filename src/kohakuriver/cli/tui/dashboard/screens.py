@@ -2,6 +2,8 @@
 Screen components for the TUI Dashboard.
 """
 
+import json
+
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
@@ -359,8 +361,6 @@ class TasksScreen(Widget):
 
                 gpus = task.get("required_gpus", [])
                 if isinstance(gpus, str):
-                    import json
-
                     try:
                         gpus = json.loads(gpus)
                     except Exception:

@@ -1,8 +1,10 @@
 """QEMU/KVM management commands."""
 
+import json
 import os
 import shutil
 import subprocess
+import urllib.request
 from pathlib import Path
 from typing import Annotated
 
@@ -10,7 +12,19 @@ import typer
 from rich.panel import Panel
 from rich.table import Table
 
+from kohakuriver.cli.client import APIError, delete_vm_instance, get_vm_instances
 from kohakuriver.cli.output import console, print_error, print_success
+from kohakuriver.qemu.capability import (
+    apply_acs_override,
+    check_acs_override_kernel,
+    check_cpu_virtualization,
+    check_iommu,
+    check_kvm,
+    check_qemu,
+    check_vfio_modules,
+    detect_nvidia_driver_version,
+    discover_vfio_gpus,
+)
 
 app = typer.Typer(help="QEMU/KVM management commands")
 image_app = typer.Typer(help="VM base image management")
@@ -20,15 +34,6 @@ app.add_typer(image_app, name="image")
 @app.command("check")
 def check():
     """Validate QEMU/KVM setup and discover VFIO GPUs."""
-    from kohakuriver.qemu.capability import (
-        check_cpu_virtualization,
-        check_iommu,
-        check_kvm,
-        check_qemu,
-        check_vfio_modules,
-        discover_vfio_gpus,
-    )
-
     table = Table(title="QEMU/KVM Capability Check", show_lines=True)
     table.add_column("Check", style="bold")
     table.add_column("Status", justify="center")
@@ -124,8 +129,6 @@ def check():
     table.add_row("VFIO Modules", _status(vfio_ok), vfio_detail)
 
     # ACS Override
-    from kohakuriver.qemu.capability import check_acs_override_kernel
-
     acs_active = check_acs_override_kernel()
     table.add_row(
         "ACS Override",
@@ -176,8 +179,6 @@ def check():
         console.print(gpu_table)
 
     # NVIDIA driver
-    from kohakuriver.qemu.capability import detect_nvidia_driver_version
-
     nvidia_ver = detect_nvidia_driver_version()
     if nvidia_ver:
         console.print(f"\n[bold]Host NVIDIA Driver:[/bold] {nvidia_ver}")
@@ -198,11 +199,6 @@ def acs_override():
     The setpci changes are volatile — they reset on reboot. Use the
     runner config VM_ACS_OVERRIDE=True to apply automatically on startup.
     """
-    from kohakuriver.qemu.capability import (
-        apply_acs_override,
-        check_acs_override_kernel,
-    )
-
     if not shutil.which("setpci"):
         print_error("setpci not found. Install: apt install pciutils")
         raise typer.Exit(1)
@@ -261,8 +257,6 @@ def image_create(
     ] = "/var/lib/kohakuriver/vm-images",
 ):
     """Create a VM base image from Ubuntu cloud image."""
-    import urllib.request
-
     # Check dependencies
     if not shutil.which("qemu-img"):
         print_error("qemu-img not found. Install: apt install qemu-utils")
@@ -334,8 +328,6 @@ def image_create(
             text=True,
         )
         if result.returncode == 0:
-            import json
-
             info = json.loads(result.stdout)
             virtual_size = info.get("virtual-size", 0)
             actual_size = info.get("actual-size", 0)
@@ -402,8 +394,6 @@ def image_list(
                 timeout=5,
             )
             if result.returncode == 0:
-                import json
-
                 info = json.loads(result.stdout)
                 vs = info.get("virtual-size", 0)
                 asz = info.get("actual-size", stat.st_size)
@@ -431,8 +421,6 @@ def _format_bytes(n: int) -> str:
 @app.command("instances")
 def instances():
     """List VM instance directories across all nodes."""
-    from kohakuriver.cli.client import APIError, get_vm_instances
-
     try:
         data = get_vm_instances()
     except APIError as e:
@@ -533,8 +521,6 @@ def cleanup(
     ] = False,
 ):
     """Delete a VM instance directory to free disk space."""
-    from kohakuriver.cli.client import APIError, delete_vm_instance
-
     if not yes:
         confirm = typer.confirm(
             f"Delete VM instance {task_id}"

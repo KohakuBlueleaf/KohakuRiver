@@ -22,6 +22,7 @@ from kohakuriver.docker.naming import (
 from kohakuriver.models.requests import TaskStatusUpdate
 from kohakuriver.runner.config import config
 from kohakuriver.runner.services.task_executor import (
+    docker_pull,
     ensure_docker_image_synced,
     report_status_to_host,
 )
@@ -589,8 +590,6 @@ async def create_vps(
     if not snapshot_tag:
         if registry_image:
             logger.info(f"VPS {task_id}: Pulling registry image '{registry_image}'")
-            from kohakuriver.runner.services.task_executor import docker_pull
-
             if not await docker_pull(registry_image):
                 error_message = f"Failed to pull registry image '{registry_image}'"
                 logger.error(f"VPS {task_id}: {error_message}")

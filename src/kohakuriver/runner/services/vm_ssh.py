@@ -10,6 +10,7 @@ Provides:
 
 import asyncio
 import os
+import shlex
 from pathlib import Path
 
 import asyncssh
@@ -111,8 +112,6 @@ async def ssh_exec(
     """
     if isinstance(cmd, list):
         # Shell-escape and join
-        import shlex
-
         cmd = " ".join(shlex.quote(c) for c in cmd)
 
     try:

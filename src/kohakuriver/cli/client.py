@@ -8,6 +8,7 @@ Returns structured data instead of printing.
 import httpx
 
 from kohakuriver.cli import config as cli_config
+from kohakuriver.cli.commands.auth import get_stored_token
 from kohakuriver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -21,8 +22,6 @@ logger = get_logger(__name__)
 def _get_auth_headers() -> dict[str, str]:
     """Get authorization headers if logged in."""
     try:
-        from kohakuriver.cli.commands.auth import get_stored_token
-
         token = get_stored_token()
         if token:
             return {"Authorization": f"Bearer {token}"}

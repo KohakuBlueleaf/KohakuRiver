@@ -31,7 +31,9 @@ from kohakuriver.qemu.naming import (
     vm_serial_log_path,
 )
 from kohakuriver.qemu import vfio
+from kohakuriver.qemu.capability import detect_nvidia_driver_version
 from kohakuriver.qemu.cloud_init import CloudInitConfig, create_cloud_init_iso
+from kohakuriver.runner.config import config as runner_config
 from kohakuriver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -140,8 +142,6 @@ class QEMUManager:
             # (binding unbinds GPU from nvidia driver, so detection must happen first)
             nvidia_driver_version = None
             if options.gpu_pci_addresses:
-                from kohakuriver.qemu.capability import detect_nvidia_driver_version
-
                 nvidia_driver_version = detect_nvidia_driver_version()
                 if nvidia_driver_version:
                     logger.info(
@@ -662,7 +662,5 @@ def get_qemu_manager() -> QEMUManager:
     """Get global QEMUManager instance."""
     global _qemu_manager
     if _qemu_manager is None:
-        from kohakuriver.runner.config import config
-
-        _qemu_manager = QEMUManager(config)
+        _qemu_manager = QEMUManager(runner_config)
     return _qemu_manager

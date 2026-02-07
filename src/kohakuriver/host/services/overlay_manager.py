@@ -76,7 +76,10 @@ On VXLAN Creation (_create_vxlan_sync):
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -232,8 +235,6 @@ class OverlayNetworkManager:
         2. Create dummy interface with host overlay IP (10.0.0.1)
            - This allows containers to reach host at consistent IP
         """
-        import os
-
         # Enable IP forwarding
         try:
             with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
@@ -302,8 +303,6 @@ class OverlayNetworkManager:
         This ensures cross-runner communication works even when firewalld
         or default iptables policies block forwarding.
         """
-        import subprocess
-
         overlay_cidr = self.subnet_config.get_overlay_network_cidr()
 
         # Rules to add:
@@ -663,9 +662,6 @@ class OverlayNetworkManager:
         This allows traffic to flow freely through the interface without
         being blocked by firewalld rules.
         """
-        import shutil
-        import subprocess
-
         # Check if firewall-cmd exists
         if shutil.which("firewall-cmd") is None:
             logger.debug("firewall-cmd not found, skipping firewalld configuration")

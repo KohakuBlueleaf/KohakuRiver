@@ -10,6 +10,11 @@ from pydantic import BaseModel
 
 from kohakuriver.utils.logger import get_logger
 
+try:
+    import pynvml
+except ImportError:
+    pynvml = None
+
 log = get_logger(__name__)
 
 
@@ -63,9 +68,7 @@ def get_gpu_info() -> list[GPUInfo]:
         This function handles all exceptions internally and will never
         raise. It logs warnings for non-critical errors.
     """
-    try:
-        import pynvml
-    except ImportError:
+    if pynvml is None:
         log.debug("pynvml not installed, GPU info unavailable")
         return []
 

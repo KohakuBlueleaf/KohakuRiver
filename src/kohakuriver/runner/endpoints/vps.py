@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from kohakuriver.models.requests import VPSCreateRequest
+from kohakuriver.qemu.naming import vm_instance_dir, vm_pidfile_path, vm_qmp_socket_path
 from kohakuriver.runner.config import config
 from kohakuriver.runner.services.vps_manager import (
     create_snapshot,
@@ -439,8 +440,6 @@ def _scan_instance_dir(instances_dir: str, task_store) -> dict:
                     pass
 
         # Check QEMU running via pidfile
-        from kohakuriver.qemu.naming import vm_pidfile_path, vm_qmp_socket_path
-
         qemu_running = False
         qemu_pid = None
         pidfile = vm_pidfile_path(instance_dir)
@@ -500,12 +499,6 @@ async def delete_vm_instance(task_id: int, force: bool = False):
     Refuses to delete if QEMU is still running unless force=True.
     If force=True and QEMU is running, stops the VM first.
     """
-    from kohakuriver.qemu.naming import (
-        vm_instance_dir,
-        vm_qmp_socket_path,
-        vm_pidfile_path,
-    )
-
     instances_dir = config.VM_INSTANCES_DIR
     instance_dir = vm_instance_dir(instances_dir, task_id)
 
@@ -520,8 +513,12 @@ async def delete_vm_instance(task_id: int, force: bool = False):
     pidfile = vm_pidfile_path(instance_dir)
     if os.path.isfile(pidfile):
         try:
-            with open(pidfile) as pf:
-                pid = int(pf.read().strip())
+
+            def _read_pidfile():
+                with open(pidfile) as pf:
+                    return int(pf.read().strip())
+
+            pid = await asyncio.to_thread(_read_pidfile)
             os.kill(pid, 0)
             qemu_running = True
         except (ValueError, OSError, ProcessLookupError):

@@ -30,6 +30,7 @@ from kohakuriver.host.auth.dependencies import (
 )
 from kohakuriver.docker.naming import task_container_name, vps_container_name
 from kohakuriver.host.config import config
+from kohakuriver.host.state import get_ip_reservation_manager
 from kohakuriver.host.services.node_manager import (
     find_suitable_node,
     get_node_available_cores,
@@ -200,8 +201,6 @@ async def _validate_ip_reservation(
             detail="IP reservation requires overlay network to be enabled",
         )
 
-    from kohakuriver.host.app import get_ip_reservation_manager
-
     ip_manager = get_ip_reservation_manager()
     if not ip_manager:
         raise HTTPException(
@@ -369,7 +368,6 @@ async def _process_target(
 
     # Mark reservation as used before dispatching
     if reserved_ip and req.ip_reservation_token:
-        from kohakuriver.host.app import get_ip_reservation_manager
 
         ip_manager = get_ip_reservation_manager()
         if ip_manager:
@@ -1117,12 +1115,16 @@ async def _get_task_output(
         return ""
 
     try:
-        with open(output_path) as f:
-            if lines is not None:
-                content = f.readlines()[-lines:]
-                result = "".join(content)
-            else:
-                result = f.read()
+
+        def _read_output():
+            with open(output_path) as f:
+                if lines is not None:
+                    content = f.readlines()[-lines:]
+                    return "".join(content)
+                else:
+                    return f.read()
+
+        result = await asyncio.to_thread(_read_output)
         logger.info(f"{output_type} for task {task_id}: {len(result)} chars")
         return result
     except Exception as e:

@@ -11,6 +11,11 @@ import subprocess
 import threading
 from pathlib import Path
 
+from kohakuriver.qemu.capability import (
+    get_iommu_group,
+    get_iommu_group_devices,
+    _is_pci_bridge,
+)
 from kohakuriver.qemu.exceptions import VFIOBindError
 from kohakuriver.utils.logger import get_logger
 
@@ -261,12 +266,6 @@ async def unbind_from_vfio(pci_address: str) -> None:
 
 def get_iommu_group_non_bridge_devices(pci_address: str) -> list[str]:
     """All non-bridge devices in the same IOMMU group (including self)."""
-    from kohakuriver.qemu.capability import (
-        get_iommu_group,
-        get_iommu_group_devices,
-        _is_pci_bridge,
-    )
-
     group = get_iommu_group(pci_address)
     if group is None:
         return [pci_address]

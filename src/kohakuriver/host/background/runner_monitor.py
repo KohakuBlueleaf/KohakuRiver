@@ -10,6 +10,7 @@ import datetime
 from kohakuriver.db.node import Node
 from kohakuriver.db.task import Task
 from kohakuriver.host.config import config
+from kohakuriver.host.state import get_overlay_manager
 from kohakuriver.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -101,8 +102,6 @@ async def _mark_overlay_inactive(hostname: str) -> None:
     """
     if not config.OVERLAY_ENABLED:
         return
-
-    from kohakuriver.host.app import get_overlay_manager
 
     overlay_manager = get_overlay_manager()
     if overlay_manager:
