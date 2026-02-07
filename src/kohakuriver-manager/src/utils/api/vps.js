@@ -64,6 +64,25 @@ export const vpsAPI = {
   resume(taskId) {
     return apiClient.post(`/command/${taskId}/resume`)
   },
+
+  /**
+   * List VM instances across all nodes (admin only)
+   */
+  listVmInstances() {
+    return apiClient.get('/vps/vm-instances')
+  },
+
+  /**
+   * Delete a VM instance directory (admin only)
+   * @param {string|number} taskId
+   * @param {string} hostname - Runner hostname (required for orphaned instances)
+   * @param {boolean} force - Force delete even if QEMU is running
+   */
+  deleteVmInstance(taskId, hostname, force = false) {
+    return apiClient.delete(`/vps/vm-instances/${taskId}`, {
+      params: { hostname, force },
+    })
+  },
 }
 
 export default vpsAPI

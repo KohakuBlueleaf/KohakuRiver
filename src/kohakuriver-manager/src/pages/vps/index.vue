@@ -720,6 +720,15 @@ function copyVpsId(taskId) {
               </el-tooltip>
             </div>
 
+            <!-- Assigning state (provisioning) -->
+            <div
+              v-else-if="vps.status === 'assigning'"
+              class="text-center text-sm py-2">
+              <div class="text-blue-500 dark:text-blue-400 animate-pulse">
+                {{ vps.error_message || 'Provisioning VM...' }}
+              </div>
+            </div>
+
             <!-- Pending/Other states -->
             <div
               v-else-if="vps.status === 'pending'"
