@@ -4,7 +4,9 @@ VPS management endpoints.
 Handles VPS creation, control, and snapshot requests.
 """
 
+import asyncio
 import os
+import shutil
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -394,3 +396,183 @@ async def vm_phone_home_endpoint(task_id: int):
     """Receive phone-home callback from cloud-init inside VM."""
     await mark_vm_ready(task_id)
     return {"status": "ok"}
+
+
+# =============================================================================
+# VM Instance Management Endpoints
+# =============================================================================
+
+
+def _scan_instance_dir(instances_dir: str, task_store) -> dict:
+    """Scan VM instances directory and collect info (blocking, run via to_thread)."""
+    instances = []
+    total_disk_usage = 0
+
+    if not os.path.isdir(instances_dir):
+        return {
+            "instances_dir": instances_dir,
+            "instances": [],
+            "total_disk_usage_bytes": 0,
+        }
+
+    for entry in os.scandir(instances_dir):
+        if not entry.is_dir():
+            continue
+
+        # Only consider directories with integer names (task IDs)
+        try:
+            tid = int(entry.name)
+        except ValueError:
+            continue
+
+        instance_dir = entry.path
+        disk_usage = 0
+        files = []
+
+        for f in os.scandir(instance_dir):
+            if f.is_file(follow_symlinks=False):
+                files.append(f.name)
+                try:
+                    st = f.stat(follow_symlinks=False)
+                    disk_usage += st.st_blocks * 512
+                except OSError:
+                    pass
+
+        # Check QEMU running via pidfile
+        from kohakuriver.qemu.naming import vm_pidfile_path, vm_qmp_socket_path
+
+        qemu_running = False
+        qemu_pid = None
+        pidfile = vm_pidfile_path(instance_dir)
+        if os.path.isfile(pidfile):
+            try:
+                with open(pidfile) as pf:
+                    pid = int(pf.read().strip())
+                os.kill(pid, 0)
+                qemu_running = True
+                qemu_pid = pid
+            except (ValueError, OSError, ProcessLookupError):
+                pass
+
+        # Also check QMP socket existence
+        if not qemu_running and os.path.exists(vm_qmp_socket_path(tid)):
+            # Socket exists but process not found via pidfile - stale
+            pass
+
+        # Check task store
+        in_task_store = False
+        if task_store:
+            in_task_store = task_store.get_task(tid) is not None
+
+        total_disk_usage += disk_usage
+        instances.append(
+            {
+                "task_id": tid,
+                "disk_usage_bytes": disk_usage,
+                "files": sorted(files),
+                "qemu_running": qemu_running,
+                "qemu_pid": qemu_pid,
+                "in_task_store": in_task_store,
+            }
+        )
+
+    instances.sort(key=lambda x: x["task_id"])
+
+    return {
+        "instances_dir": instances_dir,
+        "instances": instances,
+        "total_disk_usage_bytes": total_disk_usage,
+    }
+
+
+@router.get("/vps/vm-instances")
+async def list_vm_instances():
+    """List all VM instance directories with disk usage and status."""
+    instances_dir = config.VM_INSTANCES_DIR
+    result = await asyncio.to_thread(_scan_instance_dir, instances_dir, task_store)
+    return result
+
+
+@router.delete("/vps/vm-instances/{task_id}")
+async def delete_vm_instance(task_id: int, force: bool = False):
+    """Delete a VM instance directory.
+
+    Refuses to delete if QEMU is still running unless force=True.
+    If force=True and QEMU is running, stops the VM first.
+    """
+    from kohakuriver.qemu.naming import (
+        vm_instance_dir,
+        vm_qmp_socket_path,
+        vm_pidfile_path,
+    )
+
+    instances_dir = config.VM_INSTANCES_DIR
+    instance_dir = vm_instance_dir(instances_dir, task_id)
+
+    if not os.path.isdir(instance_dir):
+        raise HTTPException(
+            status_code=404,
+            detail=f"VM instance directory for task {task_id} not found.",
+        )
+
+    # Check if QEMU is running
+    qemu_running = False
+    pidfile = vm_pidfile_path(instance_dir)
+    if os.path.isfile(pidfile):
+        try:
+            with open(pidfile) as pf:
+                pid = int(pf.read().strip())
+            os.kill(pid, 0)
+            qemu_running = True
+        except (ValueError, OSError, ProcessLookupError):
+            pass
+
+    if qemu_running and not force:
+        raise HTTPException(
+            status_code=409,
+            detail=f"QEMU is still running for task {task_id}. Use force=true to stop and delete.",
+        )
+
+    if qemu_running and force:
+        logger.info(f"Force-stopping VM {task_id} before deletion")
+        try:
+            await stop_vm_vps(task_id, task_store)
+        except Exception as e:
+            logger.warning(f"Failed to gracefully stop VM {task_id}: {e}")
+
+    # Calculate freed bytes before deletion
+    def _calc_and_delete():
+        freed = 0
+        for root, dirs, files in os.walk(instance_dir):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                try:
+                    st = os.stat(fpath, follow_symlinks=False)
+                    freed += st.st_blocks * 512
+                except OSError:
+                    pass
+        shutil.rmtree(instance_dir)
+        return freed
+
+    freed_bytes = await asyncio.to_thread(_calc_and_delete)
+
+    # Remove QMP socket if exists
+    qmp_path = vm_qmp_socket_path(task_id)
+    try:
+        os.unlink(qmp_path)
+    except FileNotFoundError:
+        pass
+
+    # Remove from task store if present
+    if task_store:
+        task_store.remove_task(task_id)
+
+    logger.info(
+        f"Deleted VM instance {task_id}, freed {freed_bytes / (1024**2):.1f} MB"
+    )
+
+    return {
+        "message": f"VM instance {task_id} deleted.",
+        "task_id": task_id,
+        "freed_bytes": freed_bytes,
+    }

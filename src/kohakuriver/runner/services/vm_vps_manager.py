@@ -43,8 +43,11 @@ async def create_vm_vps(
     2. Check VM capability
     3. Setup network (overlay or NAT -- VMNetworkManager handles both)
     4. Create VM via QEMUManager
-    5. Wait for SSH ready
-    6. Report running status
+    5. Wait for cloud-init to complete (phone-home triggers "running")
+
+    The VM stays in "assigning" state while cloud-init runs (apt update,
+    NVIDIA driver install, etc.). It is marked "running" only when the
+    VM agent phones home, which is the last step in cloud-init runcmd.
     """
     start_time = datetime.datetime.now()
 
@@ -185,38 +188,59 @@ async def create_vm_vps(
             "ssh_port": ssh_port,
         }
 
-        # Report running immediately — VM process is up
+        # VM stays in "assigning" until cloud-init completes and the VM agent
+        # phones home (mark_vm_ready → _ensure_running_reported).
+        # Cloud-init installs packages, NVIDIA drivers (if GPU), then starts
+        # the VM agent as the last runcmd step.
+        has_gpu = bool(gpu_pci_addresses)
+        if has_gpu:
+            provision_msg = "Provisioning VM — installing packages and NVIDIA drivers via cloud-init"
+        else:
+            provision_msg = "Provisioning VM — installing packages via cloud-init"
+
         await report_status_to_host(
             TaskStatusUpdate(
                 task_id=task_id,
-                status="running",
-                started_at=start_time,
+                status="assigning",
+                message=provision_msg,
             )
         )
+        logger.info(
+            f"VM VPS {task_id}: QEMU started, waiting for cloud-init to "
+            f"complete (phone-home will mark as running)"
+        )
 
-        # Wait for SSH in background (don't block the response)
-        async def _background_ssh_wait():
+        # Background: watch for cloud-init completion timeout
+        async def _cloud_init_watchdog():
+            timeout = 900 if has_gpu else 300  # 15 min for GPU, 5 min otherwise
             try:
-                ssh_ready = await qemu._wait_for_ssh(
-                    net_info.vm_ip, timeout=config.VM_SSH_READY_TIMEOUT_SECONDS
-                )
-                vm.ssh_ready = ssh_ready
-                if ssh_ready:
-                    logger.info(f"VM VPS {task_id}: SSH ready at {net_info.vm_ip}:22")
-                else:
-                    logger.warning(
-                        f"VM VPS {task_id}: SSH not ready after timeout, "
-                        "VM agent will phone home when ready."
+                await asyncio.sleep(timeout)
+                # Check if VM agent has phoned home
+                vm_check = qemu.get_vm(task_id)
+                if vm_check and not vm_check.ssh_ready:
+                    logger.error(
+                        f"VM VPS {task_id}: cloud-init did not complete within "
+                        f"{timeout}s — marking as failed"
                     )
+                    await report_status_to_host(
+                        TaskStatusUpdate(
+                            task_id=task_id,
+                            status="failed",
+                            message=f"Cloud-init timed out after {timeout}s",
+                            completed_at=datetime.datetime.now(),
+                        )
+                    )
+            except asyncio.CancelledError:
+                pass
             except Exception as e:
-                logger.warning(f"VM VPS {task_id}: SSH wait error: {e}")
+                logger.warning(f"VM VPS {task_id}: cloud-init watchdog error: {e}")
 
-        asyncio.create_task(_background_ssh_wait())
+        asyncio.create_task(_cloud_init_watchdog())
 
         return {
             "success": True,
             "vm_ip": net_info.vm_ip,
-            "ssh_ready": False,  # SSH wait is async, not ready yet
+            "ssh_ready": False,
             "network_mode": net_info.mode,
         }
 
@@ -328,31 +352,44 @@ async def receive_vm_heartbeat(task_id: int, payload: dict) -> None:
 
         # On first heartbeat, ensure host knows VM is running
         if first_heartbeat:
-            await _ensure_running_reported(task_id)
+            await _ensure_running_reported(task_id, vm.created_at)
 
 
 async def mark_vm_ready(task_id: int) -> None:
-    """Mark VM as ready (phone-home callback from cloud-init)."""
+    """Mark VM as ready (phone-home callback from cloud-init).
+
+    This is called when the VM agent starts — the last step in cloud-init
+    runcmd, meaning all packages/drivers are installed.
+    """
     from kohakuriver.qemu import get_qemu_manager
 
     qemu = get_qemu_manager()
     vm = qemu.get_vm(task_id)
     if vm:
         vm.ssh_ready = True
-        logger.info(f"VM {task_id} phone-home: boot complete, SSH ready")
-        # Ensure host knows VM is running (safety net)
-        await _ensure_running_reported(task_id)
+        logger.info(
+            f"VM {task_id} phone-home: cloud-init complete, "
+            f"all packages installed, marking as running"
+        )
+        await _ensure_running_reported(task_id, vm.created_at)
 
 
-async def _ensure_running_reported(task_id: int) -> None:
+async def _ensure_running_reported(
+    task_id: int,
+    started_at: float | None = None,
+) -> None:
     """Report running status to host. Safe to call multiple times — host ignores
     duplicate running updates for already-running tasks."""
     try:
+        start = None
+        if started_at:
+            start = datetime.datetime.fromtimestamp(started_at)
         await report_status_to_host(
             TaskStatusUpdate(
                 task_id=task_id,
                 status="running",
-                started_at=datetime.datetime.now(),
+                message="",  # Clear provisioning message
+                started_at=start or datetime.datetime.now(),
             )
         )
     except Exception as e:
