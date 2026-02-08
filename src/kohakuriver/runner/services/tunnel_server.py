@@ -11,6 +11,7 @@ import asyncio
 from fastapi import WebSocket, WebSocketDisconnect
 
 from kohakuriver.storage.vault import TaskStateStore
+from kohakuriver.tunnel import protocol as proto_mod
 from kohakuriver.tunnel.protocol import (
     HEADER_SIZE,
     MSG_CLOSE,
@@ -132,20 +133,21 @@ class ContainerTunnel:
         )
 
         # For messages that need to be forwarded to user, pass the full data (header + payload)
-        if header.msg_type == MSG_CONNECTED:
-            await self._on_connected(header, data)
-        elif header.msg_type == MSG_DATA:
-            await self._on_data(header, data)
-        elif header.msg_type == MSG_CLOSE:
-            await self._on_close(header, data)
-        elif header.msg_type == MSG_ERROR:
-            await self._on_error(header, data)
-        elif header.msg_type == MSG_PONG:
-            await self._on_pong(header, payload)
-        else:
-            logger.warning(
-                f"[Tunnel {self.container_id}] Unknown message type: {header.msg_type}"
-            )
+        match header.msg_type:
+            case proto_mod.MSG_CONNECTED:
+                await self._on_connected(header, data)
+            case proto_mod.MSG_DATA:
+                await self._on_data(header, data)
+            case proto_mod.MSG_CLOSE:
+                await self._on_close(header, data)
+            case proto_mod.MSG_ERROR:
+                await self._on_error(header, data)
+            case proto_mod.MSG_PONG:
+                await self._on_pong(header, payload)
+            case _:
+                logger.warning(
+                    f"[Tunnel {self.container_id}] Unknown message type: {header.msg_type}"
+                )
 
     async def _on_connected(self, header, full_message: bytes) -> None:
         """Handle CONNECTED message - forward to user."""
@@ -400,59 +402,66 @@ async def handle_port_forward(
                 f"port={msg_port} payload_len={len(payload)}"
             )
 
-            if msg_type == MSG_CONNECT:
-                # New connection request from CLI
-                active_clients.add(client_id)
-                logger.info(
-                    f"[Forward] CONNECT client_id={client_id} -> port={msg_port}"
-                )
-
-                # Forward to container tunnel
-                logger.info(f"[Forward] Sending CONNECT to container tunnel...")
-                success = await tunnel.send_to_container(data)
-                logger.info(f"[Forward] CONNECT send_to_container result: {success}")
-                if not success:
-                    logger.error(f"[Forward] Failed to send CONNECT to container")
-                    error_msg = build_message(
-                        MSG_ERROR, proto, client_id, 0, b"Tunnel send failed"
-                    )
-                    await websocket.send_bytes(error_msg)
-                    active_clients.discard(client_id)
-                else:
+            match msg_type:
+                case proto_mod.MSG_CONNECT:
+                    # New connection request from CLI
+                    active_clients.add(client_id)
                     logger.info(
-                        f"[Forward] CONNECT sent to container, registering user connection"
+                        f"[Forward] CONNECT client_id={client_id} -> port={msg_port}"
                     )
 
-                # Register this websocket to receive responses for this client_id
-                await tunnel.register_user_connection(client_id, websocket)
-
-            elif msg_type == MSG_DATA:
-                # Data from CLI to container
-                if client_id not in active_clients:
-                    logger.warning(f"[Forward] DATA for unknown client_id={client_id}")
-                    continue
-
-                logger.info(
-                    f"[Forward] Forwarding {len(payload)} bytes to container tunnel for client_id={client_id}"
-                )
-                success = await tunnel.send_to_container(data)
-                logger.info(f"[Forward] send_to_container result: {success}")
-                if not success:
-                    logger.warning(
-                        f"[Forward] Failed to send DATA for client_id={client_id}"
+                    # Forward to container tunnel
+                    logger.info(f"[Forward] Sending CONNECT to container tunnel...")
+                    success = await tunnel.send_to_container(data)
+                    logger.info(
+                        f"[Forward] CONNECT send_to_container result: {success}"
                     )
+                    if not success:
+                        logger.error(f"[Forward] Failed to send CONNECT to container")
+                        error_msg = build_message(
+                            MSG_ERROR, proto, client_id, 0, b"Tunnel send failed"
+                        )
+                        await websocket.send_bytes(error_msg)
+                        active_clients.discard(client_id)
+                    else:
+                        logger.info(
+                            f"[Forward] CONNECT sent to container, registering user connection"
+                        )
 
-            elif msg_type == MSG_CLOSE:
-                # Close request from CLI
-                logger.info(f"[Forward] CLOSE client_id={client_id}")
-                active_clients.discard(client_id)
-                await tunnel.unregister_user_connection(client_id)
-                await tunnel.send_to_container(data)
+                    # Register this websocket to receive responses for this client_id
+                    await tunnel.register_user_connection(client_id, websocket)
 
-            else:
-                # Forward unknown message types
-                logger.debug(f"[Forward] Forwarding unknown message type {msg_type}")
-                await tunnel.send_to_container(data)
+                case proto_mod.MSG_DATA:
+                    # Data from CLI to container
+                    if client_id not in active_clients:
+                        logger.warning(
+                            f"[Forward] DATA for unknown client_id={client_id}"
+                        )
+                        continue
+
+                    logger.info(
+                        f"[Forward] Forwarding {len(payload)} bytes to container tunnel for client_id={client_id}"
+                    )
+                    success = await tunnel.send_to_container(data)
+                    logger.info(f"[Forward] send_to_container result: {success}")
+                    if not success:
+                        logger.warning(
+                            f"[Forward] Failed to send DATA for client_id={client_id}"
+                        )
+
+                case proto_mod.MSG_CLOSE:
+                    # Close request from CLI
+                    logger.info(f"[Forward] CLOSE client_id={client_id}")
+                    active_clients.discard(client_id)
+                    await tunnel.unregister_user_connection(client_id)
+                    await tunnel.send_to_container(data)
+
+                case _:
+                    # Forward unknown message types
+                    logger.debug(
+                        f"[Forward] Forwarding unknown message type {msg_type}"
+                    )
+                    await tunnel.send_to_container(data)
 
     except WebSocketDisconnect:
         logger.info(f"[Forward] Host disconnected (container={container_id})")
@@ -592,70 +601,73 @@ async def _handle_vm_port_forward(
             msg_port = header.port or port
             payload = get_payload(data)
 
-            if msg_type == MSG_CONNECT:
-                # Open direct TCP connection to VM
-                logger.info(
-                    f"[VM Forward] CONNECT client_id={client_id} -> {vm_ip}:{msg_port}"
-                )
-                try:
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection(vm_ip, msg_port),
-                        timeout=10.0,
+            match msg_type:
+                case proto_mod.MSG_CONNECT:
+                    # Open direct TCP connection to VM
+                    logger.info(
+                        f"[VM Forward] CONNECT client_id={client_id} -> {vm_ip}:{msg_port}"
                     )
-                except Exception as e:
-                    logger.warning(
-                        f"[VM Forward] TCP connect failed for client_id={client_id}: {e}"
-                    )
-                    error_msg = build_message(
-                        MSG_ERROR,
-                        proto,
-                        client_id,
-                        msg_port,
-                        f"Connection failed: {e}".encode(),
-                    )
-                    await websocket.send_bytes(error_msg)
-                    continue
-
-                # Start reading from VM in background
-                read_task = asyncio.create_task(
-                    _forward_vm_to_ws(client_id, reader, writer)
-                )
-                active_connections[client_id] = (reader, writer, read_task)
-
-                # Send CONNECTED back
-                connected_msg = build_message(MSG_CONNECTED, proto, client_id, msg_port)
-                await websocket.send_bytes(connected_msg)
-                logger.info(f"[VM Forward] TCP connected for client_id={client_id}")
-
-            elif msg_type == MSG_DATA:
-                # Forward data to VM TCP connection
-                conn = active_connections.get(client_id)
-                if not conn:
-                    logger.warning(
-                        f"[VM Forward] DATA for unknown client_id={client_id}"
-                    )
-                    continue
-
-                _, writer, _ = conn
-                try:
-                    writer.write(payload)
-                    await writer.drain()
-                except Exception as e:
-                    logger.warning(
-                        f"[VM Forward] TCP write failed client_id={client_id}: {e}"
-                    )
-
-            elif msg_type == MSG_CLOSE:
-                # Close TCP connection
-                logger.info(f"[VM Forward] CLOSE client_id={client_id}")
-                conn = active_connections.pop(client_id, None)
-                if conn:
-                    _, writer, read_task = conn
-                    read_task.cancel()
                     try:
-                        writer.close()
-                    except Exception:
-                        pass
+                        reader, writer = await asyncio.wait_for(
+                            asyncio.open_connection(vm_ip, msg_port),
+                            timeout=10.0,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"[VM Forward] TCP connect failed for client_id={client_id}: {e}"
+                        )
+                        error_msg = build_message(
+                            MSG_ERROR,
+                            proto,
+                            client_id,
+                            msg_port,
+                            f"Connection failed: {e}".encode(),
+                        )
+                        await websocket.send_bytes(error_msg)
+                        continue
+
+                    # Start reading from VM in background
+                    read_task = asyncio.create_task(
+                        _forward_vm_to_ws(client_id, reader, writer)
+                    )
+                    active_connections[client_id] = (reader, writer, read_task)
+
+                    # Send CONNECTED back
+                    connected_msg = build_message(
+                        MSG_CONNECTED, proto, client_id, msg_port
+                    )
+                    await websocket.send_bytes(connected_msg)
+                    logger.info(f"[VM Forward] TCP connected for client_id={client_id}")
+
+                case proto_mod.MSG_DATA:
+                    # Forward data to VM TCP connection
+                    conn = active_connections.get(client_id)
+                    if not conn:
+                        logger.warning(
+                            f"[VM Forward] DATA for unknown client_id={client_id}"
+                        )
+                        continue
+
+                    _, writer, _ = conn
+                    try:
+                        writer.write(payload)
+                        await writer.drain()
+                    except Exception as e:
+                        logger.warning(
+                            f"[VM Forward] TCP write failed client_id={client_id}: {e}"
+                        )
+
+                case proto_mod.MSG_CLOSE:
+                    # Close TCP connection
+                    logger.info(f"[VM Forward] CLOSE client_id={client_id}")
+                    conn = active_connections.pop(client_id, None)
+                    if conn:
+                        _, writer, read_task = conn
+                        read_task.cancel()
+                        try:
+                            writer.close()
+                        except Exception:
+                            pass
 
     except WebSocketDisconnect:
         logger.info(f"[VM Forward] Host disconnected (VM {task_id})")

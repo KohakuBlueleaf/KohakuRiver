@@ -45,7 +45,7 @@ async def list_images():
         raise HTTPException(
             status_code=500,
             detail=f"Failed to list images: {e}",
-        )
+        ) from e
 
 
 def _do_sync_container(container_name: str, container_tar_dir: str) -> dict:
@@ -100,10 +100,10 @@ async def sync_container(container_name: str):
         return result
 
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error syncing container: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Error syncing container: {e}",
-        )
+        ) from e

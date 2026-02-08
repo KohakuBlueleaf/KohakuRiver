@@ -637,23 +637,24 @@ async def execute_task(
         # Determine final status
         # Exit code 137 = 128 + 9 (SIGKILL) - could be OOM or manual kill
         # Exit code 143 = 128 + 15 (SIGTERM) - graceful termination
-        if exit_code == 0:
-            status = "completed"
-            message = None
-        elif exit_code == 137:
-            status = "killed_oom"
-            message = "Container killed (SIGKILL) - likely out of memory."
-        elif exit_code == 143:
-            status = "failed"
-            message = "Container terminated (SIGTERM)."
-        else:
-            status = "failed"
-            message = f"Container exited with code {exit_code}."
-            # Include docker stderr in error message if present
-            if stderr_data:
-                stderr_str = stderr_data.decode(errors="replace").strip()
-                if stderr_str:
-                    message += f" Docker stderr: {stderr_str[:500]}"
+        match exit_code:
+            case 0:
+                status = "completed"
+                message = None
+            case 137:
+                status = "killed_oom"
+                message = "Container killed (SIGKILL) - likely out of memory."
+            case 143:
+                status = "failed"
+                message = "Container terminated (SIGTERM)."
+            case _:
+                status = "failed"
+                message = f"Container exited with code {exit_code}."
+                # Include docker stderr in error message if present
+                if stderr_data:
+                    stderr_str = stderr_data.decode(errors="replace").strip()
+                    if stderr_str:
+                        message += f" Docker stderr: {stderr_str[:500]}"
 
         logger.info(f"[Task {task_id}] Final status: {status}")
         if message:

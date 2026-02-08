@@ -185,7 +185,9 @@ async def write_file(
         try:
             content_bytes = base64.b64decode(request.content)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid base64 content: {e}")
+            raise HTTPException(
+                status_code=400, detail=f"Invalid base64 content: {e}"
+            ) from e
     else:
         content_bytes = request.content.encode("utf-8")
 

@@ -348,8 +348,8 @@ async def _watch_vm_with_polling(
                 try:
                     new_state = await get_file_list(path)
                     old_state = file_states.get(path, {})
-                    old_files = set(old_state.keys())
-                    new_files = set(new_state.keys())
+                    old_files = set(old_state)
+                    new_files = set(new_state)
 
                     for f in new_files - old_files:
                         await websocket.send_json(
@@ -627,8 +627,8 @@ async def _watch_with_polling(
                     old_state = file_states.get(path, {})
 
                     # Find changes
-                    old_files = set(old_state.keys())
-                    new_files = set(new_state.keys())
+                    old_files = set(old_state)
+                    new_files = set(new_state)
 
                     # Created files
                     for f in new_files - old_files:

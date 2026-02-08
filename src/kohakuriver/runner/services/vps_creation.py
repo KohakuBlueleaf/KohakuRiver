@@ -34,22 +34,18 @@ logger = get_logger(__name__)
 def _detect_package_manager(image_name: str) -> str:
     """Detect package manager from Docker image name."""
     image_lower = image_name.lower()
-
-    if any(x in image_lower for x in ["alpine"]):
-        return "apk"
-    elif any(x in image_lower for x in ["ubuntu", "debian"]):
-        return "apt"
-    elif any(x in image_lower for x in ["fedora"]):
-        return "dnf"
-    elif any(x in image_lower for x in ["centos", "rhel", "redhat", "rocky", "alma"]):
-        return "yum"
-    elif any(x in image_lower for x in ["opensuse", "suse"]):
-        return "zypper"
-    elif any(x in image_lower for x in ["arch"]):
-        return "pacman"
-    else:
-        # Default to apt for common images
-        return "apt"
+    pkg_map = [
+        (["alpine"], "apk"),
+        (["ubuntu", "debian"], "apt"),
+        (["fedora"], "dnf"),
+        (["centos", "rhel", "redhat", "rocky", "alma"], "yum"),
+        (["opensuse", "suse"], "zypper"),
+        (["arch"], "pacman"),
+    ]
+    for keywords, manager in pkg_map:
+        if any(kw in image_lower for kw in keywords):
+            return manager
+    return "apt"
 
 
 def _get_ssh_install_cmd(pkg_manager: str) -> str:
