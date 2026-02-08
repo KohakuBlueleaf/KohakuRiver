@@ -340,7 +340,7 @@ def render_tasks(
         if isinstance(gpus, str):
             try:
                 gpus = json.loads(gpus)
-            except Exception:
+            except (ValueError, KeyError, TypeError):
                 gpus = []
         gpu_str = ",".join(map(str, gpus)) if gpus else "-"
 
@@ -535,7 +535,7 @@ def render_task_detail(
     if isinstance(gpus, str):
         try:
             gpus = json.loads(gpus)
-        except Exception:
+        except (ValueError, KeyError, TypeError):
             gpus = []
     info.add_row("GPUs", ",".join(map(str, gpus)) if gpus else "-")
 

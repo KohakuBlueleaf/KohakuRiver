@@ -455,7 +455,7 @@ def list_tarballs():
             try:
                 dt = datetime.fromtimestamp(timestamp)
                 latest_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-            except:
+            except (ValueError, OSError, OverflowError):
                 latest_str = str(timestamp)
 
             versions = info.get("all_versions", [])

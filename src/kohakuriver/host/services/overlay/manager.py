@@ -304,7 +304,7 @@ class OverlayNetworkManager:
 
             # New runner - find available runner_id
             max_id = self.subnet_config.max_runners
-            used_ids = set(self._id_to_runner.keys())
+            used_ids = set(self._id_to_runner)
             available_ids = set(range(1, max_id + 1)) - used_ids
 
             if not available_ids:

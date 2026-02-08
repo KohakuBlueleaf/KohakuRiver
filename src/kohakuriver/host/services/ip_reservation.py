@@ -215,7 +215,7 @@ class IPReservationManager:
             if runner_name:
                 runners = [runner_name]
             else:
-                runners = list(self.overlay_manager._allocations.keys())
+                runners = list(self.overlay_manager._allocations)
 
             for name in runners:
                 ips = self._get_available_ips_for_runner(name)
