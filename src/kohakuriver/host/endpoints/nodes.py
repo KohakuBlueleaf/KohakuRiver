@@ -161,6 +161,7 @@ async def heartbeat(hostname: str, request: HeartbeatRequest):
     # Process task reconciliation
     _process_killed_tasks(request.killed_tasks, hostname, now)
     _reconcile_assigning_tasks(request.running_tasks, hostname, now)
+    _reconcile_pending_tasks(request.running_tasks, hostname, now)
 
     # Mark overlay allocation as active on heartbeat
     if config.OVERLAY_ENABLED:
@@ -356,6 +357,57 @@ def _check_task_assignment_timeout(
         logger.error(
             f"Task {task.task_id} (on {hostname}) failed assignment. "
             f"Marked as failed (suspect count: {task.assignment_suspicion_count})"
+        )
+
+
+def _reconcile_pending_tasks(
+    running_tasks: list[int], hostname: str, now: datetime.datetime
+) -> None:
+    """Reconcile tasks in 'pending' state that are assigned to this runner.
+
+    If a task is assigned to a runner but the runner doesn't report it as
+    running and it has been pending long enough, mark it as failed.
+    This catches tasks that were dispatched but lost (e.g. runner restarted
+    and has no record of them).
+    """
+    pending_tasks: list[Task] = list(
+        Task.select().where(
+            (Task.assigned_node == hostname) & (Task.status == "pending")
+        )
+    )
+
+    if not pending_tasks:
+        return
+
+    runner_running_set = set(running_tasks)
+    # Give pending tasks a generous timeout — 3 full heartbeat timeout cycles
+    # (default: 5s * 6 * 3 = 90 seconds)
+    timeout = datetime.timedelta(
+        seconds=config.HEARTBEAT_INTERVAL_SECONDS * config.HEARTBEAT_TIMEOUT_FACTOR * 3
+    )
+
+    for task in pending_tasks:
+        if task.task_id in runner_running_set:
+            # Runner actually has this task running — fix the status
+            _confirm_task_running(task, hostname, now)
+            continue
+
+        time_since_submit = now - task.submitted_at
+        if time_since_submit <= timeout:
+            continue
+
+        # Task has been pending on this runner too long and runner doesn't know it
+        task.status = "failed"
+        task.error_message = (
+            f"Task stuck in pending state on {hostname}. "
+            "Runner does not have this task after multiple heartbeat cycles."
+        )
+        task.completed_at = now
+        task.exit_code = -1
+        task.save()
+        logger.warning(
+            f"Task {task.task_id} stuck pending on {hostname} for "
+            f"{time_since_submit.total_seconds():.0f}s — marked as failed"
         )
 
 

@@ -380,13 +380,82 @@ async def stop_vm_vps(
 
 
 async def restart_vm_vps(task_id: int) -> bool:
-    """Restart a VM VPS instance."""
+    """Restart a VM VPS instance with post-reboot health monitoring.
+
+    Sends QMP system_reset, then waits for the VM agent to resume
+    heartbeats, confirming the guest OS and network are back.
+    """
     try:
         qemu = get_qemu_manager()
-        return await qemu.restart_vm(task_id)
+        vm = qemu.get_vm(task_id)
+        if not vm:
+            logger.error(f"VM VPS {task_id}: not found for restart")
+            return False
+
+        # Mark VM as not ready during reboot
+        vm.ssh_ready = False
+        old_heartbeat = vm.last_heartbeat
+
+        # Send QMP reset
+        success = await qemu.restart_vm(task_id)
+        if not success:
+            return False
+
+        logger.info(
+            f"VM VPS {task_id}: QMP reset sent, waiting for VM agent to come back"
+        )
+
+        # Spawn background watchdog to verify VM comes back
+        asyncio.create_task(_reboot_watchdog(task_id, qemu, old_heartbeat))
+
+        return True
     except Exception as e:
         logger.error(f"Failed to restart VM VPS {task_id}: {e}")
         return False
+
+
+async def _reboot_watchdog(
+    task_id: int,
+    qemu_manager,
+    old_heartbeat: float | None,
+    timeout_seconds: int = 180,
+) -> None:
+    """Watch for VM agent heartbeat after reboot.
+
+    Polls every 5 seconds for up to *timeout_seconds* (default 3 min).
+    If the VM agent sends a new heartbeat (timestamp > old_heartbeat),
+    it marks ssh_ready = True and reports running. If it times out,
+    logs a warning but does NOT fail the task (the VM process is still
+    alive, it may just be slow to boot).
+    """
+    try:
+        deadline = asyncio.get_event_loop().time() + timeout_seconds
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(5)
+            vm = qemu_manager.get_vm(task_id)
+            if not vm:
+                # VM was stopped/deleted during reboot
+                return
+
+            # Check for a new heartbeat after the reset
+            if vm.last_heartbeat and (
+                old_heartbeat is None or vm.last_heartbeat > old_heartbeat
+            ):
+                vm.ssh_ready = True
+                logger.info(f"VM VPS {task_id}: agent heartbeat resumed after reboot")
+                return
+
+        # Timeout — VM agent didn't come back
+        vm = qemu_manager.get_vm(task_id)
+        if vm and not vm.ssh_ready:
+            logger.warning(
+                f"VM VPS {task_id}: agent did not resume heartbeat within "
+                f"{timeout_seconds}s after reboot"
+            )
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.warning(f"VM VPS {task_id}: reboot watchdog error: {e}")
 
 
 async def get_vm_status(task_id: int) -> dict | None:
