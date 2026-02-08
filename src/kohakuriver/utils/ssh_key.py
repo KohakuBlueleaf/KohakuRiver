@@ -39,9 +39,9 @@ def read_public_key_file(file_path: str) -> str:
         with open(path) as f:
             key = f.read().strip()
     except FileNotFoundError:
-        raise FileNotFoundError(f"Public key file not found: '{file_path}'")
+        raise FileNotFoundError(f"Public key file not found: '{file_path}'") from None
     except IOError as e:
-        raise IOError(f"Error reading public key file '{file_path}': {e}")
+        raise IOError(f"Error reading public key file '{file_path}': {e}") from e
 
     if not key:
         raise ValueError(f"Public key file '{file_path}' is empty.")
@@ -93,7 +93,7 @@ def generate_ssh_keypair(
     try:
         public_key = read_public_key_file(public_key_path)
     except Exception as e:
-        raise RuntimeError(f"Failed to read generated public key: {e}")
+        raise RuntimeError(f"Failed to read generated public key: {e}") from e
 
     _set_key_permissions(private_key_path, public_key_path)
 
@@ -135,9 +135,9 @@ def _run_ssh_keygen(private_key_path: str, key_type: str, comment: str) -> None:
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to generate SSH key: {e.stderr}")
+        raise RuntimeError(f"Failed to generate SSH key: {e.stderr}") from e
     except FileNotFoundError:
-        raise RuntimeError("ssh-keygen not found. Please install OpenSSH.")
+        raise RuntimeError("ssh-keygen not found. Please install OpenSSH.") from None
 
 
 def _set_key_permissions(private_path: str, public_path: str) -> None:

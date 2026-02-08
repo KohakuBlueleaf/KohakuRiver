@@ -220,7 +220,7 @@ class QEMUManager:
                 raise VMCreationError(
                     f"QEMU started but cannot read PID file {pidfile}: {e}",
                     options.task_id,
-                )
+                ) from e
 
             if not self._is_process_running(pid):
                 raise VMCreationError(
@@ -410,9 +410,9 @@ class QEMUManager:
                 return json.loads(response.decode())
 
             except (ConnectionRefusedError, FileNotFoundError) as e:
-                raise QEMUConnectionError(f"Cannot connect to QMP socket: {e}")
-            except socket.timeout:
-                raise QEMUConnectionError("QMP socket timeout")
+                raise QEMUConnectionError(f"Cannot connect to QMP socket: {e}") from e
+            except socket.timeout as e:
+                raise QEMUConnectionError("QMP socket timeout") from e
             finally:
                 sock.close()
 

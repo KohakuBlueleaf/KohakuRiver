@@ -122,7 +122,7 @@ class ClientProxy:
             writer.write(b"Proxy Error: Timeout communicating with server.\r\n")
             try:
                 await writer.drain()
-            except Exception:
+            except OSError:
                 pass
 
         except ConnectionRefusedError:
@@ -133,7 +133,7 @@ class ClientProxy:
             writer.write(b"Proxy Error: Connection refused by server.\r\n")
             try:
                 await writer.drain()
-            except Exception:
+            except OSError:
                 pass
 
         except Exception as e:
@@ -141,7 +141,7 @@ class ClientProxy:
             writer.write(b"Proxy Error: Internal client proxy error.\r\n")
             try:
                 await writer.drain()
-            except Exception:
+            except OSError:
                 pass
 
         finally:
@@ -150,13 +150,13 @@ class ClientProxy:
                 writer.close()
                 try:
                     await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
-                except Exception:
+                except OSError:
                     pass
             if host_writer:
                 host_writer.close()
                 try:
                     await asyncio.wait_for(host_writer.wait_closed(), timeout=1.0)
-                except Exception:
+                except OSError:
                     pass
             logger.info(f"{log_prefix} Local SSH connection handler finished.")
 

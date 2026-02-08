@@ -127,7 +127,9 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
 
         except Exception as url_e:
             logger.error(f"{log_prefix} Error parsing runner URL {node.url}: {url_e}")
-            raise ValueError(f"Error parsing runner URL for node {node.hostname}.")
+            raise ValueError(
+                f"Error parsing runner URL for node {node.hostname}."
+            ) from url_e
 
         # Connect to the Runner/VPS SSH Port
         try:
@@ -184,7 +186,7 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
         try:
             writer.write(error_message.encode())
             await writer.drain()
-        except Exception:
+        except OSError:
             pass
 
     except Exception as e:
@@ -193,7 +195,7 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
         try:
             writer.write(error_message.encode())
             await writer.drain()
-        except Exception:
+        except OSError:
             pass
 
     finally:
@@ -202,13 +204,13 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
             writer.close()
             try:
                 await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
-            except Exception:
+            except OSError:
                 pass
         if proxy_writer:
             proxy_writer.close()
             try:
                 await asyncio.wait_for(proxy_writer.wait_closed(), timeout=1.0)
-            except Exception:
+            except OSError:
                 pass
         logger.info(f"{log_prefix} Connection handler finished.")
 

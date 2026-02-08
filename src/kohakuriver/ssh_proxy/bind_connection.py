@@ -21,5 +21,5 @@ async def bind_reader_writer(
                 break
             writer.write(data)
             await writer.drain()
-        except Exception:
+        except OSError:
             break
