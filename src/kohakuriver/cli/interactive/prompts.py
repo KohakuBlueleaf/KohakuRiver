@@ -9,7 +9,7 @@ from kohakuriver.cli.formatters.node import format_node_table
 from kohakuriver.cli.formatters.vps import format_vps_created
 from kohakuriver.cli.output import console, print_error, print_success
 from kohakuriver.utils.cli import parse_memory_string
-from kohakuriver.utils.ssh_key import get_default_key_output_path, read_public_key_file
+from kohakuriver.utils.ssh_key import read_public_key_file, save_generated_ssh_keys
 
 
 def interactive_task_submit() -> dict | None:
@@ -97,11 +97,13 @@ def interactive_task_submit() -> dict | None:
         return None
 
 
-def interactive_vps_create() -> dict | None:
-    """Interactive VPS creation wizard."""
-    console.print("[bold]VPS Creation Wizard[/bold]\n")
+def _prompt_ssh_config() -> tuple[str, str | None] | None:
+    """Interactively prompt for SSH key mode and optional public key.
 
-    # SSH key mode
+    Returns:
+        A ``(ssh_key_mode, public_key)`` tuple, or *None* if the user
+        provides an invalid key file and the wizard should be aborted.
+    """
     console.print("[bold]SSH Key Options:[/bold]")
     console.print("  1. Use existing key (from ~/.ssh/)")
     console.print("  2. Generate new keypair")
@@ -134,7 +136,16 @@ def interactive_vps_create() -> dict | None:
     else:
         ssh_key_mode = "none"
 
-    # Resources
+    return ssh_key_mode, public_key
+
+
+def _prompt_vps_resources() -> tuple[int, str, str, str]:
+    """Interactively prompt for VPS resource configuration.
+
+    Returns:
+        A ``(cores, memory, target, container)`` tuple where *memory*,
+        *target*, and *container* are raw strings (possibly empty).
+    """
     cores = IntPrompt.ask("CPU cores", default=1)
     memory = Prompt.ask("Memory limit (e.g., 4G, leave empty for no limit)", default="")
 
@@ -158,6 +169,22 @@ def interactive_vps_create() -> dict | None:
         "Container environment (leave empty for default)",
         default="",
     )
+
+    return cores, memory, target, container
+
+
+def interactive_vps_create() -> dict | None:
+    """Interactive VPS creation wizard."""
+    console.print("[bold]VPS Creation Wizard[/bold]\n")
+
+    # SSH key mode
+    ssh_config = _prompt_ssh_config()
+    if ssh_config is None:
+        return None
+    ssh_key_mode, public_key = ssh_config
+
+    # Resources
+    cores, memory, target, container = _prompt_vps_resources()
 
     # Confirm
     console.print("\n[bold]Summary:[/bold]")
@@ -196,23 +223,8 @@ def interactive_vps_create() -> dict | None:
             console.print(panel)
 
             # Handle generated key
-            if ssh_key_mode == "generate" and result.get("ssh_private_key"):
-                task_id = result["task_id"]
-                out_path = get_default_key_output_path(task_id)
-                out_path = os.path.expanduser(out_path)
-
-                os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
-                with open(out_path, "w") as f:
-                    f.write(result["ssh_private_key"])
-                os.chmod(out_path, 0o600)
-
-                if result.get("ssh_public_key"):
-                    with open(f"{out_path}.pub", "w") as f:
-                        f.write(result["ssh_public_key"])
-                    os.chmod(f"{out_path}.pub", 0o644)
-
-                console.print(f"\n[green]SSH key saved to:[/green] {out_path}")
+            if ssh_key_mode == "generate":
+                save_generated_ssh_keys(result, console=console)
 
             return result
         else:

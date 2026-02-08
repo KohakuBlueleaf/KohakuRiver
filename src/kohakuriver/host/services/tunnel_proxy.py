@@ -6,7 +6,7 @@ Uses a single persistent WebSocket connection per task, multiplexing
 multiple user connections over it using client_id.
 
 Architecture:
-    CLI (single WS) ←→ Host (single WS) ←→ Runner ←→ Container tunnel-client
+    CLI (single WS) <-> Host (single WS) <-> Runner <-> Container tunnel-client
 """
 
 import asyncio
@@ -93,6 +93,173 @@ async def get_task_runner_info(
     return task, node, None
 
 
+async def _connect_and_handshake_runner(
+    runner_ws_url: str, websocket: WebSocket
+) -> websockets.WebSocketClientProtocol:
+    """
+    Connect to the runner WebSocket and perform the CONNECTED handshake.
+
+    Connects to the runner WS URL, waits for the first message, checks if it's
+    the CONNECTED text or an error, and sends CONNECTED to the CLI client.
+
+    Args:
+        runner_ws_url: The WebSocket URL of the runner to connect to.
+        websocket: The CLI client WebSocket to send status messages to.
+
+    Returns:
+        The connected runner WebSocket.
+
+    Raises:
+        ConnectionError: If connection to the runner fails.
+        TimeoutError: If the runner doesn't respond within 10 seconds.
+        RuntimeError: If the runner returns an error message.
+    """
+    try:
+        runner_ws = await websockets.connect(runner_ws_url)
+    except Exception as e:
+        logger.error(f"[ForwardProxy] Failed to connect to runner: {e}")
+        await websocket.send_text(f"Error: Failed to connect to runner: {e}")
+        await websocket.close(code=1011)
+        raise ConnectionError(f"Failed to connect to runner: {e}") from e
+
+    logger.debug(f"[ForwardProxy] Connected to runner WebSocket")
+
+    try:
+        first_msg = await asyncio.wait_for(runner_ws.recv(), timeout=10.0)
+        if isinstance(first_msg, str):
+            if first_msg == "CONNECTED":
+                logger.info(f"[ForwardProxy] Tunnel established via {runner_ws_url}")
+                await websocket.send_text("CONNECTED")
+            elif first_msg.startswith("Error:"):
+                logger.error(f"[ForwardProxy] Runner error: {first_msg}")
+                await websocket.send_text(first_msg)
+                await websocket.close(code=1011)
+                raise RuntimeError(first_msg)
+            else:
+                logger.warning(f"[ForwardProxy] Unexpected: {first_msg}")
+                await websocket.send_text(first_msg)
+        else:
+            logger.warning(f"[ForwardProxy] Binary before CONNECTED")
+            await websocket.send_bytes(first_msg)
+    except asyncio.TimeoutError:
+        logger.error(f"[ForwardProxy] Timeout waiting for runner CONNECTED")
+        await websocket.send_text("Error: Timeout connecting to container tunnel")
+        await websocket.close(code=1011)
+        raise TimeoutError("Timeout waiting for runner CONNECTED") from None
+
+    return runner_ws
+
+
+async def _proxy_cli_to_runner(
+    websocket: WebSocket,
+    runner_ws: websockets.WebSocketClientProtocol,
+    task_id: int,
+) -> None:
+    """
+    Forward binary messages from CLI WebSocket to runner WebSocket.
+
+    Reads binary protocol messages from the CLI client and forwards them
+    to the runner, logging message type and payload size.
+
+    Args:
+        websocket: The CLI client WebSocket.
+        runner_ws: The runner WebSocket.
+        task_id: The task ID for logging context.
+    """
+    try:
+        while True:
+            # CLI sends binary protocol messages
+            data = await websocket.receive_bytes()
+            header = parse_header(data)
+            if header:
+                msg_type, proto, client_id, port = header
+                msg_names = {
+                    MSG_CONNECT: "CONNECT",
+                    MSG_DATA: "DATA",
+                    MSG_CLOSE: "CLOSE",
+                }
+                msg_name = msg_names.get(msg_type, f"TYPE_{msg_type}")
+                payload_len = len(data) - HEADER_SIZE
+                logger.info(
+                    f"[ForwardProxy] CLI→Runner: {msg_name} client_id={client_id} payload={payload_len}b"
+                )
+            await runner_ws.send(data)
+    except WebSocketDisconnect:
+        logger.debug(f"[ForwardProxy] CLI disconnected (task={task_id})")
+    except Exception as e:
+        logger.debug(f"[ForwardProxy] CLI→Runner error: {e}")
+
+
+async def _proxy_runner_to_cli(
+    runner_ws: websockets.WebSocketClientProtocol,
+    websocket: WebSocket,
+    task_id: int,
+) -> None:
+    """
+    Forward binary messages from runner WebSocket to CLI WebSocket.
+
+    Reads messages from the runner and forwards them to the CLI client,
+    logging message type and payload size for binary messages.
+
+    Args:
+        runner_ws: The runner WebSocket.
+        websocket: The CLI client WebSocket.
+        task_id: The task ID for logging context.
+    """
+    try:
+        async for msg in runner_ws:
+            if isinstance(msg, bytes):
+                header = parse_header(msg)
+                if header:
+                    msg_type, proto, client_id, port = header
+                    msg_names = {
+                        MSG_CONNECT: "CONNECT",
+                        MSG_CONNECTED: "CONNECTED",
+                        MSG_DATA: "DATA",
+                        MSG_CLOSE: "CLOSE",
+                        MSG_ERROR: "ERROR",
+                    }
+                    msg_name = msg_names.get(msg_type, f"TYPE_{msg_type}")
+                    payload_len = len(msg) - HEADER_SIZE
+                    logger.info(
+                        f"[ForwardProxy] Runner→CLI: {msg_name} client_id={client_id} payload={payload_len}b"
+                    )
+                await websocket.send_bytes(msg)
+            else:
+                logger.info(f"[ForwardProxy] Runner→CLI: text={msg}")
+                await websocket.send_text(msg)
+    except websockets.exceptions.ConnectionClosed:
+        logger.debug(f"[ForwardProxy] Runner closed (task={task_id})")
+    except Exception as e:
+        logger.debug(f"[ForwardProxy] Runner→CLI error: {e}")
+
+
+async def _run_bidirectional_proxy(
+    task_a: asyncio.coroutines, task_b: asyncio.coroutines
+) -> None:
+    """
+    Run two async tasks bidirectionally, cancelling the other when one completes.
+
+    Creates asyncio tasks for both coroutines, waits for the first to complete,
+    then cancels and gathers any pending tasks.
+
+    Args:
+        task_a: First coroutine to run (e.g., cli-to-runner direction).
+        task_b: Second coroutine to run (e.g., runner-to-cli direction).
+    """
+    done, pending = await asyncio.wait(
+        [
+            asyncio.create_task(task_a),
+            asyncio.create_task(task_b),
+        ],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    for t in pending:
+        t.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
 async def forward_port_proxy(
     websocket: WebSocket,
     task_id: int,
@@ -144,110 +311,17 @@ async def forward_port_proxy(
         )
         logger.info(f"[ForwardProxy] Connecting to runner: {runner_ws_url}")
 
-        # 4. Connect to runner
+        # 4. Connect to runner and perform handshake
         try:
-            runner_ws = await websockets.connect(runner_ws_url)
-        except Exception as e:
-            logger.error(f"[ForwardProxy] Failed to connect to runner: {e}")
-            await websocket.send_text(f"Error: Failed to connect to runner: {e}")
-            await websocket.close(code=1011)
+            runner_ws = await _connect_and_handshake_runner(runner_ws_url, websocket)
+        except (ConnectionError, TimeoutError, RuntimeError):
             return
 
-        logger.debug(f"[ForwardProxy] Connected to runner WebSocket")
-
-        # 5. Wait for CONNECTED signal from runner
-        try:
-            first_msg = await asyncio.wait_for(runner_ws.recv(), timeout=10.0)
-            if isinstance(first_msg, str):
-                if first_msg == "CONNECTED":
-                    logger.info(
-                        f"[ForwardProxy] Tunnel established for task {task_id}:{port}"
-                    )
-                    await websocket.send_text("CONNECTED")
-                elif first_msg.startswith("Error:"):
-                    logger.error(f"[ForwardProxy] Runner error: {first_msg}")
-                    await websocket.send_text(first_msg)
-                    await websocket.close(code=1011)
-                    return
-                else:
-                    logger.warning(f"[ForwardProxy] Unexpected: {first_msg}")
-                    await websocket.send_text(first_msg)
-            else:
-                logger.warning(f"[ForwardProxy] Binary before CONNECTED")
-                await websocket.send_bytes(first_msg)
-        except asyncio.TimeoutError:
-            logger.error(f"[ForwardProxy] Timeout waiting for runner CONNECTED")
-            await websocket.send_text("Error: Timeout connecting to container tunnel")
-            await websocket.close(code=1011)
-            return
-
-        # 6. Bidirectional proxy - just forward everything
-        async def cli_to_runner():
-            """Forward messages from CLI to runner."""
-            try:
-                while True:
-                    # CLI sends binary protocol messages
-                    data = await websocket.receive_bytes()
-                    header = parse_header(data)
-                    if header:
-                        msg_type, proto, client_id, port = header
-                        msg_names = {
-                            MSG_CONNECT: "CONNECT",
-                            MSG_DATA: "DATA",
-                            MSG_CLOSE: "CLOSE",
-                        }
-                        msg_name = msg_names.get(msg_type, f"TYPE_{msg_type}")
-                        payload_len = len(data) - HEADER_SIZE
-                        logger.info(
-                            f"[ForwardProxy] CLI→Runner: {msg_name} client_id={client_id} payload={payload_len}b"
-                        )
-                    await runner_ws.send(data)
-            except WebSocketDisconnect:
-                logger.debug(f"[ForwardProxy] CLI disconnected (task={task_id})")
-            except Exception as e:
-                logger.debug(f"[ForwardProxy] CLI→Runner error: {e}")
-
-        async def runner_to_cli():
-            """Forward messages from runner to CLI."""
-            try:
-                async for msg in runner_ws:
-                    if isinstance(msg, bytes):
-                        header = parse_header(msg)
-                        if header:
-                            msg_type, proto, client_id, port = header
-                            msg_names = {
-                                MSG_CONNECT: "CONNECT",
-                                MSG_CONNECTED: "CONNECTED",
-                                MSG_DATA: "DATA",
-                                MSG_CLOSE: "CLOSE",
-                                MSG_ERROR: "ERROR",
-                            }
-                            msg_name = msg_names.get(msg_type, f"TYPE_{msg_type}")
-                            payload_len = len(msg) - HEADER_SIZE
-                            logger.info(
-                                f"[ForwardProxy] Runner→CLI: {msg_name} client_id={client_id} payload={payload_len}b"
-                            )
-                        await websocket.send_bytes(msg)
-                    else:
-                        logger.info(f"[ForwardProxy] Runner→CLI: text={msg}")
-                        await websocket.send_text(msg)
-            except websockets.exceptions.ConnectionClosed:
-                logger.debug(f"[ForwardProxy] Runner closed (task={task_id})")
-            except Exception as e:
-                logger.debug(f"[ForwardProxy] Runner→CLI error: {e}")
-
-        # Run both directions
-        done, pending = await asyncio.wait(
-            [
-                asyncio.create_task(cli_to_runner()),
-                asyncio.create_task(runner_to_cli()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
+        # 5. Bidirectional proxy - just forward everything
+        await _run_bidirectional_proxy(
+            _proxy_cli_to_runner(websocket, runner_ws, task_id),
+            _proxy_runner_to_cli(runner_ws, websocket, task_id),
         )
-
-        for t in pending:
-            t.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
 
         logger.info(f"[ForwardProxy] Session ended (task={task_id}:{port})")
 

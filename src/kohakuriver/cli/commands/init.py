@@ -359,6 +359,144 @@ def init_config(
         console.print(f"[dim]Default config directory: {config_dir}[/dim]")
 
 
+def _resolve_service_paths(
+    working_dir: str | None, python_path: str | None, capture_env: bool
+) -> tuple[str, str, str]:
+    """Resolve working directory, Python executable, and PATH for service files.
+
+    Args:
+        working_dir: Working directory override, or None for default (~/.kohakuriver).
+        python_path: Python executable override, or None for current interpreter.
+        capture_env: Whether to capture the current PATH environment variable.
+
+    Returns:
+        Tuple of (resolved_working_dir, resolved_python_path, env_path).
+    """
+    # Default working directory - use user's kohakuriver directory
+    if working_dir is None:
+        working_dir = get_default_config_dir()
+
+    # Resolve to absolute path
+    resolved_working_dir = os.path.abspath(os.path.expanduser(working_dir))
+
+    # Get Python executable path
+    if python_path is None:
+        python_path = sys.executable
+    resolved_python_path = os.path.abspath(os.path.expanduser(python_path))
+
+    # Get PATH environment variable
+    env_path = os.environ.get("PATH", "") if capture_env else ""
+
+    return resolved_working_dir, resolved_python_path, env_path
+
+
+def _generate_service_file(
+    service_name: str,
+    description: str,
+    exec_command: str,
+    working_dir: str,
+    python_path: str,
+    env_path: str,
+    after_units: list[str] | None = None,
+    wants_units: list[str] | None = None,
+) -> str:
+    """Generate a systemd unit file content string.
+
+    Args:
+        service_name: Name of the service (for logging only).
+        description: Description field for the [Unit] section.
+        exec_command: The full ExecStart command string.
+        working_dir: Absolute path for WorkingDirectory.
+        python_path: Absolute path to the Python interpreter.
+        env_path: PATH value for the Environment directive (empty to omit).
+        after_units: List of units for After= directive. Defaults to ["network.target"].
+        wants_units: List of units for Wants= directive. Defaults to none.
+
+    Returns:
+        The complete systemd service file content.
+    """
+    if after_units is None:
+        after_units = ["network.target"]
+
+    after_line = "After=" + " ".join(after_units)
+
+    wants_line = ""
+    if wants_units:
+        wants_line = "Wants=" + " ".join(wants_units)
+
+    env_line = f'Environment="PATH={env_path}"' if env_path else ""
+
+    service_content = f"""[Unit]
+Description={description}
+{after_line}
+{wants_line}
+
+[Service]
+Type=simple
+WorkingDirectory={working_dir}
+ExecStart={exec_command}
+Restart=on-failure
+RestartSec=5
+{env_line}
+
+[Install]
+WantedBy=multi-user.target
+"""
+    return service_content
+
+
+def _install_to_systemd(created_files: list[tuple[str, str]], console) -> bool:
+    """Copy service files to /etc/systemd/system/ and reload the daemon.
+
+    Args:
+        created_files: List of (service_name, filepath) tuples.
+        console: Rich console for output.
+
+    Returns:
+        True if all operations succeeded, False otherwise.
+    """
+    console.print()
+    console.print("Installing service files to systemd...")
+    success = True
+
+    for service_name, filepath in created_files:
+        cmd = ["sudo", "cp", filepath, "/etc/systemd/system/"]
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            print_error(f"Failed to copy {filepath} to /etc/systemd/system/")
+            success = False
+
+    if success:
+        result = subprocess.run(["sudo", "systemctl", "daemon-reload"])
+        if result.returncode != 0:
+            print_error("Failed to reload systemd daemon")
+            success = False
+
+    return success
+
+
+def _print_service_instructions(created_files: list[tuple[str, str]], console):
+    """Print post-install instructions for starting, enabling, and viewing logs.
+
+    Args:
+        created_files: List of (service_name, filepath) tuples.
+        console: Rich console for output.
+    """
+    print_success("Service files registered successfully.")
+    console.print()
+    console.print("[bold]To start the services:[/bold]")
+    for service_name, _ in created_files:
+        console.print(f"  sudo systemctl start {service_name}")
+    console.print()
+    console.print("[bold]To enable on boot:[/bold]")
+    for service_name, _ in created_files:
+        console.print(f"  sudo systemctl enable {service_name}")
+    console.print()
+    console.print("[bold]To view logs:[/bold]")
+    for service_name, _ in created_files:
+        console.print(f"  journalctl -u {service_name} -f")
+
+
 @app.command("service")
 def init_service(
     host: Annotated[
@@ -418,24 +556,15 @@ def init_service(
 
     Use --no-install to only generate the files without registering.
     """
+    # Validate flags
     if not any([host, runner, all_services]):
         print_error("You must specify --host, --runner, or --all")
         raise typer.Exit(1)
 
-    # Default working directory - use user's kohakuriver directory
-    if working_dir is None:
-        working_dir = get_default_config_dir()
-
-    # Resolve to absolute path
-    working_dir = os.path.abspath(os.path.expanduser(working_dir))
-
-    # Get Python executable path
-    if python_path is None:
-        python_path = sys.executable
-    python_path = os.path.abspath(os.path.expanduser(python_path))
-
-    # Get PATH environment variable
-    env_path = os.environ.get("PATH", "") if capture_env else ""
+    # Resolve paths
+    resolved_working_dir, resolved_python_path, env_path = _resolve_service_paths(
+        working_dir, python_path, capture_env
+    )
 
     # Use temp directory for service files
     output_dir = tempfile.mkdtemp() if not no_install else "."
@@ -443,6 +572,7 @@ def init_service(
     if no_install:
         os.makedirs(output_dir, exist_ok=True)
 
+    # Generate service file(s)
     created_files = []
 
     if host or all_services:
@@ -451,31 +581,23 @@ def init_service(
         if host_config:
             config_path = os.path.abspath(os.path.expanduser(host_config))
         else:
-            config_path = os.path.join(working_dir, "host_config.py")
-        config_arg = f" --config {config_path}"
+            config_path = os.path.join(resolved_working_dir, "host_config.py")
 
-        # Build environment line
-        env_line = f'Environment="PATH={env_path}"' if env_path else ""
+        exec_command = (
+            f"{resolved_python_path} -m kohakuriver.cli.host --config {config_path}"
+        )
+        service_content = _generate_service_file(
+            service_name="kohakuriver-host",
+            description="KohakuRiver Host Server",
+            exec_command=exec_command,
+            working_dir=resolved_working_dir,
+            python_path=resolved_python_path,
+            env_path=env_path,
+        )
 
-        # Service runs as root for network interface management
-        host_service = f"""[Unit]
-Description=KohakuRiver Host Server
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory={working_dir}
-ExecStart={python_path} -m kohakuriver.cli.host{config_arg}
-Restart=on-failure
-RestartSec=5
-{env_line}
-
-[Install]
-WantedBy=multi-user.target
-"""
         output_path = os.path.join(output_dir, "kohakuriver-host.service")
         with open(output_path, "w") as f:
-            f.write(host_service)
+            f.write(service_content)
         console.print(f"  Created: {output_path}")
         created_files.append(("kohakuriver-host", output_path))
 
@@ -485,32 +607,25 @@ WantedBy=multi-user.target
         if runner_config:
             config_path = os.path.abspath(os.path.expanduser(runner_config))
         else:
-            config_path = os.path.join(working_dir, "runner_config.py")
-        config_arg = f" --config {config_path}"
+            config_path = os.path.join(resolved_working_dir, "runner_config.py")
 
-        # Build environment line
-        env_line = f'Environment="PATH={env_path}"' if env_path else ""
+        exec_command = (
+            f"{resolved_python_path} -m kohakuriver.cli.runner --config {config_path}"
+        )
+        service_content = _generate_service_file(
+            service_name="kohakuriver-runner",
+            description="KohakuRiver Runner Agent",
+            exec_command=exec_command,
+            working_dir=resolved_working_dir,
+            python_path=resolved_python_path,
+            env_path=env_path,
+            after_units=["network.target", "docker.service"],
+            wants_units=["docker.service"],
+        )
 
-        # Service runs as root for network interface and Docker management
-        runner_service = f"""[Unit]
-Description=KohakuRiver Runner Agent
-After=network.target docker.service
-Wants=docker.service
-
-[Service]
-Type=simple
-WorkingDirectory={working_dir}
-ExecStart={python_path} -m kohakuriver.cli.runner{config_arg}
-Restart=on-failure
-RestartSec=5
-{env_line}
-
-[Install]
-WantedBy=multi-user.target
-"""
         output_path = os.path.join(output_dir, "kohakuriver-runner.service")
         with open(output_path, "w") as f:
-            f.write(runner_service)
+            f.write(service_content)
         console.print(f"  Created: {output_path}")
         created_files.append(("kohakuriver-runner", output_path))
 
@@ -518,6 +633,7 @@ WantedBy=multi-user.target
         console.print("No service files created.")
         raise typer.Exit(1)
 
+    # Write to temp and optionally install
     if no_install:
         console.print()
         console.print("[bold]Service files created.[/bold]")
@@ -525,42 +641,15 @@ WantedBy=multi-user.target
         console.print("  sudo systemctl daemon-reload")
         return
 
-    # Auto-install to systemd
-    console.print()
-    console.print("Installing service files to systemd...")
-    success = True
-
-    for service_name, filepath in created_files:
-        cmd = ["sudo", "cp", filepath, "/etc/systemd/system/"]
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            print_error(f"Failed to copy {filepath} to /etc/systemd/system/")
-            success = False
-
-    if success:
-        result = subprocess.run(["sudo", "systemctl", "daemon-reload"])
-        if result.returncode != 0:
-            print_error("Failed to reload systemd daemon")
-            success = False
+    success = _install_to_systemd(created_files, console)
 
     # Cleanup temp files
     if output_dir != ".":
         shutil.rmtree(output_dir, ignore_errors=True)
 
+    # Print instructions
     if success:
-        print_success("Service files registered successfully.")
-        console.print()
-        console.print("[bold]To start the services:[/bold]")
-        for service_name, _ in created_files:
-            console.print(f"  sudo systemctl start {service_name}")
-        console.print()
-        console.print("[bold]To enable on boot:[/bold]")
-        for service_name, _ in created_files:
-            console.print(f"  sudo systemctl enable {service_name}")
-        console.print()
-        console.print("[bold]To view logs:[/bold]")
-        for service_name, _ in created_files:
-            console.print(f"  journalctl -u {service_name} -f")
+        _print_service_instructions(created_files, console)
     else:
         print_error("Failed to register some service files.")
         raise typer.Exit(1)

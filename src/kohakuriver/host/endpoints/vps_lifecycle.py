@@ -186,6 +186,207 @@ def allocate_ssh_port() -> int:
     return port
 
 
+def _validate_vps_submission(submission: VPSSubmission) -> tuple[str, str]:
+    """
+    Validate VPS submission inputs.
+
+    Args:
+        submission: The VPS submission request.
+
+    Returns:
+        Tuple of (vps_backend, ssh_key_mode).
+
+    Raises:
+        HTTPException: On invalid input.
+    """
+    vps_backend = submission.vps_backend or "docker"
+
+    if vps_backend not in ("docker", "qemu"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid vps_backend: {vps_backend}. Must be 'docker' or 'qemu'.",
+        )
+
+    ssh_key_mode = submission.ssh_key_mode or "disabled"
+    if ssh_key_mode not in ("disabled", "none", "upload", "generate"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid ssh_key_mode: {ssh_key_mode}. Must be 'disabled', 'none', 'upload', or 'generate'.",
+        )
+
+    if ssh_key_mode == "upload" and not submission.ssh_public_key:
+        raise HTTPException(
+            status_code=400,
+            detail="ssh_public_key is required when ssh_key_mode is 'upload'.",
+        )
+
+    return vps_backend, ssh_key_mode
+
+
+def _resolve_ssh_keys(
+    ssh_key_mode: str, submission: VPSSubmission, task_id: int
+) -> tuple[str | None, str | None]:
+    """
+    Resolve SSH keys based on the key mode.
+
+    Args:
+        ssh_key_mode: SSH key mode ("disabled", "none", "upload", or "generate").
+        submission: The VPS submission request.
+        task_id: Task ID for key generation comment.
+
+    Returns:
+        Tuple of (ssh_public_key, ssh_private_key).
+
+    Raises:
+        HTTPException: If key generation fails.
+    """
+    ssh_public_key = None
+    ssh_private_key = None
+
+    match ssh_key_mode:
+        case "disabled":
+            # No SSH server at all - TTY-only mode
+            ssh_public_key = None
+            logger.info(f"VPS {task_id}: SSH disabled (TTY-only mode)")
+
+        case "none":
+            # No SSH key - passwordless root
+            ssh_public_key = None
+            logger.info(f"VPS {task_id}: No SSH key mode (passwordless root)")
+
+        case "upload":
+            # User provided key
+            ssh_public_key = submission.ssh_public_key
+            logger.info(f"VPS {task_id}: Using uploaded SSH key")
+
+        case "generate":
+            # Generate keypair on host
+            try:
+                ssh_private_key, ssh_public_key = _generate_ssh_keypair_for_vps(task_id)
+                logger.info(f"VPS {task_id}: Generated SSH keypair")
+            except RuntimeError as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to generate SSH keypair: {e}",
+                )
+
+    return ssh_public_key, ssh_private_key
+
+
+def _create_vps_task_record(
+    task_id: int,
+    submission: VPSSubmission,
+    ssh_port: int,
+    node: Node,
+    container_name: str | None,
+    vps_backend: str,
+    ssh_key_mode: str,
+    current_user: User,
+) -> Task:
+    """
+    Create the Task database record for a new VPS.
+
+    Args:
+        task_id: Snowflake task ID.
+        submission: The VPS submission request.
+        ssh_port: Allocated SSH port.
+        node: Assigned compute node.
+        container_name: Docker container base image name (None if registry_image is used).
+        vps_backend: "docker" or "qemu".
+        ssh_key_mode: SSH key mode.
+        current_user: The authenticated user submitting the VPS.
+
+    Returns:
+        Created Task record.
+    """
+    task = Task.create(
+        task_id=task_id,
+        task_type="vps",
+        name=submission.name,
+        owner_id=current_user.id if current_user.id > 0 else None,
+        command="vps",
+        required_cores=submission.required_cores,
+        required_gpus=(
+            json.dumps(submission.required_gpus) if submission.required_gpus else "[]"
+        ),
+        required_memory_bytes=submission.required_memory_bytes,
+        target_numa_node_id=submission.target_numa_node_id,
+        assigned_node=node.hostname,
+        status="assigning",
+        ssh_port=ssh_port,
+        submitted_at=datetime.datetime.now(),
+        container_name=container_name,
+        registry_image=submission.registry_image,
+        docker_image_name=submission.registry_image
+        or (f"kohakuriver/{container_name}:base" if container_name else None),
+        vps_backend=vps_backend,
+        vm_image=submission.vm_image if vps_backend == "qemu" else None,
+        vm_disk_size=submission.vm_disk_size if vps_backend == "qemu" else None,
+    )
+
+    logger.info(f"Created VPS task {task_id} assigned to {node.hostname}")
+    return task
+
+
+def _build_vps_response(
+    task: Task,
+    result: dict,
+    ssh_private_key: str | None,
+    ssh_public_key: str | None,
+    vps_backend: str,
+    ssh_key_mode: str,
+) -> dict:
+    """
+    Build the VPS creation success response dict.
+
+    Includes VM-specific info for qemu backend and generated SSH keys
+    when ssh_key_mode is "generate". Also stores VM IP back in the task
+    record if available.
+
+    Args:
+        task: The VPS task record.
+        result: Runner response dict.
+        ssh_private_key: Generated private key (None unless generate mode).
+        ssh_public_key: Generated or uploaded public key.
+        vps_backend: "docker" or "qemu".
+        ssh_key_mode: SSH key mode.
+
+    Returns:
+        Response dict for the API caller.
+    """
+    node = Node.get_or_none(Node.hostname == task.assigned_node)
+
+    response = {
+        "message": "VPS created successfully.",
+        "task_id": str(task.task_id),
+        "vps_backend": vps_backend,
+        "ssh_key_mode": ssh_key_mode,
+        "ssh_port": task.ssh_port,
+        "assigned_node": {
+            "hostname": node.hostname if node else task.assigned_node,
+            "url": node.url if node else None,
+        },
+        "runner_response": result,
+    }
+
+    # Add VM-specific info
+    if vps_backend == "qemu" and result:
+        response["vm_ip"] = result.get("vm_ip")
+        response["vm_network_mode"] = result.get("network_mode")
+        # Store VM IP back in task record
+        vm_ip = result.get("vm_ip")
+        if vm_ip:
+            task.vm_ip = vm_ip
+            task.save()
+
+    # Include generated keys in response (for "generate" mode)
+    if ssh_key_mode == "generate" and ssh_private_key:
+        response["ssh_private_key"] = ssh_private_key
+        response["ssh_public_key"] = ssh_public_key
+
+    return response
+
+
 @router.post("/vps/create")
 async def submit_vps(
     submission: VPSSubmission,
@@ -196,34 +397,13 @@ async def submit_vps(
 
     Requires 'operator' role or higher (operators and admins can create VPS).
     """
-    vps_backend = submission.vps_backend or "docker"
+    # Validate inputs
+    vps_backend, ssh_key_mode = _validate_vps_submission(submission)
 
     logger.info(
         f"Received VPS submission for {submission.required_cores} cores "
-        f"(ssh_key_mode={submission.ssh_key_mode}, backend={vps_backend})"
+        f"(ssh_key_mode={ssh_key_mode}, backend={vps_backend})"
     )
-
-    # Validate backend
-    if vps_backend not in ("docker", "qemu"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid vps_backend: {vps_backend}. Must be 'docker' or 'qemu'.",
-        )
-
-    # Validate SSH key mode
-    ssh_key_mode = submission.ssh_key_mode or "disabled"
-    if ssh_key_mode not in ("disabled", "none", "upload", "generate"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid ssh_key_mode: {ssh_key_mode}. Must be 'disabled', 'none', 'upload', or 'generate'.",
-        )
-
-    # Validate public key is provided for upload mode
-    if ssh_key_mode == "upload" and not submission.ssh_public_key:
-        raise HTTPException(
-            status_code=400,
-            detail="ssh_public_key is required when ssh_key_mode is 'upload'.",
-        )
 
     # Find suitable node (different logic for VM backend)
     if vps_backend == "qemu":
@@ -259,64 +439,22 @@ async def submit_vps(
     else:
         container_name = submission.container_name or config.DEFAULT_CONTAINER_NAME
 
-    # Handle SSH key based on mode
-    ssh_public_key = None
-    ssh_private_key = None
-
-    match ssh_key_mode:
-        case "disabled":
-            # No SSH server at all - TTY-only mode
-            ssh_public_key = None
-            logger.info(f"VPS {task_id}: SSH disabled (TTY-only mode)")
-
-        case "none":
-            # No SSH key - passwordless root
-            ssh_public_key = None
-            logger.info(f"VPS {task_id}: No SSH key mode (passwordless root)")
-
-        case "upload":
-            # User provided key
-            ssh_public_key = submission.ssh_public_key
-            logger.info(f"VPS {task_id}: Using uploaded SSH key")
-
-        case "generate":
-            # Generate keypair on host
-            try:
-                ssh_private_key, ssh_public_key = _generate_ssh_keypair_for_vps(task_id)
-                logger.info(f"VPS {task_id}: Generated SSH keypair")
-            except RuntimeError as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to generate SSH keypair: {e}",
-                )
-
-    # Create task record
-    task = Task.create(
-        task_id=task_id,
-        task_type="vps",
-        name=submission.name,
-        owner_id=current_user.id if current_user.id > 0 else None,
-        command="vps",
-        required_cores=submission.required_cores,
-        required_gpus=(
-            json.dumps(submission.required_gpus) if submission.required_gpus else "[]"
-        ),
-        required_memory_bytes=submission.required_memory_bytes,
-        target_numa_node_id=submission.target_numa_node_id,
-        assigned_node=node.hostname,
-        status="assigning",
-        ssh_port=ssh_port,
-        submitted_at=datetime.datetime.now(),
-        container_name=container_name,
-        registry_image=submission.registry_image,
-        docker_image_name=submission.registry_image
-        or (f"kohakuriver/{container_name}:base" if container_name else None),
-        vps_backend=vps_backend,
-        vm_image=submission.vm_image if vps_backend == "qemu" else None,
-        vm_disk_size=submission.vm_disk_size if vps_backend == "qemu" else None,
+    # Resolve SSH keys
+    ssh_public_key, ssh_private_key = _resolve_ssh_keys(
+        ssh_key_mode, submission, task_id
     )
 
-    logger.info(f"Created VPS task {task_id} assigned to {node.hostname}")
+    # Create task record
+    task = _create_vps_task_record(
+        task_id=task_id,
+        submission=submission,
+        ssh_port=ssh_port,
+        node=node,
+        container_name=container_name,
+        vps_backend=vps_backend,
+        ssh_key_mode=ssh_key_mode,
+        current_user=current_user,
+    )
 
     # Send to runner
     result = await send_vps_to_runner(
@@ -332,8 +470,8 @@ async def submit_vps(
         memory_mb=submission.memory_mb,
     )
 
+    # Handle runner rejection
     if result is None:
-        # Runner explicitly rejected the VPS creation
         task.status = "failed"
         task.error_message = "Runner rejected VPS creation."
         task.completed_at = datetime.datetime.now()
@@ -343,14 +481,12 @@ async def submit_vps(
             detail="Runner rejected VPS creation.",
         )
 
+    # Handle communication failure
     if result == {}:
-        # Communication failure - don't mark as failed
-        # Task remains in "assigning" state, runner will report actual status
         logger.warning(
             f"VPS {task.task_id} communication failed, but task remains in 'assigning' state. "
             "Runner will report actual status."
         )
-        # Return success response - client should poll for actual status
         return {
             "message": "VPS creation request sent (awaiting runner confirmation).",
             "task_id": str(task_id),
@@ -363,35 +499,15 @@ async def submit_vps(
             "status": "assigning",
         }
 
-    response = {
-        "message": "VPS created successfully.",
-        "task_id": str(task_id),
-        "vps_backend": vps_backend,
-        "ssh_key_mode": ssh_key_mode,
-        "ssh_port": ssh_port,
-        "assigned_node": {
-            "hostname": node.hostname,
-            "url": node.url,
-        },
-        "runner_response": result,
-    }
-
-    # Add VM-specific info
-    if vps_backend == "qemu" and result:
-        response["vm_ip"] = result.get("vm_ip")
-        response["vm_network_mode"] = result.get("network_mode")
-        # Store VM IP back in task record
-        vm_ip = result.get("vm_ip")
-        if vm_ip:
-            task.vm_ip = vm_ip
-            task.save()
-
-    # Include generated keys in response (for "generate" mode)
-    if ssh_key_mode == "generate" and ssh_private_key:
-        response["ssh_private_key"] = ssh_private_key
-        response["ssh_public_key"] = ssh_public_key
-
-    return response
+    # Build and return success response
+    return _build_vps_response(
+        task=task,
+        result=result,
+        ssh_private_key=ssh_private_key,
+        ssh_public_key=ssh_public_key,
+        vps_backend=vps_backend,
+        ssh_key_mode=ssh_key_mode,
+    )
 
 
 @router.post("/vps/stop/{task_id}", status_code=202)

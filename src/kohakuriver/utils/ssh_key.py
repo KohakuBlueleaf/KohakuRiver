@@ -151,6 +151,57 @@ def _set_key_permissions(private_path: str, public_path: str) -> None:
 # =============================================================================
 
 
+def save_generated_ssh_keys(
+    result: dict,
+    key_out_file: str | None = None,
+    console=None,
+) -> None:
+    """
+    Save generated SSH keys from a VPS creation result to disk.
+
+    If the result dict contains an ``ssh_private_key`` field, the private key
+    is written to *key_out_file* (or the default path derived from the task ID)
+    with mode 0600.  When a matching ``ssh_public_key`` is present the public
+    key is written alongside with a ``.pub`` suffix and mode 0644.
+
+    Args:
+        result: VPS creation response dict.  Must contain ``task_id``.
+            Optionally contains ``ssh_private_key`` and ``ssh_public_key``.
+        key_out_file: Explicit output path for the private key.  When *None*
+            the default ``~/.ssh/id-kohakuriver-<task_id>`` path is used.
+        console: Optional Rich console for printing status messages.
+    """
+    if not result.get("ssh_private_key"):
+        return
+
+    task_id = result["task_id"]
+    out_path = key_out_file or get_default_key_output_path(task_id)
+    out_path = os.path.expanduser(out_path)
+
+    # Ensure directory exists
+    ssh_dir = os.path.dirname(out_path)
+    if ssh_dir:
+        os.makedirs(ssh_dir, exist_ok=True)
+
+    # Write private key
+    with open(out_path, "w") as f:
+        f.write(result["ssh_private_key"])
+    os.chmod(out_path, 0o600)
+
+    # Write public key
+    if result.get("ssh_public_key"):
+        pub_path = f"{out_path}.pub"
+        with open(pub_path, "w") as f:
+            f.write(result["ssh_public_key"])
+        os.chmod(pub_path, 0o644)
+
+    if console is not None:
+        console.print(f"\n[green]SSH private key saved to:[/green] {out_path}")
+        console.print(f"[green]SSH public key saved to:[/green] {out_path}.pub")
+
+    log.info(f"Saved generated SSH keys to: {out_path}")
+
+
 def get_default_key_output_path(task_id: int | str) -> str:
     """
     Get the default path for a generated SSH key.

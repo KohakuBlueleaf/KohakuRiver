@@ -14,9 +14,89 @@ from kohakuriver.cli.formatters.vps import (
 )
 from kohakuriver.cli.output import console, print_error, print_success
 from kohakuriver.utils.cli import parse_memory_string
-from kohakuriver.utils.ssh_key import get_default_key_output_path, read_public_key_file
+from kohakuriver.utils.ssh_key import (
+    get_default_key_output_path,
+    read_public_key_file,
+    save_generated_ssh_keys,
+)
 
 app = typer.Typer(help="VPS management commands")
+
+
+def _resolve_ssh_mode(
+    ssh: bool,
+    no_ssh_key: bool,
+    gen_ssh_key: bool,
+    public_key_file: str | None,
+    public_key_string: str | None,
+) -> tuple[str, str | None]:
+    """Validate mutually exclusive SSH options and determine the SSH key mode.
+
+    Args:
+        ssh: Whether ``--ssh`` flag was provided.
+        no_ssh_key: Whether ``--no-ssh-key`` flag was provided.
+        gen_ssh_key: Whether ``--gen-ssh-key`` flag was provided.
+        public_key_file: Path to a public key file, or *None*.
+        public_key_string: Inline public key string, or *None*.
+
+    Returns:
+        A ``(ssh_key_mode, public_key)`` tuple where *ssh_key_mode* is one of
+        ``"disabled"``, ``"none"``, ``"generate"``, or ``"upload"`` and
+        *public_key* is the resolved public key string when applicable.
+
+    Raises:
+        typer.BadParameter: When more than one SSH key option is specified.
+    """
+    ssh_options = sum(
+        [no_ssh_key, gen_ssh_key, bool(public_key_file), bool(public_key_string)]
+    )
+    if ssh_options > 1:
+        raise typer.BadParameter(
+            "Only one of --no-ssh-key, --gen-ssh-key, --public-key-file, "
+            "--public-key-string can be specified."
+        )
+
+    # --ssh flag without specific key options implies generate
+    if ssh and ssh_options == 0:
+        gen_ssh_key = True
+
+    # Determine SSH key mode
+    ssh_key_mode = "disabled"  # Default: no SSH, TTY-only
+    public_key = None
+
+    if no_ssh_key:
+        ssh_key_mode = "none"
+    elif gen_ssh_key:
+        ssh_key_mode = "generate"
+    elif public_key_string:
+        ssh_key_mode = "upload"
+        public_key = public_key_string.strip()
+    elif public_key_file:
+        ssh_key_mode = "upload"
+        public_key = read_public_key_file(public_key_file)
+
+    return ssh_key_mode, public_key
+
+
+def _parse_target_string(
+    target: str | None,
+) -> tuple[str | None, list[int] | None]:
+    """Parse a target string in ``hostname[:numa][::gpu_ids]`` format.
+
+    Args:
+        target: Raw target string from the CLI, or *None*.
+
+    Returns:
+        A ``(target_str, gpu_ids)`` tuple.  *target_str* is the target with
+        the ``::gpu`` suffix removed (or *None*).  *gpu_ids* is a list of
+        integer GPU IDs, or *None* when none were specified.
+    """
+    if not target or "::" not in target:
+        return target, None
+
+    target_str, gpu_str = target.rsplit("::", 1)
+    gpu_ids = [int(g.strip()) for g in gpu_str.split(",") if g.strip()]
+    return target_str, gpu_ids
 
 
 @app.command("list")
@@ -144,38 +224,9 @@ def create_vps(
         raise typer.Exit(1)
 
     try:
-        # Validate mutually exclusive SSH options
-        ssh_options = sum(
-            [no_ssh_key, gen_ssh_key, bool(public_key_file), bool(public_key_string)]
+        ssh_key_mode, public_key = _resolve_ssh_mode(
+            ssh, no_ssh_key, gen_ssh_key, public_key_file, public_key_string
         )
-        if ssh_options > 1:
-            print_error(
-                "Only one of --no-ssh-key, --gen-ssh-key, --public-key-file, "
-                "--public-key-string can be specified."
-            )
-            raise typer.Exit(1)
-
-        # --ssh flag without specific key options implies try default keys or generate
-        if ssh and ssh_options == 0:
-            # Treat --ssh as "enable SSH with default key or generate"
-            gen_ssh_key = True
-            ssh_options = 1
-
-        # Determine SSH key mode
-        ssh_key_mode = "disabled"  # Default: no SSH, TTY-only
-        public_key = None
-
-        if no_ssh_key:
-            ssh_key_mode = "none"
-        elif gen_ssh_key:
-            ssh_key_mode = "generate"
-        elif public_key_string:
-            ssh_key_mode = "upload"
-            public_key = public_key_string.strip()
-        elif public_key_file:
-            ssh_key_mode = "upload"
-            public_key = read_public_key_file(public_key_file)
-        # If no SSH option specified, keep disabled (TTY-only mode)
 
         # Parse memory
         memory_bytes = None
@@ -183,11 +234,7 @@ def create_vps(
             memory_bytes = parse_memory_string(memory)
 
         # Parse target for GPU IDs
-        target_str = target
-        gpu_ids = None
-        if target and "::" in target:
-            target_str, gpu_str = target.rsplit("::", 1)
-            gpu_ids = [int(g.strip()) for g in gpu_str.split(",") if g.strip()]
+        target_str, gpu_ids = _parse_target_string(target)
 
         result = client.create_vps(
             ssh_key_mode=ssh_key_mode,
@@ -215,31 +262,12 @@ def create_vps(
         console.print(panel)
 
         # Handle generated SSH key
-        if ssh_key_mode == "generate" and result.get("ssh_private_key"):
-            task_id = result["task_id"]
-            out_path = key_out_file or get_default_key_output_path(task_id)
-            out_path = os.path.expanduser(out_path)
+        if ssh_key_mode == "generate":
+            save_generated_ssh_keys(result, key_out_file=key_out_file, console=console)
 
-            # Ensure directory exists
-            ssh_dir = os.path.dirname(out_path)
-            if ssh_dir:
-                os.makedirs(ssh_dir, exist_ok=True)
-
-            # Write private key
-            with open(out_path, "w") as f:
-                f.write(result["ssh_private_key"])
-            os.chmod(out_path, 0o600)
-
-            # Write public key
-            if result.get("ssh_public_key"):
-                pub_path = f"{out_path}.pub"
-                with open(pub_path, "w") as f:
-                    f.write(result["ssh_public_key"])
-                os.chmod(pub_path, 0o644)
-
-            console.print(f"\n[green]SSH private key saved to:[/green] {out_path}")
-            console.print(f"[green]SSH public key saved to:[/green] {out_path}.pub")
-
+    except typer.BadParameter as e:
+        print_error(str(e))
+        raise typer.Exit(1)
     except ValueError as e:
         print_error(f"Invalid argument: {e}")
         raise typer.Exit(1)
