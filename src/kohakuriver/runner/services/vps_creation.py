@@ -287,6 +287,158 @@ async def _find_ssh_port(
     return 0
 
 
+async def _report_vps_failure(
+    task_id: int,
+    error_message: str,
+    start_time: datetime.datetime | None = None,
+    exit_code: int | None = None,
+) -> dict:
+    """
+    Report a VPS creation failure to the host and return an error result dict.
+
+    Args:
+        task_id: Task ID for this VPS.
+        error_message: Human-readable error description.
+        start_time: Optional start time (unused currently, reserved for future metrics).
+        exit_code: Optional process exit code to include in the status update.
+
+    Returns:
+        Dictionary with ``{"success": False, "error": error_message}``.
+    """
+    status_update = TaskStatusUpdate(
+        task_id=task_id,
+        status="failed",
+        message=error_message,
+        completed_at=datetime.datetime.now(),
+    )
+    if exit_code is not None:
+        status_update.exit_code = exit_code
+
+    await report_status_to_host(status_update)
+    return {
+        "success": False,
+        "error": error_message,
+    }
+
+
+async def _ensure_vps_image_available(
+    task_id: int,
+    container_name: str,
+    registry_image: str | None,
+    snapshot_tag: str | None,
+) -> tuple[bool, str | None]:
+    """
+    Ensure the Docker image required for VPS creation is available locally.
+
+    Decides between restoring from a snapshot (already local), pulling from a
+    registry, or syncing from shared storage.
+
+    Args:
+        task_id: Task ID for this VPS.
+        container_name: Base container image name (used for shared-storage sync).
+        registry_image: Optional registry image to pull instead of syncing.
+        snapshot_tag: If set, the snapshot image is assumed to already exist locally
+                      and no pull/sync is performed.
+
+    Returns:
+        A ``(success, error_message)`` tuple.  On success ``error_message`` is
+        ``None``; on failure it contains a human-readable description.
+    """
+    # Snapshot images are local commits — nothing to fetch.
+    if snapshot_tag:
+        return True, None
+
+    if registry_image:
+        logger.info(f"VPS {task_id}: Pulling registry image '{registry_image}'")
+        if not await docker_pull(registry_image):
+            error_message = f"Failed to pull registry image '{registry_image}'"
+            logger.error(f"VPS {task_id}: {error_message}")
+            return False, error_message
+    else:
+        logger.info(
+            f"VPS {task_id}: Checking Docker image sync status for '{container_name}'"
+        )
+        if not await ensure_docker_image_synced(task_id, container_name):
+            error_message = f"Docker image sync failed for container '{container_name}'"
+            logger.error(f"VPS {task_id}: {error_message}")
+            return False, error_message
+
+    return True, None
+
+
+async def _finalize_vps_creation(
+    task_id: int,
+    container_name: str,
+    ssh_key_mode: str,
+    required_cores: int,
+    required_gpus: list[int],
+    target_numa_node_id: int | None,
+    task_store: TaskStateStore,
+    start_time: datetime.datetime,
+) -> dict:
+    """
+    Finalize a successfully started VPS container.
+
+    Discovers the SSH port, persists the task in the local store, and reports
+    the ``running`` status back to the host.
+
+    Args:
+        task_id: Task ID for this VPS.
+        container_name: Full Docker container name (``vps_container_name(task_id)``).
+        ssh_key_mode: SSH key mode used during creation.
+        required_cores: Number of allocated CPU cores.
+        required_gpus: List of allocated GPU indices.
+        target_numa_node_id: NUMA node the container was pinned to.
+        task_store: Local task state store.
+        start_time: Timestamp recorded before creation began.
+
+    Returns:
+        Dictionary with ``{"success": True, "ssh_port": ..., "container_name": ...}``.
+    """
+    # Find the actual SSH port (only if SSH is enabled)
+    if ssh_key_mode == "disabled":
+        # No SSH - TTY-only mode
+        actual_ssh_port = 0
+        logger.info(f"VPS {task_id}: TTY-only mode, no SSH port")
+    else:
+        # Find SSH port - returns 0 if not found
+        actual_ssh_port = await _find_ssh_port(container_name)
+        if actual_ssh_port == 0:
+            logger.warning(
+                f"VPS {task_id}: SSH port not available, but VPS is running. "
+                "TTY terminal access will still work."
+            )
+
+    # Store VPS state
+    task_store.add_task(
+        task_id=task_id,
+        container_name=container_name,
+        allocated_cores=required_cores,
+        allocated_gpus=required_gpus,
+        numa_node=target_numa_node_id,
+    )
+
+    # Report running status with SSH port
+    await report_status_to_host(
+        TaskStatusUpdate(
+            task_id=task_id,
+            status="running",
+            started_at=start_time,
+            ssh_port=actual_ssh_port,
+        )
+    )
+
+    logger.info(
+        f"VPS {task_id} started in container {container_name}, SSH port: {actual_ssh_port}"
+    )
+
+    return {
+        "success": True,
+        "ssh_port": actual_ssh_port,
+        "container_name": container_name,
+    }
+
+
 async def create_vps(
     task_id: int,
     required_cores: int,
@@ -337,7 +489,7 @@ async def create_vps(
     )
 
     # =========================================================================
-    # Step 1: Check for existing snapshot to restore from
+    # Step 1: Resolve snapshot tag (if restoring)
     # =========================================================================
     should_restore = (
         restore_from_snapshot
@@ -357,48 +509,12 @@ async def create_vps(
 
     # =========================================================================
     # Step 2: Ensure Docker image is available
-    # (Skip if restoring from snapshot - we already have the image)
     # =========================================================================
-    if not snapshot_tag:
-        if registry_image:
-            logger.info(f"VPS {task_id}: Pulling registry image '{registry_image}'")
-            if not await docker_pull(registry_image):
-                error_message = f"Failed to pull registry image '{registry_image}'"
-                logger.error(f"VPS {task_id}: {error_message}")
-                await report_status_to_host(
-                    TaskStatusUpdate(
-                        task_id=task_id,
-                        status="failed",
-                        message=error_message,
-                        completed_at=datetime.datetime.now(),
-                    )
-                )
-                return {
-                    "success": False,
-                    "error": error_message,
-                }
-        else:
-            logger.info(
-                f"VPS {task_id}: Checking Docker image sync status for '{container_name}'"
-            )
-
-            if not await ensure_docker_image_synced(task_id, container_name):
-                error_message = (
-                    f"Docker image sync failed for container '{container_name}'"
-                )
-                logger.error(f"VPS {task_id}: {error_message}")
-                await report_status_to_host(
-                    TaskStatusUpdate(
-                        task_id=task_id,
-                        status="failed",
-                        message=error_message,
-                        completed_at=datetime.datetime.now(),
-                    )
-                )
-                return {
-                    "success": False,
-                    "error": error_message,
-                }
+    image_ok, image_error = await _ensure_vps_image_available(
+        task_id, container_name, registry_image, snapshot_tag
+    )
+    if not image_ok:
+        return await _report_vps_failure(task_id, image_error, start_time)
 
     # =========================================================================
     # Step 3: Build mount directories
@@ -465,81 +581,25 @@ async def create_vps(
                 f"Docker run failed: {stderr.decode(errors='replace').strip()}"
             )
             logger.error(f"VPS {task_id}: {error_message}")
-            await report_status_to_host(
-                TaskStatusUpdate(
-                    task_id=task_id,
-                    status="failed",
-                    message=error_message,
-                    exit_code=exit_code,
-                    completed_at=datetime.datetime.now(),
-                )
+            return await _report_vps_failure(
+                task_id, error_message, start_time, exit_code=exit_code
             )
-            return {
-                "success": False,
-                "error": error_message,
-            }
 
-        # Find the actual SSH port (only if SSH is enabled)
+        # Finalize: discover SSH port, persist state, report success
         container_name_full = vps_container_name(task_id)
-
-        if ssh_key_mode == "disabled":
-            # No SSH - TTY-only mode
-            actual_ssh_port = 0
-            logger.info(f"VPS {task_id}: TTY-only mode, no SSH port")
-        else:
-            # Find SSH port - returns 0 if not found
-            actual_ssh_port = await _find_ssh_port(container_name_full)
-            if actual_ssh_port == 0:
-                logger.warning(
-                    f"VPS {task_id}: SSH port not available, but VPS is running. "
-                    "TTY terminal access will still work."
-                )
-
-        # Store VPS state
-        task_store.add_task(
+        return await _finalize_vps_creation(
             task_id=task_id,
             container_name=container_name_full,
-            allocated_cores=required_cores,
-            allocated_gpus=required_gpus,
-            numa_node=target_numa_node_id,
+            ssh_key_mode=ssh_key_mode,
+            required_cores=required_cores,
+            required_gpus=required_gpus,
+            target_numa_node_id=target_numa_node_id,
+            task_store=task_store,
+            start_time=start_time,
         )
-
-        # Report running status with SSH port
-        await report_status_to_host(
-            TaskStatusUpdate(
-                task_id=task_id,
-                status="running",
-                started_at=start_time,
-                ssh_port=actual_ssh_port,
-            )
-        )
-
-        logger.info(
-            f"VPS {task_id} started in container {container_name_full}, SSH port: {actual_ssh_port}"
-        )
-
-        return {
-            "success": True,
-            "ssh_port": actual_ssh_port,
-            "container_name": container_name_full,
-        }
 
     except Exception as e:
         error_message = f"VPS creation failed: {e}"
         logger.error(error_message)
         logger.debug(format_traceback(e))
-
-        # Report failure
-        await report_status_to_host(
-            TaskStatusUpdate(
-                task_id=task_id,
-                status="failed",
-                message=error_message,
-                completed_at=datetime.datetime.now(),
-            )
-        )
-
-        return {
-            "success": False,
-            "error": error_message,
-        }
+        return await _report_vps_failure(task_id, error_message, start_time)

@@ -113,100 +113,168 @@ class RunnerOverlayManager:
             f"Overlay network setup complete: Docker network={self.DOCKER_NETWORK_NAME}"
         )
 
-    def _setup_network_sync(self) -> None:
-        """Set up VXLAN and bridge (synchronous)."""
-        ipr = self._get_ipr()
-        config = self._config
+    @staticmethod
+    def _find_link_by_name(ipr, name: str) -> tuple[int | None, dict | None]:
+        """
+        Find a network interface by name.
 
-        if config is None:
-            raise RuntimeError("OverlayConfig not set")
+        Scans all links from ipr.get_links() for one whose IFLA_IFNAME
+        matches the given name.
 
-        vni = self.base_vxlan_id + config.runner_id  # Unique VNI per runner
+        Args:
+            ipr: IPRoute instance.
+            name: Interface name to search for.
 
-        # Check/create bridge
-        bridge_idx = None
+        Returns:
+            (index, link_object) if found, or (None, None) if not found.
+        """
         for link in ipr.get_links():
-            if link.get_attr("IFLA_IFNAME") == self.BRIDGE_NAME:
-                bridge_idx = link["index"]
-                logger.info(f"Bridge {self.BRIDGE_NAME} already exists")
-                break
+            try:
+                ifname = link.get_attr("IFLA_IFNAME")
+            except (AttributeError, KeyError):
+                continue
+            if ifname == name:
+                return link.get("index", link["index"]), link
+        return None, None
+
+    def _ensure_bridge_sync(
+        self, ipr, bridge_name: str, gateway: str, subnet: str, mtu: int
+    ) -> int:
+        """
+        Ensure the overlay bridge exists and is configured.
+
+        Creates the bridge if absent, brings it up, and assigns the gateway
+        IP address if it is not already present.
+
+        Args:
+            ipr: IPRoute instance.
+            bridge_name: Name of the bridge interface.
+            gateway: Gateway IP address to assign to the bridge.
+            subnet: Subnet in CIDR notation (e.g. "10.1.0.0/16").
+            mtu: MTU value for the bridge.
+
+        Returns:
+            The bridge interface index.
+        """
+        bridge_idx, _ = self._find_link_by_name(ipr, bridge_name)
+
+        if bridge_idx is not None:
+            logger.info(f"Bridge {bridge_name} already exists")
+        else:
+            logger.info(f"Creating bridge: {bridge_name}")
+            ipr.link("add", ifname=bridge_name, kind="bridge")
+            bridge_idx, _ = self._find_link_by_name(ipr, bridge_name)
 
         if bridge_idx is None:
-            logger.info(f"Creating bridge: {self.BRIDGE_NAME}")
-            ipr.link("add", ifname=self.BRIDGE_NAME, kind="bridge")
-
-            for link in ipr.get_links():
-                if link.get_attr("IFLA_IFNAME") == self.BRIDGE_NAME:
-                    bridge_idx = link["index"]
-                    break
+            raise RuntimeError(f"Failed to create bridge {bridge_name}")
 
         # Bring bridge up
-        ipr.link("set", index=bridge_idx, state="up", mtu=self.mtu)
+        ipr.link("set", index=bridge_idx, state="up", mtu=mtu)
 
         # Add gateway IP to bridge if not present
         existing_addrs = list(ipr.get_addr(index=bridge_idx))
         has_ip = False
         for addr in existing_addrs:
-            if addr.get_attr("IFA_ADDRESS") == config.gateway:
+            if addr.get_attr("IFA_ADDRESS") == gateway:
                 has_ip = True
                 break
 
         if not has_ip:
             # Extract prefix from subnet (e.g., "10.1.0.0/16" -> 16)
-            prefix = int(config.subnet.split("/")[1])
-            logger.info(f"Adding IP {config.gateway}/{prefix} to {self.BRIDGE_NAME}")
-            ipr.addr("add", index=bridge_idx, address=config.gateway, prefixlen=prefix)
+            prefix = int(subnet.split("/")[1])
+            logger.info(f"Adding IP {gateway}/{prefix} to {bridge_name}")
+            ipr.addr("add", index=bridge_idx, address=gateway, prefixlen=prefix)
 
-        # Check/create VXLAN
-        vxlan_idx = None
-        for link in ipr.get_links():
-            if link.get_attr("IFLA_IFNAME") == self.VXLAN_NAME:
-                vxlan_idx = link["index"]
-                logger.info(f"VXLAN {self.VXLAN_NAME} already exists, checking config")
+        return bridge_idx
 
-                # Verify VNI matches
-                linkinfo = link.get_attr("IFLA_LINKINFO")
-                if linkinfo:
-                    vxlan_data = linkinfo.get_attr("IFLA_INFO_DATA")
-                    if vxlan_data:
-                        existing_vni = vxlan_data.get_attr("IFLA_VXLAN_ID")
-                        if existing_vni != vni:
-                            logger.warning(
-                                f"Existing VXLAN VNI {existing_vni} doesn't match expected {vni}, recreating"
-                            )
-                            ipr.link("del", index=vxlan_idx)
-                            vxlan_idx = None
-                break
+    def _ensure_vxlan_sync(
+        self,
+        ipr,
+        vxlan_name: str,
+        vni: int,
+        remote_ip: str,
+        local_ip: str,
+        vxlan_port: int,
+        mtu: int,
+    ) -> int:
+        """
+        Ensure the VXLAN device exists with the correct configuration.
+
+        If the device exists but has a mismatched VNI, it is deleted and
+        recreated. After creation the device is brought up with the
+        specified MTU.
+
+        Args:
+            ipr: IPRoute instance.
+            vxlan_name: Name of the VXLAN interface.
+            vni: VXLAN Network Identifier.
+            remote_ip: Remote (Host) physical IP for the VXLAN tunnel.
+            local_ip: Local (Runner) physical IP for the VXLAN tunnel.
+            vxlan_port: UDP port for VXLAN traffic.
+            mtu: MTU value for the VXLAN device.
+
+        Returns:
+            The VXLAN interface index.
+        """
+        vxlan_idx, vxlan_link = self._find_link_by_name(ipr, vxlan_name)
+
+        if vxlan_idx is not None:
+            logger.info(f"VXLAN {vxlan_name} already exists, checking config")
+
+            # Verify VNI matches
+            linkinfo = vxlan_link.get_attr("IFLA_LINKINFO") if vxlan_link else None
+            if linkinfo:
+                vxlan_data = linkinfo.get_attr("IFLA_INFO_DATA")
+                if vxlan_data:
+                    existing_vni = vxlan_data.get_attr("IFLA_VXLAN_ID")
+                    if existing_vni != vni:
+                        logger.warning(
+                            f"Existing VXLAN VNI {existing_vni} doesn't match expected {vni}, recreating"
+                        )
+                        ipr.link("del", index=vxlan_idx)
+                        vxlan_idx = None
 
         if vxlan_idx is None:
             logger.info(
-                f"Creating VXLAN: {self.VXLAN_NAME}, VNI={vni}, "
-                f"local={config.runner_physical_ip}, remote={config.host_physical_ip}, "
-                f"port={self.vxlan_port}"
+                f"Creating VXLAN: {vxlan_name}, VNI={vni}, "
+                f"local={local_ip}, remote={remote_ip}, "
+                f"port={vxlan_port}"
             )
             ipr.link(
                 "add",
-                ifname=self.VXLAN_NAME,
+                ifname=vxlan_name,
                 kind="vxlan",
                 vxlan_id=vni,
-                vxlan_local=config.runner_physical_ip,  # Bind to Runner's physical IP
-                vxlan_group=config.host_physical_ip,  # Unicast to Host
-                vxlan_port=self.vxlan_port,
+                vxlan_local=local_ip,  # Bind to Runner's physical IP
+                vxlan_group=remote_ip,  # Unicast to Host
+                vxlan_port=vxlan_port,
                 vxlan_learning=False,
             )
 
-            for link in ipr.get_links():
-                if link.get_attr("IFLA_IFNAME") == self.VXLAN_NAME:
-                    vxlan_idx = link["index"]
-                    break
+            vxlan_idx, _ = self._find_link_by_name(ipr, vxlan_name)
 
         if vxlan_idx is None:
-            raise RuntimeError(f"Failed to create VXLAN device {self.VXLAN_NAME}")
+            raise RuntimeError(f"Failed to create VXLAN device {vxlan_name}")
 
         # Set MTU and bring up
-        ipr.link("set", index=vxlan_idx, mtu=self.mtu, state="up")
+        ipr.link("set", index=vxlan_idx, mtu=mtu, state="up")
 
-        # Attach to bridge if not already
+        return vxlan_idx
+
+    @staticmethod
+    def _attach_vxlan_to_bridge_sync(ipr, vxlan_idx: int, bridge_idx: int) -> None:
+        """
+        Attach a VXLAN device to a bridge if not already attached.
+
+        Checks the current master of the VXLAN interface and sets it to
+        the bridge index when they differ.
+
+        Args:
+            ipr: IPRoute instance.
+            vxlan_idx: Interface index of the VXLAN device.
+            bridge_idx: Interface index of the bridge.
+        """
+        # Look up the VXLAN link to check its current master
         link_info = None
         for link in ipr.get_links():
             if link["index"] == vxlan_idx:
@@ -216,8 +284,36 @@ class RunnerOverlayManager:
         if link_info:
             master = link_info.get_attr("IFLA_MASTER")
             if master != bridge_idx:
-                logger.info(f"Attaching {self.VXLAN_NAME} to {self.BRIDGE_NAME}")
+                logger.info("Attaching VXLAN to bridge")
                 ipr.link("set", index=vxlan_idx, master=bridge_idx)
+
+    def _setup_network_sync(self) -> None:
+        """Set up VXLAN and bridge (synchronous)."""
+        config = self._config
+        if config is None:
+            raise RuntimeError("OverlayConfig not set")
+
+        ipr = self._get_ipr()
+        vni = self.base_vxlan_id + config.runner_id  # Unique VNI per runner
+
+        # Create/configure bridge
+        bridge_idx = self._ensure_bridge_sync(
+            ipr, self.BRIDGE_NAME, config.gateway, config.subnet, self.mtu
+        )
+
+        # Create/configure VXLAN
+        vxlan_idx = self._ensure_vxlan_sync(
+            ipr,
+            self.VXLAN_NAME,
+            vni,
+            config.host_physical_ip,
+            config.runner_physical_ip,
+            self.vxlan_port,
+            self.mtu,
+        )
+
+        # Attach VXLAN to bridge
+        self._attach_vxlan_to_bridge_sync(ipr, vxlan_idx, bridge_idx)
 
         # Add route to other overlay subnets via host
         # Host IP on this runner's subnet (e.g., 10.1.0.254)

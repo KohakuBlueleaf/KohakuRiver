@@ -12,6 +12,7 @@ import time as _time
 
 from kohakuriver.models.requests import TaskStatusUpdate
 from kohakuriver.qemu import VMCreateOptions, get_qemu_manager, get_vm_capability
+from kohakuriver.qemu.capability import GPUInfo
 from kohakuriver.runner.config import config
 from kohakuriver.runner.services.task_executor import report_status_to_host
 from kohakuriver.runner.services.vm_network_manager import get_vm_network_manager
@@ -24,6 +25,170 @@ from kohakuriver.storage.vault import TaskStateStore
 from kohakuriver.utils.logger import format_traceback, get_logger
 
 logger = get_logger(__name__)
+
+
+def _resolve_gpu_pci_addresses(
+    gpu_ids: list[int],
+    vfio_gpus: list[GPUInfo],
+    task_id: int,
+) -> list[str]:
+    """Map GPU integer IDs to PCI addresses for VFIO passthrough.
+
+    For each requested GPU ID:
+    - Finds the matching VfioGpu object
+    - Includes its audio companion device if present
+    - Discovers IOMMU group peers and auto-includes co-grouped GPUs
+    - Adds non-GPU IOMMU peers that must be co-bound
+
+    Returns a deduplicated, order-preserving list of PCI addresses.
+    """
+    gpu_pci_addresses: list[str] = []
+    gpu_by_addr = {g.pci_address: g for g in vfio_gpus}
+    requested_gpu_addrs: set[str] = set()
+
+    for gpu_id in gpu_ids:
+        for vfio_gpu in vfio_gpus:
+            if vfio_gpu.gpu_id == gpu_id:
+                requested_gpu_addrs.add(vfio_gpu.pci_address)
+                gpu_pci_addresses.append(vfio_gpu.pci_address)
+                if vfio_gpu.audio_pci:
+                    gpu_pci_addresses.append(vfio_gpu.audio_pci)
+                # Auto-include IOMMU group peers (other GPUs sharing the group)
+                for peer in vfio_gpu.iommu_group_peers:
+                    if peer in gpu_by_addr and peer not in requested_gpu_addrs:
+                        peer_gpu = gpu_by_addr[peer]
+                        logger.info(
+                            f"VM VPS {task_id}: GPU {vfio_gpu.pci_address} shares "
+                            f"IOMMU group {vfio_gpu.iommu_group} with GPU "
+                            f"{peer} — both will be passed through"
+                        )
+                        requested_gpu_addrs.add(peer)
+                        gpu_pci_addresses.append(peer)
+                        if peer_gpu.audio_pci:
+                            gpu_pci_addresses.append(peer_gpu.audio_pci)
+                    elif peer not in gpu_by_addr:
+                        # Non-GPU peer endpoint — still needs to be co-bound
+                        gpu_pci_addresses.append(peer)
+                break
+        else:
+            logger.warning(f"VM VPS {task_id}: GPU {gpu_id} not available for VFIO")
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for addr in gpu_pci_addresses:
+        if addr not in seen:
+            seen.add(addr)
+            deduped.append(addr)
+    return deduped
+
+
+def _build_vm_create_options(
+    task_id: int,
+    vm_image: str,
+    cores: int,
+    memory_mb: int,
+    disk_size: str,
+    gpu_pci_addresses: list[str],
+    ssh_public_key: str | None,
+    runner_pubkey: str,
+    net_info,
+) -> VMCreateOptions:
+    """Assemble VMCreateOptions including shared filesystem path setup.
+
+    Creates the local temp directory for the task and builds the full
+    options dataclass for QEMUManager.create_vm().
+    """
+    shared_host = os.path.join(config.SHARED_DIR, "shared_data")
+    local_temp_host = os.path.join(config.LOCAL_TEMP_DIR, str(task_id))
+    os.makedirs(local_temp_host, exist_ok=True)
+
+    return VMCreateOptions(
+        task_id=task_id,
+        base_image=vm_image,
+        cores=cores,
+        memory_mb=memory_mb,
+        disk_size=disk_size,
+        gpu_pci_addresses=gpu_pci_addresses,
+        ssh_public_key=ssh_public_key or "",
+        runner_public_key=runner_pubkey,
+        mac_address=net_info.mac_address,
+        vm_ip=net_info.vm_ip,
+        tap_device=net_info.tap_device,
+        gateway=net_info.gateway,
+        prefix_len=net_info.prefix_len,
+        dns_servers=net_info.dns_servers,
+        runner_url=net_info.runner_url,
+        shared_dir_host=shared_host,
+        local_temp_dir_host=local_temp_host,
+    )
+
+
+def _persist_vm_task_state(
+    task_store: TaskStateStore,
+    task_id: int,
+    cores: int,
+    gpu_ids: list[int] | None,
+    gpu_pci_addresses: list[str],
+    net_info,
+    ssh_port: int | None,
+    container_name: str,
+) -> None:
+    """Write VPS state to the task store for recovery and tracking."""
+    task_store[str(task_id)] = {
+        "task_id": task_id,
+        "container_name": container_name,
+        "allocated_cores": cores,
+        "allocated_gpus": gpu_ids or [],
+        "numa_node": None,
+        # VM recovery fields
+        "vm_ip": net_info.vm_ip,
+        "tap_device": net_info.tap_device,
+        "mac_address": net_info.mac_address,
+        "gpu_pci_addresses": gpu_pci_addresses,
+        "network_mode": net_info.mode,
+        "bridge_name": net_info.bridge_name,
+        "gateway": net_info.gateway,
+        "prefix_len": net_info.prefix_len,
+        "ssh_port": ssh_port,
+    }
+
+
+async def _cloud_init_watchdog(
+    task_id: int,
+    qemu_manager,
+    has_gpu: bool,
+    timeout_minutes: int = 10,
+) -> None:
+    """Watch for cloud-init completion and fail the task if it times out.
+
+    For GPU VMs the default timeout is 15 minutes (driver install is slow);
+    for non-GPU VMs it is 5 minutes. The caller can override via
+    *timeout_minutes*, but the has_gpu flag sets the actual timeout used
+    internally (15 min vs 5 min), matching the original behaviour.
+    """
+    timeout = 900 if has_gpu else 300  # 15 min for GPU, 5 min otherwise
+    try:
+        await asyncio.sleep(timeout)
+        # Check if VM agent has phoned home
+        vm_check = qemu_manager.get_vm(task_id)
+        if vm_check and not vm_check.ssh_ready:
+            logger.error(
+                f"VM VPS {task_id}: cloud-init did not complete within "
+                f"{timeout}s — marking as failed"
+            )
+            await report_status_to_host(
+                TaskStatusUpdate(
+                    task_id=task_id,
+                    status="failed",
+                    message=f"Cloud-init timed out after {timeout}s",
+                    completed_at=datetime.datetime.now(),
+                )
+            )
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.warning(f"VM VPS {task_id}: cloud-init watchdog error: {e}")
 
 
 async def create_vm_vps(
@@ -78,46 +243,11 @@ async def create_vm_vps(
             return {"success": False, "error": error_msg}
 
         # Resolve GPU PCI addresses from GPU IDs
-        gpu_pci_addresses = []
-        gpu_by_addr = {g.pci_address: g for g in capability.vfio_gpus}
-        requested_gpu_addrs = set()
-        if gpu_ids:
-            for gpu_id in gpu_ids:
-                for vfio_gpu in capability.vfio_gpus:
-                    if vfio_gpu.gpu_id == gpu_id:
-                        requested_gpu_addrs.add(vfio_gpu.pci_address)
-                        gpu_pci_addresses.append(vfio_gpu.pci_address)
-                        if vfio_gpu.audio_pci:
-                            gpu_pci_addresses.append(vfio_gpu.audio_pci)
-                        # Auto-include IOMMU group peers (other GPUs sharing the group)
-                        for peer in vfio_gpu.iommu_group_peers:
-                            if peer in gpu_by_addr and peer not in requested_gpu_addrs:
-                                peer_gpu = gpu_by_addr[peer]
-                                logger.info(
-                                    f"VM VPS {task_id}: GPU {vfio_gpu.pci_address} shares "
-                                    f"IOMMU group {vfio_gpu.iommu_group} with GPU "
-                                    f"{peer} — both will be passed through"
-                                )
-                                requested_gpu_addrs.add(peer)
-                                gpu_pci_addresses.append(peer)
-                                if peer_gpu.audio_pci:
-                                    gpu_pci_addresses.append(peer_gpu.audio_pci)
-                            elif peer not in gpu_by_addr:
-                                # Non-GPU peer endpoint — still needs to be co-bound
-                                gpu_pci_addresses.append(peer)
-                        break
-                else:
-                    logger.warning(
-                        f"VM VPS {task_id}: GPU {gpu_id} not available for VFIO"
-                    )
-            # Deduplicate while preserving order
-            seen = set()
-            deduped = []
-            for addr in gpu_pci_addresses:
-                if addr not in seen:
-                    seen.add(addr)
-                    deduped.append(addr)
-            gpu_pci_addresses = deduped
+        gpu_pci_addresses = (
+            _resolve_gpu_pci_addresses(gpu_ids, capability.vfio_gpus, task_id)
+            if gpu_ids
+            else []
+        )
 
         # Setup network
         net_manager = get_vm_network_manager()
@@ -134,62 +264,40 @@ async def create_vm_vps(
         except Exception as e:
             logger.warning(f"VM VPS {task_id}: could not get runner pubkey: {e}")
 
-        # Create VM
-        # Shared filesystem paths (mirror Docker bind mounts)
-        shared_host = os.path.join(config.SHARED_DIR, "shared_data")
-        local_temp_host = os.path.join(config.LOCAL_TEMP_DIR, str(task_id))
-        os.makedirs(local_temp_host, exist_ok=True)
-
+        # Build VM creation options
         qemu = get_qemu_manager()
-        options = VMCreateOptions(
+        options = _build_vm_create_options(
             task_id=task_id,
-            base_image=vm_image,
+            vm_image=vm_image,
             cores=cores,
             memory_mb=memory_mb,
             disk_size=disk_size,
             gpu_pci_addresses=gpu_pci_addresses,
-            ssh_public_key=ssh_public_key or "",
-            runner_public_key=runner_pubkey,
-            mac_address=net_info.mac_address,
-            vm_ip=net_info.vm_ip,
-            tap_device=net_info.tap_device,
-            gateway=net_info.gateway,
-            prefix_len=net_info.prefix_len,
-            dns_servers=net_info.dns_servers,
-            runner_url=net_info.runner_url,
-            shared_dir_host=shared_host,
-            local_temp_dir_host=local_temp_host,
+            ssh_public_key=ssh_public_key,
+            runner_pubkey=runner_pubkey,
+            net_info=net_info,
         )
 
+        # Create VM
         vm = await qemu.create_vm(options)
 
         # Start SSH port proxy (so host SSH proxy can reach VM)
         if ssh_port:
             await start_ssh_proxy(task_id, ssh_port, net_info.vm_ip)
 
-        # Store VPS state (include VM-specific fields for recovery)
-        task_store[str(task_id)] = {
-            "task_id": task_id,
-            "container_name": f"vm-{task_id}",
-            "allocated_cores": cores,
-            "allocated_gpus": gpu_ids or [],
-            "numa_node": None,
-            # VM recovery fields
-            "vm_ip": net_info.vm_ip,
-            "tap_device": net_info.tap_device,
-            "mac_address": net_info.mac_address,
-            "gpu_pci_addresses": gpu_pci_addresses,
-            "network_mode": net_info.mode,
-            "bridge_name": net_info.bridge_name,
-            "gateway": net_info.gateway,
-            "prefix_len": net_info.prefix_len,
-            "ssh_port": ssh_port,
-        }
+        # Persist VPS state for recovery and tracking
+        _persist_vm_task_state(
+            task_store=task_store,
+            task_id=task_id,
+            cores=cores,
+            gpu_ids=gpu_ids,
+            gpu_pci_addresses=gpu_pci_addresses,
+            net_info=net_info,
+            ssh_port=ssh_port,
+            container_name=f"vm-{task_id}",
+        )
 
-        # VM stays in "assigning" until cloud-init completes and the VM agent
-        # phones home (mark_vm_ready → _ensure_running_reported).
-        # Cloud-init installs packages, NVIDIA drivers (if GPU), then starts
-        # the VM agent as the last runcmd step.
+        # Report assigning status while cloud-init provisions the VM
         has_gpu = bool(gpu_pci_addresses)
         if has_gpu:
             provision_msg = "Provisioning VM — installing packages and NVIDIA drivers via cloud-init"
@@ -208,32 +316,8 @@ async def create_vm_vps(
             f"complete (phone-home will mark as running)"
         )
 
-        # Background: watch for cloud-init completion timeout
-        async def _cloud_init_watchdog():
-            timeout = 900 if has_gpu else 300  # 15 min for GPU, 5 min otherwise
-            try:
-                await asyncio.sleep(timeout)
-                # Check if VM agent has phoned home
-                vm_check = qemu.get_vm(task_id)
-                if vm_check and not vm_check.ssh_ready:
-                    logger.error(
-                        f"VM VPS {task_id}: cloud-init did not complete within "
-                        f"{timeout}s — marking as failed"
-                    )
-                    await report_status_to_host(
-                        TaskStatusUpdate(
-                            task_id=task_id,
-                            status="failed",
-                            message=f"Cloud-init timed out after {timeout}s",
-                            completed_at=datetime.datetime.now(),
-                        )
-                    )
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.warning(f"VM VPS {task_id}: cloud-init watchdog error: {e}")
-
-        asyncio.create_task(_cloud_init_watchdog())
+        # Spawn background watchdog for cloud-init timeout
+        asyncio.create_task(_cloud_init_watchdog(task_id, qemu, has_gpu))
 
         return {
             "success": True,

@@ -402,6 +402,141 @@ def build_docker_run_command(
     return docker_cmd
 
 
+def _interpret_exit_code(
+    exit_code: int, stderr_data: bytes | None
+) -> tuple[str, str | None]:
+    """
+    Map a container exit code to a (status, message) pair.
+
+    Args:
+        exit_code: Container process exit code.
+        stderr_data: Raw stderr output from the docker process (may be None).
+
+    Returns:
+        Tuple of (status, message). message may be None for successful completion.
+    """
+    match exit_code:
+        case 0:
+            status = "completed"
+            message = None
+        case 137:
+            status = "killed_oom"
+            message = "Container killed (SIGKILL) - likely out of memory."
+        case 143:
+            status = "failed"
+            message = "Container terminated (SIGTERM)."
+        case _:
+            status = "failed"
+            message = f"Container exited with code {exit_code}."
+            # Include docker stderr in error message if present
+            if stderr_data:
+                stderr_str = stderr_data.decode(errors="replace").strip()
+                if stderr_str:
+                    message += f" Docker stderr: {stderr_str[:500]}"
+    return status, message
+
+
+async def _ensure_image_ready(
+    task_id: int,
+    container_name: str,
+    registry_image: str | None,
+) -> bool:
+    """
+    Ensure the Docker image is available for running a task.
+
+    Handles two paths:
+    - If registry_image is set, pull from registry.
+    - Otherwise, sync from shared storage.
+
+    Args:
+        task_id: Task ID (for logging).
+        container_name: KohakuRiver container name.
+        registry_image: Registry image to pull, or None for shared-storage sync.
+
+    Returns:
+        True if the image is ready, False on failure.
+    """
+    if registry_image:
+        logger.info(
+            f"[Task {task_id}] Step 1: Pulling registry image '{registry_image}'"
+        )
+        if not await docker_pull(registry_image):
+            logger.error(
+                f"[Task {task_id}] Failed to pull registry image '{registry_image}'"
+            )
+            return False
+    else:
+        logger.info(
+            f"[Task {task_id}] Step 1: Checking Docker image sync status for '{container_name}'"
+        )
+        if not await ensure_docker_image_synced(task_id, container_name):
+            logger.error(
+                f"[Task {task_id}] Docker image sync failed for container '{container_name}'"
+            )
+            return False
+
+    logger.info(f"[Task {task_id}] Step 1 complete: Docker image ready")
+    return True
+
+
+def _build_task_env(
+    task_id: int,
+    env_vars: dict[str, str],
+    target_numa_node_id: int | None,
+) -> dict[str, str]:
+    """
+    Build the full environment variable dict for a task container.
+
+    Merges user-supplied env_vars with KohakuRiver-internal variables.
+
+    Args:
+        task_id: Task ID.
+        env_vars: User-supplied environment variables.
+        target_numa_node_id: NUMA node ID if applicable, or None.
+
+    Returns:
+        Complete environment variable dict.
+    """
+    task_env = env_vars.copy()
+    task_env["KOHAKURIVER_TASK_ID"] = str(task_id)
+    task_env["KOHAKURIVER_LOCAL_TEMP_DIR"] = config.LOCAL_TEMP_DIR
+    task_env["KOHAKURIVER_SHARED_DIR"] = config.SHARED_DIR
+    if target_numa_node_id is not None:
+        task_env["KOHAKURIVER_TARGET_NUMA_NODE"] = str(target_numa_node_id)
+    return task_env
+
+
+async def _report_task_failure(
+    task_id: int,
+    message: str,
+    start_time: datetime.datetime,
+    task_store: TaskStateStore,
+) -> None:
+    """
+    Report a task failure to the host, update the task store, and log a failure banner.
+
+    This consolidates the repeated failure-reporting pattern used in execute_task.
+
+    Args:
+        task_id: Task ID.
+        message: Human-readable failure message.
+        start_time: When the task started.
+        task_store: Task state store (task is removed if present).
+    """
+    logger.error(f"[Task {task_id}] {message}")
+    task_store.remove_task(task_id)
+    await report_status_to_host(
+        TaskStatusUpdate(
+            task_id=task_id,
+            status="failed",
+            message=message,
+            started_at=start_time,
+            completed_at=datetime.datetime.now(),
+        )
+    )
+    logger.info(f"[Task {task_id}] ========== TASK EXECUTION FAILED ==========")
+
+
 async def execute_task(
     task_id: int,
     command: str,
@@ -465,46 +600,23 @@ async def execute_task(
     # =========================================================================
     # Step 1: Ensure Docker image is available
     # =========================================================================
-    if registry_image:
-        logger.info(
-            f"[Task {task_id}] Step 1: Pulling registry image '{registry_image}'"
-        )
-        if not await docker_pull(registry_image):
+    if not await _ensure_image_ready(task_id, container_name, registry_image):
+        if registry_image:
             error_message = f"Failed to pull registry image '{registry_image}'"
-            logger.error(f"[Task {task_id}] {error_message}")
-            await report_status_to_host(
-                TaskStatusUpdate(
-                    task_id=task_id,
-                    status="failed",
-                    message=error_message,
-                    completed_at=datetime.datetime.now(),
-                )
-            )
-            logger.info(
-                f"[Task {task_id}] ========== TASK EXECUTION FAILED (image pull) =========="
-            )
-            return
-    else:
-        logger.info(
-            f"[Task {task_id}] Step 1: Checking Docker image sync status for '{container_name}'"
-        )
-        if not await ensure_docker_image_synced(task_id, container_name):
+        else:
             error_message = f"Docker image sync failed for container '{container_name}'"
-            logger.error(f"[Task {task_id}] {error_message}")
-            await report_status_to_host(
-                TaskStatusUpdate(
-                    task_id=task_id,
-                    status="failed",
-                    message=error_message,
-                    completed_at=datetime.datetime.now(),
-                )
+        await report_status_to_host(
+            TaskStatusUpdate(
+                task_id=task_id,
+                status="failed",
+                message=error_message,
+                completed_at=datetime.datetime.now(),
             )
-            logger.info(
-                f"[Task {task_id}] ========== TASK EXECUTION FAILED (image sync) =========="
-            )
-            return
-
-    logger.info(f"[Task {task_id}] Step 1 complete: Docker image ready")
+        )
+        logger.info(
+            f"[Task {task_id}] ========== TASK EXECUTION FAILED (image) =========="
+        )
+        return
 
     # =========================================================================
     # Step 2: Build task configuration
@@ -512,12 +624,7 @@ async def execute_task(
     logger.info(f"[Task {task_id}] Step 2: Building task configuration...")
 
     # Build environment variables
-    task_env = env_vars.copy()
-    task_env["KOHAKURIVER_TASK_ID"] = str(task_id)
-    task_env["KOHAKURIVER_LOCAL_TEMP_DIR"] = config.LOCAL_TEMP_DIR
-    task_env["KOHAKURIVER_SHARED_DIR"] = config.SHARED_DIR
-    if target_numa_node_id is not None:
-        task_env["KOHAKURIVER_TARGET_NUMA_NODE"] = str(target_numa_node_id)
+    task_env = _build_task_env(task_id, env_vars, target_numa_node_id)
     logger.debug(f"[Task {task_id}] Environment variables: {list(task_env.keys())}")
 
     # Get NUMA prefix if applicable
@@ -635,26 +742,7 @@ async def execute_task(
         task_store.remove_task(task_id)
 
         # Determine final status
-        # Exit code 137 = 128 + 9 (SIGKILL) - could be OOM or manual kill
-        # Exit code 143 = 128 + 15 (SIGTERM) - graceful termination
-        match exit_code:
-            case 0:
-                status = "completed"
-                message = None
-            case 137:
-                status = "killed_oom"
-                message = "Container killed (SIGKILL) - likely out of memory."
-            case 143:
-                status = "failed"
-                message = "Container terminated (SIGTERM)."
-            case _:
-                status = "failed"
-                message = f"Container exited with code {exit_code}."
-                # Include docker stderr in error message if present
-                if stderr_data:
-                    stderr_str = stderr_data.decode(errors="replace").strip()
-                    if stderr_str:
-                        message += f" Docker stderr: {stderr_str[:500]}"
+        status, message = _interpret_exit_code(exit_code, stderr_data)
 
         logger.info(f"[Task {task_id}] Final status: {status}")
         if message:
@@ -679,24 +767,10 @@ async def execute_task(
         )
 
     except Exception as e:
-        error_message = f"Task execution failed: {e}"
-        logger.error(f"[Task {task_id}] {error_message}")
         logger.error(f"[Task {task_id}] Traceback:\n{format_traceback(e)}")
-
-        # Remove from tracking
-        task_store.remove_task(task_id)
-
-        # Report failure
-        await report_status_to_host(
-            TaskStatusUpdate(
-                task_id=task_id,
-                status="failed",
-                message=error_message,
-                started_at=start_time,
-                completed_at=datetime.datetime.now(),
-            )
+        await _report_task_failure(
+            task_id, f"Task execution failed: {e}", start_time, task_store
         )
-        logger.info(f"[Task {task_id}] ========== TASK EXECUTION FAILED ==========")
 
 
 def kill_task(
