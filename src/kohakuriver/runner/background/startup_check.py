@@ -9,6 +9,7 @@ All Docker operations are wrapped in asyncio.to_thread to prevent blocking.
 
 import asyncio
 import datetime
+import json
 import os
 import subprocess
 
@@ -89,6 +90,69 @@ def _is_process_running(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+# =============================================================================
+# Persistent VM State Recovery
+# =============================================================================
+
+
+def _restore_vm_state_from_disk(task_store: TaskStateStore) -> None:
+    """Scan VM instance directories for persistent vm-state.json files.
+
+    The vault (task_store) lives in LOCAL_TEMP_DIR which may be volatile
+    (/tmp). If the vault was wiped (e.g. reboot cleared /tmp), this
+    function re-populates it from the JSON state files persisted in
+    VM_INSTANCES_DIR (which is on persistent storage).
+    """
+    instances_dir = config.VM_INSTANCES_DIR
+    if not os.path.isdir(instances_dir):
+        return
+
+    restored = 0
+    for entry in os.listdir(instances_dir):
+        instance_dir = os.path.join(instances_dir, entry)
+        if not os.path.isdir(instance_dir):
+            continue
+
+        state_file = os.path.join(instance_dir, "vm-state.json")
+        if not os.path.isfile(state_file):
+            continue
+
+        try:
+            task_id = int(entry)
+        except ValueError:
+            continue
+
+        # Skip if already in vault
+        if task_store.get_task(task_id) is not None:
+            continue
+
+        try:
+            with open(state_file) as f:
+                vm_data = json.load(f)
+            task_store[str(task_id)] = vm_data
+            restored += 1
+            logger.info(
+                f"[VM Recovery] Restored VM {task_id} state from persistent storage"
+            )
+        except Exception as e:
+            logger.warning(f"[VM Recovery] Failed to read VM state for {entry}: {e}")
+
+    if restored:
+        logger.info(
+            f"[VM Recovery] Restored {restored} VM state(s) from persistent storage"
+        )
+
+
+def _remove_vm_state_file(task_id: int) -> None:
+    """Remove the persistent VM state file."""
+    instance_dir = vm_instance_dir(config.VM_INSTANCES_DIR, task_id)
+    state_file = os.path.join(instance_dir, "vm-state.json")
+    try:
+        os.unlink(state_file)
+    except OSError:
+        pass
 
 
 # =============================================================================
@@ -255,8 +319,9 @@ async def _cleanup_dead_vm(
         )
     )
 
-    # Remove from vault
+    # Remove from vault and persistent state file
     task_store.remove_task(task_id)
+    _remove_vm_state_file(task_id)
     logger.info(f"[VM Recovery] Cleaned up dead VM {task_id}")
 
 
@@ -270,6 +335,7 @@ async def startup_check(task_store: TaskStateStore):
     Check all running containers and VMs on startup and reconcile state.
 
     This function:
+    0. Restore VM state from persistent storage if vault was lost
     1. Gets all tracked tasks from the store
     2. For VM tasks (container_name starts with "vm-"):
        - Check QEMU pidfile, re-adopt if running, cleanup if dead
@@ -278,6 +344,9 @@ async def startup_check(task_store: TaskStateStore):
        - Report stopped for missing, recover SSH ports for running VPS
     4. Check for orphan Docker containers
     """
+    # Phase 0: Restore VM state from persistent JSON files if vault was wiped
+    _restore_vm_state_from_disk(task_store)
+
     # Separate VM tasks from Docker tasks
     tracked_tasks = list(task_store.items())
     vm_tasks = []

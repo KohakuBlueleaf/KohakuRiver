@@ -535,8 +535,8 @@ class QEMUManager:
                 ]
             )
 
-        # GPU passthrough via VFIO — vm_vps_manager already resolves the
-        # complete list of PCI addresses (GPUs + audio + IOMMU group peers)
+        # GPU passthrough via VFIO — vm_vps_manager resolves
+        # GPU + audio companion PCI addresses
         for pci_addr in options.gpu_pci_addresses:
             cmd.extend(["-device", f"vfio-pci,host={pci_addr}"])
 

@@ -198,9 +198,23 @@ async def bind_to_vfio(pci_address: str) -> None:
     await asyncio.to_thread(_bind_sync)
 
 
+def _is_nvidia_device(pci_address: str) -> bool:
+    """Check if a PCI device is from NVIDIA (vendor 0x10de)."""
+    try:
+        with open(f"/sys/bus/pci/devices/{pci_address}/vendor") as f:
+            return f.read().strip() == "0x10de"
+    except OSError:
+        return False
+
+
 async def unbind_from_vfio(pci_address: str) -> None:
     """
-    Unbind GPU from vfio-pci and let kernel rebind default driver.
+    Unbind device from vfio-pci and let kernel rebind its original driver.
+
+    For NVIDIA devices: stops nvidia-persistenced, then tries nvidia/bind
+    as fallback if drivers_probe doesn't restore it.
+    For non-NVIDIA devices (PLX DMA, etc.): relies on drivers_probe to
+    restore the original driver automatically.
 
     Args:
         pci_address: PCI address
@@ -216,9 +230,12 @@ async def unbind_from_vfio(pci_address: str) -> None:
             logger.info(f"{pci_address} not bound to vfio-pci (current: {current})")
             return
 
-        # Stop nvidia-persistenced before rebinding — it holds fds that
-        # block the nvidia driver from re-attaching to the device.
-        _stop_nvidia_persistenced()
+        is_nvidia = _is_nvidia_device(pci_address)
+
+        # Only stop nvidia-persistenced for NVIDIA devices — it holds fds
+        # that block the nvidia driver from re-attaching.
+        if is_nvidia:
+            _stop_nvidia_persistenced()
 
         # Unbind from vfio-pci
         logger.info(f"Unbinding {pci_address} from vfio-pci")
@@ -245,18 +262,23 @@ async def unbind_from_vfio(pci_address: str) -> None:
         except VFIOBindError:
             pass  # Some devices don't support clearing override
 
-        # Try drivers_probe first, then explicit nvidia/bind as fallback
+        # Let kernel re-probe the right driver
         _write_sysfs_timeout("/sys/bus/pci/drivers_probe", pci_address, timeout=5.0)
 
         new_driver = get_current_driver(pci_address)
-        if new_driver != "nvidia":
+
+        # Only try explicit nvidia/bind for NVIDIA devices
+        if is_nvidia and new_driver != "nvidia":
             logger.info(
                 f"drivers_probe did not restore nvidia for {pci_address} "
                 f"(driver: {new_driver}), trying explicit nvidia/bind"
             )
-            _write_sysfs_timeout(
-                "/sys/bus/pci/drivers/nvidia/bind", pci_address, timeout=5.0
-            )
+            try:
+                _write_sysfs_timeout(
+                    "/sys/bus/pci/drivers/nvidia/bind", pci_address, timeout=5.0
+                )
+            except VFIOBindError as e:
+                logger.warning(f"Explicit nvidia/bind failed for {pci_address}: {e}")
             new_driver = get_current_driver(pci_address)
 
         logger.info(f"{pci_address} rebound to: {new_driver or 'none'}")
@@ -265,7 +287,12 @@ async def unbind_from_vfio(pci_address: str) -> None:
 
 
 def get_iommu_group_non_bridge_devices(pci_address: str) -> list[str]:
-    """All non-bridge devices in the same IOMMU group (including self)."""
+    """All non-bridge devices in the same IOMMU group (including self).
+
+    Bridge devices (PCI class 0x06xx) are kernel-managed and excluded.
+    Everything else — GPUs, audio, PLX DMA endpoints — must be bound
+    to vfio-pci together for the VFIO group to be viable.
+    """
     group = get_iommu_group(pci_address)
     if group is None:
         return [pci_address]
@@ -276,7 +303,10 @@ def get_iommu_group_non_bridge_devices(pci_address: str) -> list[str]:
 async def bind_iommu_group(pci_address: str) -> list[str]:
     """Bind ALL non-bridge endpoints in the IOMMU group to vfio-pci.
 
-    Required by VFIO kernel — partial group binding fails.
+    VFIO kernel requires every non-bridge device in a group to be bound
+    to vfio-pci for the group to be viable. This includes PLX DMA
+    endpoints and other non-GPU devices sharing the group.
+
     Returns list of all PCI addresses that were bound.
     """
     devices = get_iommu_group_non_bridge_devices(pci_address)
@@ -287,8 +317,6 @@ async def bind_iommu_group(pci_address: str) -> list[str]:
             bound.append(dev)
     finally:
         # Restart nvidia-persistenced so remaining GPUs keep persistence mode.
-        # bind_to_vfio stops it when unbinding from nvidia; we restart after
-        # the group is done so it only grabs GPUs still bound to nvidia.
         if bound:
             await asyncio.to_thread(_start_nvidia_persistenced)
     logger.info(f"Bound IOMMU group for {pci_address}: {bound}")
@@ -297,6 +325,10 @@ async def bind_iommu_group(pci_address: str) -> list[str]:
 
 async def unbind_iommu_group(pci_address: str) -> list[str]:
     """Unbind all non-bridge endpoints in the group from vfio-pci.
+
+    Each device is restored to its original driver via drivers_probe.
+    NVIDIA devices get an explicit nvidia/bind fallback; non-NVIDIA
+    devices (PLX DMA, etc.) rely on drivers_probe alone.
 
     Returns list of all PCI addresses that were unbound.
     """
@@ -311,8 +343,6 @@ async def unbind_iommu_group(pci_address: str) -> list[str]:
                 logger.warning(f"Failed to unbind {dev} from vfio-pci: {e}")
     finally:
         # Restart nvidia-persistenced so restored GPUs get persistence mode.
-        # unbind_from_vfio stops it before rebinding to nvidia; we restart
-        # after the group is done so it grabs all newly-available GPUs.
         if unbound:
             await asyncio.to_thread(_start_nvidia_persistenced)
     logger.info(f"Unbound IOMMU group for {pci_address}: {unbound}")

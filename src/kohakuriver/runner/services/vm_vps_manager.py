@@ -7,12 +7,14 @@ Called by vps.py endpoints when vps_backend="qemu".
 
 import asyncio
 import datetime
+import json
 import os
 import time as _time
 
 from kohakuriver.models.requests import TaskStatusUpdate
 from kohakuriver.qemu import VMCreateOptions, get_qemu_manager, get_vm_capability
 from kohakuriver.qemu.capability import GPUInfo
+from kohakuriver.qemu.naming import vm_instance_dir
 from kohakuriver.runner.config import config
 from kohakuriver.runner.services.task_executor import report_status_to_host
 from kohakuriver.runner.services.vm_network_manager import get_vm_network_manager
@@ -37,8 +39,10 @@ def _resolve_gpu_pci_addresses(
     For each requested GPU ID:
     - Finds the matching VfioGpu object
     - Includes its audio companion device if present
-    - Discovers IOMMU group peers and auto-includes co-grouped GPUs
-    - Adds non-GPU IOMMU peers that must be co-bound
+    - Auto-includes co-grouped GPUs sharing the same IOMMU group
+
+    Non-GPU IOMMU peers (PLX DMA, bridges, etc.) are ignored —
+    ACS override handles isolation.
 
     Returns a deduplicated, order-preserving list of PCI addresses.
     """
@@ -66,9 +70,8 @@ def _resolve_gpu_pci_addresses(
                         gpu_pci_addresses.append(peer)
                         if peer_gpu.audio_pci:
                             gpu_pci_addresses.append(peer_gpu.audio_pci)
-                    elif peer not in gpu_by_addr:
-                        # Non-GPU peer endpoint — still needs to be co-bound
-                        gpu_pci_addresses.append(peer)
+                    # Non-GPU peers (PLX DMA, etc.) are ignored —
+                    # ACS override handles IOMMU isolation.
                 break
         else:
             logger.warning(f"VM VPS {task_id}: GPU {gpu_id} not available for VFIO")
@@ -134,8 +137,14 @@ def _persist_vm_task_state(
     ssh_port: int | None,
     container_name: str,
 ) -> None:
-    """Write VPS state to the task store for recovery and tracking."""
-    task_store[str(task_id)] = {
+    """Write VPS state to the task store and a persistent JSON file.
+
+    The vault (task_store) may live in /tmp which can be lost on reboot.
+    The JSON state file in the VM instance directory (under VM_INSTANCES_DIR)
+    is always on persistent storage, enabling recovery even when the vault
+    is wiped.
+    """
+    state_data = {
         "task_id": task_id,
         "container_name": container_name,
         "allocated_cores": cores,
@@ -152,6 +161,32 @@ def _persist_vm_task_state(
         "prefix_len": net_info.prefix_len,
         "ssh_port": ssh_port,
     }
+    task_store[str(task_id)] = state_data
+
+    # Also persist to a JSON file in the instance directory
+    _write_vm_state_file(task_id, state_data)
+
+
+def _write_vm_state_file(task_id: int, state_data: dict) -> None:
+    """Write VM state to a persistent JSON file in the instance directory."""
+    instance_dir = vm_instance_dir(config.VM_INSTANCES_DIR, task_id)
+    state_file = os.path.join(instance_dir, "vm-state.json")
+    try:
+        os.makedirs(instance_dir, exist_ok=True)
+        with open(state_file, "w") as f:
+            json.dump(state_data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"VM {task_id}: failed to write persistent state file: {e}")
+
+
+def remove_vm_state_file(task_id: int) -> None:
+    """Remove the persistent VM state file."""
+    instance_dir = vm_instance_dir(config.VM_INSTANCES_DIR, task_id)
+    state_file = os.path.join(instance_dir, "vm-state.json")
+    try:
+        os.unlink(state_file)
+    except OSError:
+        pass
 
 
 async def _cloud_init_watchdog(
@@ -370,6 +405,7 @@ async def stop_vm_vps(
 
         # Remove from tracking
         task_store.remove_task(task_id)
+        remove_vm_state_file(task_id)
 
         logger.info(f"VM VPS {task_id} stopped")
         return success

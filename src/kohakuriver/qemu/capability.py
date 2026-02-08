@@ -431,18 +431,17 @@ def discover_vfio_gpus() -> list[GPUInfo]:
         if non_gpu_non_audio_peers:
             logger.warning(
                 f"GPU {pci_address}: IOMMU group {iommu} has non-GPU/audio "
-                f"endpoints that will be co-bound to vfio-pci: "
+                f"endpoints (ignored with ACS override): "
                 f"{non_gpu_non_audio_peers}"
             )
 
-        # Build list of peers that must be co-bound (non-bridge, non-self,
-        # non-audio endpoints — i.e. other GPUs and unknown endpoints)
+        # Build list of co-grouped GPUs only (other GPUs sharing the IOMMU
+        # group that must be co-allocated). Non-GPU peers like PLX DMA
+        # bridges are ignored — ACS override handles isolation.
         iommu_group_peers = [
             p
             for p in group_peers
-            if p != audio_pci
-            and _get_pci_device_class(p) not in (None,)
-            and not _get_pci_device_class(p).startswith("0x0403")
+            if (_get_pci_device_class(p) or "").startswith("0x03")
         ]
 
         name = _get_gpu_name(pci_address)
