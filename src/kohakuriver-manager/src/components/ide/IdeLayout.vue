@@ -13,8 +13,7 @@ import { useIdeStore } from '@/stores/ide'
 import { useFileSystem } from '@/composables/useFileSystem'
 import SplitPane from './common/SplitPane.vue'
 import FileTree from './file-tree/FileTree.vue'
-import EditorPane from './editor/EditorPane.vue'
-import TerminalPane from './terminal/TerminalPane.vue'
+import EditorTerminalSplit from './EditorTerminalSplit.vue'
 
 const props = defineProps({
   /**
@@ -54,11 +53,11 @@ const fs = useFileSystem()
 
 // Refs
 const fileTreeRef = ref(null)
-const editorRef = ref(null)
-const terminalRef = ref(null)
+const editorTerminalRef = ref(null)
 
-// Computed for terminal position
-const isTerminalRight = computed(() => ideStore.terminalPosition === 'right')
+// Convenience accessors for child refs (used by expose and event handlers)
+const editorRef = computed(() => editorTerminalRef.value?.editorRef)
+const terminalRef = computed(() => editorTerminalRef.value?.terminalRef)
 
 /**
  * Handle file selection in tree.
@@ -192,165 +191,44 @@ defineExpose({
 
 <template>
   <div class="ide-layout">
-    <!-- Layout with terminal on right -->
-    <template v-if="isTerminalRight">
-      <!-- File Tree | (Editor | Terminal) -->
-      <SplitPane
-        v-if="ideStore.showFileTree"
-        direction="horizontal"
-        :initial-size="ideStore.fileTreeWidth"
-        :min-size="150"
-        :max-size="400"
-        storage-key="ide-file-tree"
-        @update:size="ideStore.setFileTreeWidth">
-        <template #first>
-          <FileTree
-            ref="fileTreeRef"
-            :show-hidden="true"
-            :mode="fileTreeMode"
-            @file-select="handleFileSelect"
-            @file-open="handleFileOpen"
-            @refresh="handleTreeRefresh" />
-        </template>
-        <template #second>
-          <!-- Editor | Terminal -->
-          <SplitPane
-            v-if="ideStore.showTerminal"
-            direction="horizontal"
-            :initial-size="ideStore.terminalSize"
-            :min-size="200"
-            :max-size="600"
-            storage-key="ide-terminal-right"
-            :reverse="true"
-            @update:size="ideStore.setTerminalSize">
-            <template #first>
-              <EditorPane ref="editorRef" />
-            </template>
-            <template #second>
-              <TerminalPane
-                ref="terminalRef"
-                :task-id="taskId"
-                :type="type"
-                :container-name="containerName"
-                @connected="handleTerminalConnected"
-                @disconnected="handleTerminalDisconnected" />
-            </template>
-          </SplitPane>
-          <EditorPane
-            v-else
-            ref="editorRef" />
-        </template>
-      </SplitPane>
-
-      <!-- No file tree - just Editor | Terminal -->
-      <template v-else>
-        <SplitPane
-          v-if="ideStore.showTerminal"
-          direction="horizontal"
-          :initial-size="ideStore.terminalSize"
-          :min-size="200"
-          :max-size="600"
-          storage-key="ide-terminal-right"
-          :reverse="true"
-          @update:size="ideStore.setTerminalSize">
-          <template #first>
-            <EditorPane ref="editorRef" />
-          </template>
-          <template #second>
-            <TerminalPane
-              ref="terminalRef"
-              :task-id="taskId"
-              :type="type"
-              :container-name="containerName"
-              @connected="handleTerminalConnected"
-              @disconnected="handleTerminalDisconnected" />
-          </template>
-        </SplitPane>
-        <EditorPane
-          v-else
-          ref="editorRef" />
+    <!-- File Tree | Editor + Terminal -->
+    <SplitPane
+      v-if="ideStore.showFileTree"
+      direction="horizontal"
+      :initial-size="ideStore.fileTreeWidth"
+      :min-size="150"
+      :max-size="400"
+      storage-key="ide-file-tree"
+      @update:size="ideStore.setFileTreeWidth">
+      <template #first>
+        <FileTree
+          ref="fileTreeRef"
+          :show-hidden="true"
+          :mode="fileTreeMode"
+          @file-select="handleFileSelect"
+          @file-open="handleFileOpen"
+          @refresh="handleTreeRefresh" />
       </template>
-    </template>
-
-    <!-- Layout with terminal on bottom -->
-    <template v-else>
-      <!-- File Tree | (Editor / Terminal) -->
-      <SplitPane
-        v-if="ideStore.showFileTree"
-        direction="horizontal"
-        :initial-size="ideStore.fileTreeWidth"
-        :min-size="150"
-        :max-size="400"
-        storage-key="ide-file-tree"
-        @update:size="ideStore.setFileTreeWidth">
-        <template #first>
-          <FileTree
-            ref="fileTreeRef"
-            :show-hidden="true"
-            :mode="fileTreeMode"
-            @file-select="handleFileSelect"
-            @file-open="handleFileOpen"
-            @refresh="handleTreeRefresh" />
-        </template>
-        <template #second>
-          <!-- Editor / Terminal (vertical) -->
-          <SplitPane
-            v-if="ideStore.showTerminal"
-            direction="vertical"
-            :initial-size="ideStore.terminalSize"
-            :min-size="100"
-            :max-size="400"
-            storage-key="ide-terminal-bottom"
-            :reverse="true"
-            @update:size="ideStore.setTerminalSize">
-            <template #first>
-              <EditorPane ref="editorRef" />
-            </template>
-            <template #second>
-              <TerminalPane
-                ref="terminalRef"
-                :task-id="taskId"
-                :type="type"
-                :container-name="containerName"
-                @connected="handleTerminalConnected"
-                @disconnected="handleTerminalDisconnected" />
-            </template>
-          </SplitPane>
-          <EditorPane
-            v-else
-            ref="editorRef" />
-        </template>
-      </SplitPane>
-
-      <!-- No file tree -->
-      <template v-else>
-        <SplitPane
-          v-if="ideStore.showTerminal"
-          direction="vertical"
-          :initial-size="ideStore.terminalSize"
-          :min-size="100"
-          :max-size="400"
-          storage-key="ide-terminal-bottom"
-          :reverse="true"
-          @update:size="ideStore.setTerminalSize">
-          <template #first>
-            <EditorPane ref="editorRef" />
-          </template>
-          <template #second>
-            <TerminalPane
-              ref="terminalRef"
-              :task-id="taskId"
-              :type="type"
-              :container-name="containerName"
-              @connected="handleTerminalConnected"
-              @disconnected="handleTerminalDisconnected" />
-          </template>
-        </SplitPane>
-        <EditorPane
-          v-else
-          ref="editorRef" />
+      <template #second>
+        <EditorTerminalSplit
+          ref="editorTerminalRef"
+          :task-id="taskId"
+          :type="type"
+          :container-name="containerName"
+          @terminal-connected="handleTerminalConnected"
+          @terminal-disconnected="handleTerminalDisconnected" />
       </template>
-    </template>
+    </SplitPane>
+
+    <!-- No file tree: Editor + Terminal only -->
+    <EditorTerminalSplit
+      v-else
+      ref="editorTerminalRef"
+      :task-id="taskId"
+      :type="type"
+      :container-name="containerName"
+      @terminal-connected="handleTerminalConnected"
+      @terminal-disconnected="handleTerminalDisconnected" />
   </div>
 </template>
 

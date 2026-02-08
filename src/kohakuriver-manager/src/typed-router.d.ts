@@ -37,6 +37,34 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    '/admin/components/ApprovalsTab': RouteRecordInfo<
+      '/admin/components/ApprovalsTab',
+      '/admin/components/ApprovalsTab',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
+    '/admin/components/InvitationsTab': RouteRecordInfo<
+      '/admin/components/InvitationsTab',
+      '/admin/components/InvitationsTab',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
+    '/admin/components/UsersTab': RouteRecordInfo<
+      '/admin/components/UsersTab',
+      '/admin/components/UsersTab',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
+    '/admin/components/VmInstancesTab': RouteRecordInfo<
+      '/admin/components/VmInstancesTab',
+      '/admin/components/VmInstancesTab',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/docker/': RouteRecordInfo<
       '/docker/',
       '/docker',
@@ -86,9 +114,37 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    '/tasks/components/TaskDetailDialog': RouteRecordInfo<
+      '/tasks/components/TaskDetailDialog',
+      '/tasks/components/TaskDetailDialog',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
+    '/tasks/components/TaskSubmitDialog': RouteRecordInfo<
+      '/tasks/components/TaskSubmitDialog',
+      '/tasks/components/TaskSubmitDialog',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/vps/': RouteRecordInfo<
       '/vps/',
       '/vps',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
+    '/vps/components/VpsCard': RouteRecordInfo<
+      '/vps/components/VpsCard',
+      '/vps/components/VpsCard',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
+    '/vps/components/VpsCreateDialog': RouteRecordInfo<
+      '/vps/components/VpsCreateDialog',
+      '/vps/components/VpsCreateDialog',
       Record<never, never>,
       Record<never, never>,
       | never
@@ -115,6 +171,30 @@ declare module 'vue-router/auto-routes' {
     'src/pages/admin/index.vue': {
       routes:
         | '/admin/'
+      views:
+        | never
+    }
+    'src/pages/admin/components/ApprovalsTab.vue': {
+      routes:
+        | '/admin/components/ApprovalsTab'
+      views:
+        | never
+    }
+    'src/pages/admin/components/InvitationsTab.vue': {
+      routes:
+        | '/admin/components/InvitationsTab'
+      views:
+        | never
+    }
+    'src/pages/admin/components/UsersTab.vue': {
+      routes:
+        | '/admin/components/UsersTab'
+      views:
+        | never
+    }
+    'src/pages/admin/components/VmInstancesTab.vue': {
+      routes:
+        | '/admin/components/VmInstancesTab'
       views:
         | never
     }
@@ -160,9 +240,33 @@ declare module 'vue-router/auto-routes' {
       views:
         | never
     }
+    'src/pages/tasks/components/TaskDetailDialog.vue': {
+      routes:
+        | '/tasks/components/TaskDetailDialog'
+      views:
+        | never
+    }
+    'src/pages/tasks/components/TaskSubmitDialog.vue': {
+      routes:
+        | '/tasks/components/TaskSubmitDialog'
+      views:
+        | never
+    }
     'src/pages/vps/index.vue': {
       routes:
         | '/vps/'
+      views:
+        | never
+    }
+    'src/pages/vps/components/VpsCard.vue': {
+      routes:
+        | '/vps/components/VpsCard'
+      views:
+        | never
+    }
+    'src/pages/vps/components/VpsCreateDialog.vue': {
+      routes:
+        | '/vps/components/VpsCreateDialog'
       views:
         | never
     }

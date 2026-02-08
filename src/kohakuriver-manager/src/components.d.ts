@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     EditorPane: typeof import('./components/ide/editor/EditorPane.vue')['default']
     EditorTabs: typeof import('./components/ide/editor/EditorTabs.vue')['default']
+    EditorTerminalSplit: typeof import('./components/ide/EditorTerminalSplit.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElAutocomplete: typeof import('element-plus/es')['ElAutocomplete']
     ElButton: typeof import('element-plus/es')['ElButton']
@@ -49,6 +50,7 @@ declare module 'vue' {
     FileTree: typeof import('./components/ide/file-tree/FileTree.vue')['default']
     FileTreeNode: typeof import('./components/ide/file-tree/FileTreeNode.vue')['default']
     GlobalLoading: typeof import('./components/common/GlobalLoading.vue')['default']
+    GpuSelector: typeof import('./components/common/GpuSelector.vue')['default']
     IdeContent: typeof import('./components/ide/IdeContent.vue')['default']
     IdeLayout: typeof import('./components/ide/IdeLayout.vue')['default']
     IdeModal: typeof import('./components/ide/IdeModal.vue')['default']
