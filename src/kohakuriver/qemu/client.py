@@ -52,6 +52,9 @@ class VMInstance:
     qmp_socket: str
     created_at: float = field(default_factory=time.time)
 
+    # QEMU command line (saved for restart)
+    qemu_cmd: list[str] = field(default_factory=list)
+
     # Runtime state
     ssh_ready: bool = False
     last_heartbeat: float | None = None
@@ -237,7 +240,11 @@ class QEMUManager:
                 gpu_pci_addresses=options.gpu_pci_addresses,
                 instance_dir=instance_dir,
                 qmp_socket=qmp_socket,
+                qemu_cmd=qemu_cmd,
             )
+
+            # Persist command for restart/recovery
+            self._save_qemu_cmd(instance_dir, qemu_cmd)
 
             async with self._lock:
                 self._vms[options.task_id] = vm
@@ -310,14 +317,155 @@ class QEMUManager:
         logger.info(f"VM {task_id} killed")
         return True
 
-    async def restart_vm(self, task_id: int) -> bool:
-        """Restart VM via QMP system_reset."""
-        try:
-            await self.qmp_reset(task_id)
-            return True
-        except Exception as e:
-            logger.error(f"Failed to restart VM {task_id}: {e}")
+    async def restart_vm(self, task_id: int, timeout: int = 30) -> bool:
+        """Restart VM with proper VFIO PCI reset.
+
+        A simple QMP system_reset does not reset VFIO PCI devices,
+        causing NVIDIA drivers inside the guest to fail on reboot.
+
+        Instead, this performs a full cycle:
+        1. Graceful shutdown (QMP system_powerdown)
+        2. Wait for QEMU process exit
+        3. Unbind + rebind GPUs to VFIO (forces PCI function-level reset)
+        4. Re-launch QEMU with the saved command line
+
+        The overlay disk preserves all guest filesystem state.
+        Cloud-init won't re-run (same instance-id).
+        The VM agent systemd service restarts automatically.
+        """
+        vm = self.get_vm(task_id)
+        if not vm:
+            logger.error(f"VM {task_id} not found for restart")
             return False
+
+        if not vm.qemu_cmd:
+            # Fallback: try loading from file
+            vm.qemu_cmd = self._load_qemu_cmd(vm.instance_dir)
+            if not vm.qemu_cmd:
+                logger.error(
+                    f"VM {task_id}: no saved QEMU command, cannot restart "
+                    "(falling back to QMP reset)"
+                )
+                try:
+                    await self.qmp_reset(task_id)
+                    return True
+                except Exception as e:
+                    logger.error(f"QMP reset also failed for VM {task_id}: {e}")
+                    return False
+
+        gpu_pci_addresses = vm.gpu_pci_addresses
+        instance_dir = vm.instance_dir
+
+        # Step 1: Graceful shutdown
+        logger.info(f"VM {task_id}: shutting down for restart")
+        try:
+            await self.qmp_shutdown(task_id)
+        except Exception as e:
+            logger.warning(f"VM {task_id}: QMP shutdown failed: {e}")
+
+        # Step 2: Wait for process exit
+        start = time.time()
+        while time.time() - start < timeout:
+            if not self._is_process_running(vm.pid):
+                break
+            await asyncio.sleep(1)
+
+        if self._is_process_running(vm.pid):
+            logger.warning(f"VM {task_id}: force killing for restart")
+            try:
+                os.kill(vm.pid, signal.SIGKILL)
+                await asyncio.sleep(1)
+            except OSError:
+                pass
+
+        # Remove from tracking (but DON'T unbind GPUs yet via _cleanup_vm)
+        async with self._lock:
+            self._vms.pop(task_id, None)
+
+        # Remove stale QMP socket
+        try:
+            os.unlink(vm.qmp_socket)
+        except OSError:
+            pass
+
+        # Step 3: VFIO unbind + rebind (forces PCI device reset)
+        if gpu_pci_addresses:
+            logger.info(f"VM {task_id}: resetting VFIO GPUs for clean reboot")
+            unbound = set()
+            for pci_addr in gpu_pci_addresses:
+                if pci_addr not in unbound:
+                    try:
+                        group_unbound = await vfio.unbind_iommu_group(pci_addr)
+                        unbound.update(group_unbound)
+                    except Exception as e:
+                        logger.warning(f"VM {task_id}: VFIO unbind {pci_addr}: {e}")
+
+            # Brief delay for PCI reset to settle
+            await asyncio.sleep(1)
+
+            bound = set()
+            for pci_addr in gpu_pci_addresses:
+                if pci_addr not in bound:
+                    try:
+                        group_bound = await vfio.bind_iommu_group(pci_addr)
+                        bound.update(group_bound)
+                    except Exception as e:
+                        logger.error(f"VM {task_id}: VFIO rebind {pci_addr}: {e}")
+                        return False
+
+        # Step 4: Re-launch QEMU with saved command
+        logger.info(f"VM {task_id}: starting QEMU for restart")
+        stderr_path = os.path.join(instance_dir, "qemu_start.err")
+
+        def _start_qemu():
+            with open(stderr_path, "w") as err_file:
+                return subprocess.run(
+                    vm.qemu_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=err_file,
+                    timeout=30,
+                )
+
+        result = await asyncio.to_thread(_start_qemu)
+        if result.returncode != 0:
+            error = await asyncio.to_thread(
+                lambda: Path(stderr_path).read_text(errors="replace").strip()
+            )
+            logger.error(f"VM {task_id}: QEMU restart failed: {error}")
+            return False
+
+        # Read new PID
+        pidfile = vm_pidfile_path(instance_dir)
+        try:
+            new_pid = int(
+                await asyncio.to_thread(lambda: Path(pidfile).read_text().strip())
+            )
+        except (FileNotFoundError, ValueError) as e:
+            logger.error(f"VM {task_id}: cannot read PID after restart: {e}")
+            return False
+
+        if not self._is_process_running(new_pid):
+            logger.error(f"VM {task_id}: QEMU exited immediately after restart")
+            return False
+
+        # Re-track VM with new PID, preserving runtime state
+        new_vm = VMInstance(
+            task_id=task_id,
+            pid=new_pid,
+            vm_ip=vm.vm_ip,
+            tap_device=vm.tap_device,
+            gpu_pci_addresses=gpu_pci_addresses,
+            instance_dir=instance_dir,
+            qmp_socket=vm.qmp_socket,
+            qemu_cmd=vm.qemu_cmd,
+            created_at=vm.created_at,
+        )
+
+        async with self._lock:
+            self._vms[task_id] = new_vm
+
+        logger.info(f"VM {task_id}: restarted successfully (new PID={new_pid})")
+        return True
 
     # --- VM Queries ---
 
@@ -371,6 +519,7 @@ class QEMUManager:
             gpu_pci_addresses=vm_data.get("gpu_pci_addresses", []),
             instance_dir=instance_dir,
             qmp_socket=qmp_socket,
+            qemu_cmd=self._load_qemu_cmd(instance_dir),
         )
         vm.ssh_ready = True  # If it survived restart, SSH was working
 
@@ -437,6 +586,26 @@ class QEMUManager:
             return False
 
     # --- Internal Helpers ---
+
+    @staticmethod
+    def _save_qemu_cmd(instance_dir: str, cmd: list[str]) -> None:
+        """Persist QEMU command line to instance directory for restart/recovery."""
+        cmd_file = os.path.join(instance_dir, "qemu_cmd.json")
+        try:
+            with open(cmd_file, "w") as f:
+                json.dump(cmd, f)
+        except Exception as e:
+            logger.warning(f"Failed to save QEMU command: {e}")
+
+    @staticmethod
+    def _load_qemu_cmd(instance_dir: str) -> list[str]:
+        """Load saved QEMU command line from instance directory."""
+        cmd_file = os.path.join(instance_dir, "qemu_cmd.json")
+        try:
+            with open(cmd_file) as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return []
 
     def _build_qemu_command(
         self, options: VMCreateOptions, instance_dir: str

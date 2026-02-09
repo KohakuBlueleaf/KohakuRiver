@@ -416,10 +416,11 @@ async def stop_vm_vps(
 
 
 async def restart_vm_vps(task_id: int) -> bool:
-    """Restart a VM VPS instance with post-reboot health monitoring.
+    """Restart a VM VPS instance with proper VFIO GPU reset.
 
-    Sends QMP system_reset, then waits for the VM agent to resume
-    heartbeats, confirming the guest OS and network are back.
+    Performs a full stop → VFIO unbind/rebind → start cycle so that
+    NVIDIA drivers inside the guest reinitialize cleanly. The overlay
+    disk preserves all filesystem state; cloud-init won't re-run.
     """
     try:
         qemu = get_qemu_manager()
@@ -432,14 +433,12 @@ async def restart_vm_vps(task_id: int) -> bool:
         vm.ssh_ready = False
         old_heartbeat = vm.last_heartbeat
 
-        # Send QMP reset
+        # Full restart with VFIO PCI reset
         success = await qemu.restart_vm(task_id)
         if not success:
             return False
 
-        logger.info(
-            f"VM VPS {task_id}: QMP reset sent, waiting for VM agent to come back"
-        )
+        logger.info(f"VM VPS {task_id}: restarted, waiting for VM agent to come back")
 
         # Spawn background watchdog to verify VM comes back
         asyncio.create_task(_reboot_watchdog(task_id, qemu, old_heartbeat))
