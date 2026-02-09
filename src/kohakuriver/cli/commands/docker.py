@@ -19,9 +19,13 @@ import json
 import os
 import signal
 import sys
-import termios
-import tty
 from datetime import datetime
+
+IS_WINDOWS = sys.platform == "win32"
+
+if not IS_WINDOWS:
+    import termios
+    import tty
 from typing import Annotated
 
 import typer
@@ -292,7 +296,9 @@ async def _run_terminal_shell(container_name: str):
     )
     console.print(f"[dim]Connecting to {ws_url}...[/dim]")
 
-    old_settings = termios.tcgetattr(sys.stdin) if sys.stdin.isatty() else None
+    old_settings = (
+        termios.tcgetattr(sys.stdin) if not IS_WINDOWS and sys.stdin.isatty() else None
+    )
 
     try:
         async with websockets.connect(ws_url) as websocket:

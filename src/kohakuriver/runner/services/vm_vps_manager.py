@@ -39,39 +39,47 @@ def _resolve_gpu_pci_addresses(
     For each requested GPU ID:
     - Finds the matching VfioGpu object
     - Includes its audio companion device if present
-    - Auto-includes co-grouped GPUs sharing the same IOMMU group
 
-    Non-GPU IOMMU peers (PLX DMA, bridges, etc.) are ignored —
-    ACS override handles isolation.
+    Note: IOMMU group co-binding is handled by ``bind_iommu_group()``
+    in ``qemu/client.py`` — it binds all non-bridge endpoints in the
+    group to vfio-pci automatically. We do NOT auto-include peer GPUs
+    here because:
+    - With ACS override, each GPU should have its own IOMMU group
+    - Even without ACS override, binding the group is separate from
+      passing devices to the VM — only requested GPUs should be
+      attached to the VM via ``-device vfio-pci``
 
     Returns a deduplicated, order-preserving list of PCI addresses.
     """
     gpu_pci_addresses: list[str] = []
-    gpu_by_addr = {g.pci_address: g for g in vfio_gpus}
-    requested_gpu_addrs: set[str] = set()
+    seen: set[str] = set()
 
     for gpu_id in gpu_ids:
         for vfio_gpu in vfio_gpus:
             if vfio_gpu.gpu_id == gpu_id:
-                requested_gpu_addrs.add(vfio_gpu.pci_address)
-                gpu_pci_addresses.append(vfio_gpu.pci_address)
-                if vfio_gpu.audio_pci:
+                if vfio_gpu.pci_address not in seen:
+                    seen.add(vfio_gpu.pci_address)
+                    gpu_pci_addresses.append(vfio_gpu.pci_address)
+                if vfio_gpu.audio_pci and vfio_gpu.audio_pci not in seen:
+                    seen.add(vfio_gpu.audio_pci)
                     gpu_pci_addresses.append(vfio_gpu.audio_pci)
-                # Auto-include IOMMU group peers (other GPUs sharing the group)
-                for peer in vfio_gpu.iommu_group_peers:
-                    if peer in gpu_by_addr and peer not in requested_gpu_addrs:
-                        peer_gpu = gpu_by_addr[peer]
+                # Log if there are peer GPUs in the same IOMMU group
+                # (they will be co-bound to vfio-pci by bind_iommu_group
+                # but NOT passed to the VM)
+                if vfio_gpu.iommu_group_peers:
+                    gpu_by_addr = {g.pci_address: g for g in vfio_gpus}
+                    peer_gpus = [
+                        p
+                        for p in vfio_gpu.iommu_group_peers
+                        if p in gpu_by_addr and p not in seen
+                    ]
+                    if peer_gpus:
                         logger.info(
                             f"VM VPS {task_id}: GPU {vfio_gpu.pci_address} shares "
-                            f"IOMMU group {vfio_gpu.iommu_group} with GPU "
-                            f"{peer} — both will be passed through"
+                            f"IOMMU group {vfio_gpu.iommu_group} with "
+                            f"{peer_gpus} — they will be VFIO-bound but not "
+                            f"passed to the VM"
                         )
-                        requested_gpu_addrs.add(peer)
-                        gpu_pci_addresses.append(peer)
-                        if peer_gpu.audio_pci:
-                            gpu_pci_addresses.append(peer_gpu.audio_pci)
-                    # Non-GPU peers (PLX DMA, etc.) are ignored —
-                    # ACS override handles IOMMU isolation.
                 break
         else:
             logger.warning(f"VM VPS {task_id}: GPU {gpu_id} not available for VFIO")

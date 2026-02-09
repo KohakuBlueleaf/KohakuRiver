@@ -460,7 +460,7 @@ def discover_vfio_gpus() -> list[GPUInfo]:
         )
         gpu_id += 1
 
-    # Log co-allocation warnings for GPUs sharing IOMMU groups
+    # Log IOMMU group sharing info
     gpu_by_addr = {g.pci_address: g for g in gpus}
     for gpu in gpus:
         shared_gpus = [p for p in gpu.iommu_group_peers if p in gpu_by_addr]
@@ -468,7 +468,7 @@ def discover_vfio_gpus() -> list[GPUInfo]:
             logger.info(
                 f"GPU {gpu.pci_address} (group {gpu.iommu_group}) shares "
                 f"IOMMU group with GPUs: {shared_gpus} — "
-                f"they must be co-allocated for VFIO passthrough"
+                f"all will be VFIO-bound together when any is requested"
             )
 
     return gpus

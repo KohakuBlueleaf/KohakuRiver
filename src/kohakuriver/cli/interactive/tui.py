@@ -12,9 +12,13 @@ Features:
 """
 
 import sys
-import termios
 import time
-import tty
+
+IS_WINDOWS = sys.platform == "win32"
+
+if not IS_WINDOWS:
+    import termios
+    import tty
 
 from rich.console import Console
 from rich.layout import Layout
@@ -158,11 +162,13 @@ class TUIApp(TUIActions):
 
     def _restore_terminal(self):
         """Restore terminal to normal mode for input."""
-        if self.old_settings:
+        if self.old_settings and not IS_WINDOWS:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
 
     def _setup_terminal(self):
         """Setup terminal for raw input mode."""
+        if IS_WINDOWS:
+            return
         self.old_settings = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin.fileno())
 
@@ -298,10 +304,12 @@ class TUIApp(TUIActions):
         self.fetch_data()
 
         # Setup terminal for non-blocking input
-        self.old_settings = termios.tcgetattr(sys.stdin)
+        if not IS_WINDOWS:
+            self.old_settings = termios.tcgetattr(sys.stdin)
 
         try:
-            tty.setcbreak(sys.stdin.fileno())
+            if not IS_WINDOWS:
+                tty.setcbreak(sys.stdin.fileno())
 
             with Live(
                 self.render(),
@@ -330,7 +338,8 @@ class TUIApp(TUIActions):
 
         finally:
             self.live = None
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
+            if not IS_WINDOWS and self.old_settings:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
 
 
 def run_tui(refresh_rate: float = 2.0) -> None:

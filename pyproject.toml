@@ -41,8 +41,8 @@ gpu = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/KohakuBlueleaf/HakuRiver"
-Repository = "https://github.com/KohakuBlueleaf/HakuRiver"
+Homepage = "https://github.com/KohakuBlueleaf/KohakuRiver"
+Repository = "https://github.com/KohakuBlueleaf/KohakuRiver"
 
 [project.scripts]
 # Main entry points
