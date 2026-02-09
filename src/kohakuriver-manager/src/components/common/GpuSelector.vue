@@ -31,6 +31,8 @@
  * @property {number} [memory_total_mib]
  * @property {number} [gpu_utilization]
  * @property {number} [temperature]
+ * @property {number} [vm_task_id] - If set, GPU is reserved by a VM VPS
+ * @property {boolean} [vfio_bound] - If true, GPU is bound to VFIO driver
  */
 
 /**
@@ -139,6 +141,16 @@ function initializeGpuSelections() {
 }
 
 /**
+ * Count available (non-reserved) GPUs on a node.
+ *
+ * @param {NodeInfo} node
+ * @returns {number}
+ */
+function getAvailableGpuCount(node) {
+  return (node.gpu_info || []).filter((g) => !g.vm_task_id && !g.vfio_bound).length
+}
+
+/**
  * Format MiB value to a human-readable GPU memory string.
  *
  * @param {number} mib - Memory in MiB
@@ -186,7 +198,9 @@ defineExpose({
           :name="node.hostname">
           <template #title>
             <span class="font-medium">{{ node.hostname }}</span>
-            <span class="text-muted text-xs ml-2">({{ node.gpu_info.length }} GPUs)</span>
+            <span class="text-muted text-xs ml-2">
+              ({{ getAvailableGpuCount(node) }}/{{ node.gpu_info.length }} GPUs available)
+            </span>
           </template>
           <el-checkbox-group
             :model-value="selectedGpus[node.hostname] || []"
@@ -197,13 +211,26 @@ defineExpose({
               v-for="gpu in node.gpu_info"
               :key="gpu.gpu_id"
               :value="gpu.gpu_id"
+              :disabled="!!gpu.vm_task_id || (gpu.vfio_bound && !gpu.vm_task_id)"
               border
-              class="gpu-checkbox">
+              class="gpu-checkbox"
+              :class="{ 'gpu-reserved': !!gpu.vm_task_id || gpu.vfio_bound }">
               <div class="gpu-checkbox-content">
                 <span class="font-medium">GPU {{ gpu.gpu_id }}: {{ gpu.name || 'Unknown' }}</span>
+                <span
+                  v-if="gpu.vm_task_id"
+                  class="gpu-reserved-tag">
+                  Reserved by VM #{{ gpu.vm_task_id }}
+                </span>
+                <span
+                  v-else-if="gpu.vfio_bound"
+                  class="gpu-reserved-tag">
+                  VFIO Bound
+                </span>
                 <span class="gpu-stats">
-                  {{ formatGpuMemory(gpu.memory_total_mib) }} | Util: {{ gpu.gpu_utilization ?? '-' }}% | Temp:
-                  {{ gpu.temperature ?? '-' }}°C
+                  {{ formatGpuMemory(gpu.memory_total_mib) }}
+                  <template v-if="gpu.gpu_utilization != null">| Util: {{ gpu.gpu_utilization }}%</template>
+                  <template v-if="gpu.temperature != null">| Temp: {{ gpu.temperature }}°C</template>
                 </span>
               </div>
             </el-checkbox>
@@ -255,6 +282,16 @@ defineExpose({
 .gpu-stats {
   font-size: 0.75em;
   color: var(--el-text-color-secondary);
+}
+
+.gpu-reserved {
+  opacity: 0.6;
+}
+
+.gpu-reserved-tag {
+  font-size: 0.7em;
+  color: var(--el-color-warning);
+  font-weight: 600;
 }
 
 :deep(.el-collapse) {

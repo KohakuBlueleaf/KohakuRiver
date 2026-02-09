@@ -34,29 +34,94 @@ def report_killed_task(task_id: int, reason: str):
 
 
 def _collect_gpu_stats_with_vm_info() -> list[dict]:
-    """Collect GPU stats and merge in VM agent GPU info from QEMU manager.
+    """Collect GPU stats with stable IDs and VM-reserved GPU info.
 
-    Calls get_gpu_stats(), then attempts to merge GPU info reported by
-    VM agents (for VFIO-passthrough GPUs) via the QEMU manager's list_vms().
+    When GPUs are VFIO-bound for VMs, pynvml can no longer see them and
+    renumbers the remaining GPUs starting from 0. This function:
+
+    1. Gets host-visible GPU stats from pynvml (potentially renumbered).
+    2. Uses the VFIO GPU list (stable PCI-based IDs) to remap pynvml
+       indices back to their original gpu_ids.
+    3. For VFIO-bound GPUs (not visible to pynvml), adds them back with
+       VM-reported stats and a ``vm_task_id`` tag so the frontend can
+       display them as "reserved by VM".
 
     Returns:
-        List of GPU stat dicts, including any VM-reported GPU entries.
+        List of GPU stat dicts with stable gpu_ids.  VM-reserved GPUs
+        carry ``vm_task_id`` (int) and ``vfio_bound`` (True) fields.
     """
     gpu_info = get_gpu_stats()
 
     try:
-        from kohakuriver.qemu import get_qemu_manager
+        from kohakuriver.qemu import get_qemu_manager, get_vm_capability
 
+        cap = get_vm_capability()
+        if not cap.vfio_gpus:
+            return gpu_info
+
+        # Build PCI address -> stable VFIO gpu_id mapping
+        pci_to_vfio_id: dict[str, int] = {}
+        vfio_pci_set: set[str] = set()
+        for g in cap.vfio_gpus:
+            pci = g.pci_address.lower()
+            pci_to_vfio_id[pci] = g.gpu_id
+            vfio_pci_set.add(pci)
+
+        vfio_by_pci = {g.pci_address.lower(): g for g in cap.vfio_gpus}
+
+        # Remap pynvml gpu_ids to stable VFIO gpu_ids via PCI address
+        seen_pci: set[str] = set()
+        for gpu in gpu_info:
+            pci = gpu.get("pci_bus_id", "").lower()
+            if pci and pci in pci_to_vfio_id:
+                gpu["gpu_id"] = pci_to_vfio_id[pci]
+            seen_pci.add(pci)
+
+        # Map VM PCI addresses to (VMInstance, vm_gpu_stats_dict)
         qemu_mgr = get_qemu_manager()
+        vm_gpu_by_pci: dict[str, tuple] = {}
         for vm in qemu_mgr.list_vms():
-            if vm.vm_gpu_info:
-                for gpu in vm.vm_gpu_info:
-                    gpu["vm_task_id"] = vm.task_id
-                gpu_info.extend(vm.vm_gpu_info)
+            if not vm.vm_gpu_info:
+                continue
+            # Filter to GPU-class PCI addresses only (exclude audio companions)
+            gpu_pcis = [
+                addr.lower()
+                for addr in vm.gpu_pci_addresses
+                if addr.lower() in vfio_pci_set
+            ]
+            for i, vm_gpu in enumerate(vm.vm_gpu_info):
+                if i < len(gpu_pcis):
+                    vm_gpu_by_pci[gpu_pcis[i]] = (vm, vm_gpu)
+
+        # Add VFIO-bound GPUs not visible to pynvml
+        for vfio_gpu in cap.vfio_gpus:
+            pci = vfio_gpu.pci_address.lower()
+            if pci in seen_pci:
+                continue  # Already in gpu_info from pynvml
+
+            if pci in vm_gpu_by_pci:
+                # GPU is inside a running VM — use VM-reported stats
+                vm, vm_gpu_stats = vm_gpu_by_pci[pci]
+                entry = dict(vm_gpu_stats)
+                entry["gpu_id"] = vfio_gpu.gpu_id
+                entry["name"] = entry.get("name") or vfio_gpu.name
+                entry["pci_bus_id"] = vfio_gpu.pci_address
+                entry["vm_task_id"] = vm.task_id
+                entry["vfio_bound"] = True
+            else:
+                # VFIO-bound but no VM using it (transient state)
+                entry = {
+                    "gpu_id": vfio_gpu.gpu_id,
+                    "name": vfio_gpu.name,
+                    "pci_bus_id": vfio_gpu.pci_address,
+                    "vfio_bound": True,
+                }
+            gpu_info.append(entry)
+
     except ImportError:
         pass  # qemu module not available
     except Exception as e:
-        logger.debug(f"Failed to merge VM GPU info: {e}")
+        logger.debug(f"Failed to remap GPU info with VM data: {e}")
 
     return gpu_info
 

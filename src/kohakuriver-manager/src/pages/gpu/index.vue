@@ -277,6 +277,20 @@ const viewMode = ref('cards') // 'cards' or 'table'
                 <p class="text-xs text-muted leading-tight !m-0">GPU {{ gpu.gpu_id }}</p>
               </div>
             </div>
+            <el-tag
+              v-if="gpu.vm_task_id"
+              type="warning"
+              size="small"
+              class="mb-2">
+              VM #{{ gpu.vm_task_id }}
+            </el-tag>
+            <el-tag
+              v-else-if="gpu.vfio_bound"
+              type="info"
+              size="small"
+              class="mb-2">
+              VFIO Bound
+            </el-tag>
 
             <div class="space-y-2">
               <!-- GPU Core Utilization -->
@@ -351,6 +365,7 @@ const viewMode = ref('cards') // 'cards' or 'table'
             <th class="table-cell">Node</th>
             <th class="table-cell">GPU</th>
             <th class="table-cell">Name</th>
+            <th class="table-cell">Status</th>
             <th class="table-cell">GPU %</th>
             <th class="table-cell">Memory</th>
             <th class="table-cell">Temp</th>
@@ -367,6 +382,26 @@ const viewMode = ref('cards') // 'cards' or 'table'
             <td class="table-cell text-muted">{{ gpu.hostname }}</td>
             <td class="table-cell font-medium">{{ gpu.gpu_id }}</td>
             <td class="table-cell">{{ gpu.name || '-' }}</td>
+            <td class="table-cell">
+              <el-tag
+                v-if="gpu.vm_task_id"
+                type="warning"
+                size="small">
+                VM #{{ gpu.vm_task_id }}
+              </el-tag>
+              <el-tag
+                v-else-if="gpu.vfio_bound"
+                type="info"
+                size="small">
+                VFIO
+              </el-tag>
+              <el-tag
+                v-else
+                type="success"
+                size="small">
+                Available
+              </el-tag>
+            </td>
             <td class="table-cell">
               <div class="flex items-center gap-2">
                 <div class="w-12">
