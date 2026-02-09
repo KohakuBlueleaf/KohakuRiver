@@ -1,456 +1,593 @@
-# KohakuRiver - Lightweight Cluster Manager for Small Teams
+# KohakuRiver
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Docs](https://img.shields.io/badge/docs-riverdoc.kohaku--lab.org-blue)](https://riverdoc.kohaku-lab.org)
 [![en](https://img.shields.io/badge/lang-en-red.svg)](./README.md)
 [![中文](https://img.shields.io/badge/lang-中文-green.svg)](./README.zh.md)
 
-![KohakuRiver logo svg](image/logo.svg)
+<p align="center">
+  <img src="image/logo.svg" alt="KohakuRiver" width="400">
+</p>
 
-**KohakuRiver** is a lightweight, self-hosted cluster manager designed for distributing command-line tasks and launching persistent interactive sessions (**VPS Tasks**) across compute nodes. It leverages **Docker** to manage reproducible task environments, treating containers as portable "virtual environments" that auto-sync across your cluster.
+<p align="center">
+  <b>Self-hosted cluster manager for small teams and research labs.</b><br>
+  Distribute tasks and persistent VPS sessions across compute nodes with<br>
+  Docker containers, QEMU/KVM VMs, VXLAN overlay networking, and GPU passthrough.
+</p>
 
-It provides resource allocation (CPU/memory/GPU limits), multi-node/NUMA/GPU task submission, and status tracking, making it ideal for research labs, small-to-medium teams, home labs, or development environments needing simple, reproducible distributed task execution without the overhead of complex HPC schedulers.
-
-## Key Features
-
-| Feature | Description |
-|---------|-------------|
-| **Container as Portable Environment** | Docker containers function as auto-synced virtual environments. Set up once on Host, package as tarball, and use across all nodes automatically. |
-| **Task/VPS System** | **Tasks** for batch command execution, **VPS** for persistent interactive sessions. VPS is crucial for R&D workflows where you can't create a complete Docker image upfront. |
-| **VXLAN Overlay Network** | Cross-node container networking with minimal setup. Just set Host IP and open UDP 4789 - automatic VXLAN tunnels, IP allocation, and firewall configuration. |
-| **TTY Forwarding** | WebSocket-based terminal access (`kohakuriver connect`) without Docker port mapping. Supports full TTY (vim, htop, etc.) and works even after system restarts. |
-| **Port Forwarding** | Dynamic port forwarding (`kohakuriver forward`) through tunnel proxy. Access container services without Docker port mapping, avoiding port conflicts on runner nodes. |
-| **Web UI & Terminal TUI** | Web dashboard for visual management, Terminal TUI (`kohakuriver terminal`) with VSCode-like layout, and IDE mode with file tree and integrated terminal. |
-
-## Introduction to KohakuRiver
-
-### Problem Statement
-
-Researchers and small teams often face a challenging middle ground when working with a modest number of compute nodes (typically 3-8 machines). This creates an awkward situation:
-
-- **Too many machines** to manage manually with SSH and shell scripts
-- **Too few machines** to justify the overhead of complex HPC schedulers like Slurm
-- **Unsuitable complexity** of container orchestration systems like Kubernetes for simple task distribution or single, long-running interactive sessions.
-
-You have these powerful compute resources at your disposal, but no efficient way to utilize them as a unified computing resource without significant operational overhead.
-
-### Core Concept: Your Nodes as One Big Computer
-
-KohakuRiver addresses this problem by letting you treat your small cluster as a single powerful computer, with these key design principles:
-
-- **Lightweight Resource Management**: Distribute command-line tasks and interactive VPS sessions across your nodes with minimal setup
-- **Environment Consistency**: Use Docker containers as portable virtual environments, not as complex application deployments
-- **Seamless Synchronization**: Automatically distribute container environments to runners without manual setup on each node
-- **Familiar Workflow**: Submit tasks through a simple interface that feels like running a command or launching an environment on your local machine
-
-> Docker in KohakuRiver functions as a virtual environment that can be dynamically adjusted and automatically synchronized. You can run dozens of tasks or launch multiple interactive sessions using the same container environment, but execute them on completely different nodes.
-
-### How It Works
-
-1. **Environment Management**: Create and customize Docker containers on the Host node using `kohakuriver docker container` commands and interactive shells.
-2. **Package & Distribute**: The environment is packaged as a tarball using `kohakuriver docker tar create` and stored in shared storage.
-3. **Automatic Synchronization**: Runner nodes automatically fetch the required environment from shared storage before executing tasks.
-4. **Parallel/Interactive Execution**: Submit single commands, batches of parallel tasks, or launch persistent VPS tasks to run across multiple nodes, with each task isolated in its own container instance.
-
-This approach aligns with the philosophy that:
-
-> For a small local cluster, you should prioritize solutions that are "lightweight, simple, and just sufficient." You shouldn't need to package every command into a complex Dockerfile - Docker's purpose here is environment management and synchronization.
-
-KohakuRiver is built on the assumption that in small local clusters:
-
-- Nodes can easily establish network communication
-- Shared storage is readily available
-- Doesn't require authentication or the complexity can be minimized
-- High availability and fault tolerance are less critical at this scale
-
-By focusing on these practical realities of small-scale computing, KohakuRiver provides a "just right" solution for multi-node task execution and interactive environments without the administrative burden of enterprise-grade systems.
+<p align="center">
+  <a href="https://riverdoc.kohaku-lab.org">Documentation</a> &middot;
+  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#cli-reference">CLI Reference</a>
+</p>
 
 ---
 
-## What KohakuRiver Is (and Isn't)
+## Overview
 
-| KohakuRiver IS FOR... | KohakuRiver IS NOT FOR... |
-|:------------------------------------------------------------------------------------------------------------------------------|:--------------------------------------------------------------------------------------------------------------------------|
-| ✅ Managing command-line tasks/scripts and persistent VPS sessions across small clusters (typically < 10-20 nodes). | ❌ Replacing feature-rich HPC schedulers (Slurm, PBS, LSF) on large-scale clusters. |
-| ✅ **Executing tasks & VPS sessions within reproducible Docker container environments (managed by KohakuRiver).** | ❌ Orchestrating complex, multi-service applications (like Kubernetes or Docker Compose). |
-| ✅ **Interactive environment setup on the Host and packaging these environments as portable tarballs for distribution.** | ❌ Automatically managing complex software dependencies *within* containers (user sets up the env via Host's shell). |
-| ✅ **Conveniently submitting independent command-line tasks, batches of parallel tasks, or single-instance VPS sessions across nodes/NUMA zones/GPUs.** | ❌ Sophisticated task dependency management or complex workflow orchestration (Use Airflow, Prefect, Snakemake, Nextflow). |
-| ✅ Providing on-demand interactive compute environments with SSH access (VPS tasks). | ❌ Providing highly available, load-balanced production *services* accessible directly by external users. |
-| ✅ Personal, research lab, small team, or Home Lab usage needing a *simple* multi-node task/VPS management system. | ❌ Deploying or managing highly available, mission-critical production *services*. |
-| ✅ Providing a lightweight system with minimal maintenance overhead for distributed task execution in controlled environments. | ❌ High-security, multi-tenant environments requiring robust built-in authentication and authorization layers. |
+Small teams with 3-20 compute nodes face an awkward middle ground — too many machines to manage with SSH scripts, too few to justify Slurm or Kubernetes. KohakuRiver treats your cluster as one big computer: submit a command or launch a VPS, and it runs on the right node with the right resources.
 
----
+> Docker in KohakuRiver functions as a portable virtual environment. Set up once, package as a tarball, and every node has the same environment automatically.
 
-## Features
+### Key Capabilities
 
-### Container Environment Management
-- **Managed Docker Workflow:** Set up containers on Host (`kohakuriver docker container create`), customize interactively (`kohakuriver docker container shell`), package as tarballs (`kohakuriver docker tar create`).
-- **Auto-Sync:** Runners automatically fetch and update container tarballs from shared storage before task execution.
-
-### Task Execution
-- **Command Tasks:** One-shot command execution in Docker containers with resource limits.
-- **VPS Tasks:** Persistent interactive containers with SSH access - ideal for R&D where you need to iterate on your environment.
-- **Multi-Target Submission:** Submit tasks to multiple nodes/NUMA nodes/GPUs in one command.
-
-### Access & Connectivity (Without Docker Port Mapping)
-- **TTY Forwarding (`kohakuriver connect`):** WebSocket-based terminal with full TTY support (vim, htop, etc.). Works with long-running containers across system restarts.
-- **Port Forwarding (`kohakuriver forward`):** Dynamic TCP/UDP port forwarding through tunnel proxy. Access container services (web servers, databases, Jupyter) without port conflicts.
-- **SSH Proxy:** Connect to VPS via SSH through Host relay (`kohakuriver vps connect`) without knowing runner IPs or dynamic ports.
-
-### Resource Management
-- **CPU/Memory Allocation:** Request specific cores (`-c/--cores`) and memory limits (`-m/--memory`).
-- **GPU Allocation:** Target specific GPUs (`--target node::gpu_id1,gpu_id2`).
-- **NUMA Binding:** Bind tasks to NUMA nodes (`--target node:numa_id`).
-
-### Cross-Node Networking (VXLAN Overlay)
-- **Automatic Setup:** Just set `HOST_REACHABLE_ADDRESS` and open UDP port 4789 - KohakuRiver handles the rest.
-- **L3 Routed Topology:** Host acts as central router with VXLAN tunnels to each runner.
-- **Automatic IP Allocation:** Each runner gets a /16 subnet (10.X.0.0/16) with up to 65,532 container IPs.
-- **Firewall Auto-Configuration:** iptables rules and firewalld trusted zones configured automatically.
-- **State Recovery:** VXLAN tunnels persist through Host/Runner restarts.
-- **Cross-Node Communication:** Containers on different runners can communicate directly via overlay IPs.
-
-### Monitoring & UI
-- **Web Dashboard:** Vue.js frontend with cluster overview, task/VPS submission, Docker management, and web-based terminal.
-- **Terminal TUI (`kohakuriver terminal`):** Full-screen dashboard with node status, task lists, and keyboard navigation.
-- **IDE Mode (`kohakuriver connect --ide`):** TUI IDE with file tree, code editor, and integrated terminal panel.
-- **Task Control:** Pause, resume, and kill tasks via CLI or Web UI.
+- **Command tasks** — one-shot batch execution with stdout/stderr capture
+- **VPS sessions** — persistent interactive environments with SSH, terminal, and port forwarding
+- **Dual backends** — Docker containers for lightweight tasks, QEMU/KVM VMs for full hardware isolation
+- **GPU support** — NVIDIA Container Toolkit for Docker, VFIO passthrough for VMs
+- **Overlay networking** — VXLAN L3 hub topology, containers on different nodes communicate directly
+- **Tunnel system** — WebSocket-based terminal and port forwarding without Docker port mapping
+- **Web dashboard** — Vue.js UI for cluster management, monitoring, and terminal access
+- **Terminal TUI** — full-screen dashboard and IDE mode with file tree and integrated terminal
+- **Auth system** — roles (admin/operator/user), API tokens, invitation-based registration
 
 ---
 
-## Quick Start Guide
+## Screenshots
 
-### Prerequisites
+<!--
+  Replace the src values with your actual screenshot paths.
+  These use HTML tables so vertical/1:1 screenshots sit side-by-side nicely.
+  Adjust width="50%" if you want different sizing.
+-->
 
-- Python >= 3.10
-- Access to a shared filesystem mounted on the Host and all Runner nodes.
-- **Host Node:** Docker Engine installed (for managing environments and creating tarballs).
-- **Runner Nodes:** Docker Engine installed (for executing containerized tasks and VPS). `numactl` is optional (only needed for NUMA binding features). `nvidia-ml-py` and NVIDIA drivers are optional (only needed for GPU reporting/allocation).
-- **Client Machines:** SSH client installed (`ssh` command).
-- **Docker Engine**: Ensure the data-root and storage driver are set up correctly. Run `docker run hello-world` to verify Docker is working correctly.
+### Web Dashboard
 
-### Steps
+<table>
+<tr>
+<td width="50%">
 
-1. **Install KohakuRiver** (on Host, all Runner nodes, and Client machines):
+**Cluster Overview**
 
-   ```bash
-   # Clone the repository
-   git clone https://github.com/KohakuBlueleaf/KohakuRiver.git
-   cd KohakuRiver
+![Cluster Overview](image/README/1770620187904.png)
 
-   # Install
-   pip install .
+</td>
+<td width="50%">
 
-   # With GPU monitoring support (requires nvidia-ml-py & nvidia drivers)
-   pip install ".[gpu]"
-   ```
+**Node Monitoring**
 
-2. **Configure KohakuRiver** (on Host, all Runners, and Client machines):
+![Node Monitoring](image/README/1770620223368.png)
 
-   ```bash
-   # Generate default config files
-   kohakuriver init config --generate
-   ```
+</td>
+</tr>
+</table>
 
-   Edit the configuration files:
-   - **Host config** (`~/.kohakuriver/host_config.py`):
-     - **Crucial**: Set `HOST_REACHABLE_ADDRESS` to the Host's IP/hostname accessible by Runners/Clients.
-     - **Crucial**: Set `SHARED_DIR` to your shared storage path (e.g., `/mnt/cluster-share`).
-   - **Runner config** (`~/.kohakuriver/runner_config.py`):
-     - **Crucial**: Set `HOST_ADDRESS` to the Host's IP/hostname.
-     - **Crucial**: Set `SHARED_DIR` to the same shared storage path.
+<table>
+<tr>
+<td width="25%">
 
-3. **Start Host Server** (on the manager node):
+**Task Management**
 
-   ```bash
-   kohakuriver.host
-   # Or use a specific config: kohakuriver.host --config /path/to/host_config.py
-   ```
+![Task Management](image/README/1770620250783.png)
 
-   **For Systemd (recommended for production):**
-   ```bash
-   kohakuriver init service --host
-   sudo systemctl start kohakuriver-host
-   sudo systemctl enable kohakuriver-host
-   ```
+</td>
+<td width="25%">
 
-4. **Start Runner Agents** (on each compute node):
+**Task Create**
 
-   ```bash
-   kohakuriver.runner
-   # Or use a specific config: kohakuriver.runner --config /path/to/runner_config.py
-   ```
+![1770621295326](image/README/1770621295326.png)
 
-   **For Systemd:**
-   ```bash
-   kohakuriver init service --runner
-   sudo systemctl start kohakuriver-runner
-   sudo systemctl enable kohakuriver-runner
-   ```
+</td>
+<td width="25%">
 
-5. **(Optional) Prepare a Docker Environment** (on the Client/Host):
+**VPS Management**
 
-   ```bash
-   # Create a base container on the Host
-   kohakuriver docker container create python:3.12-slim my-py312-env
+<img src="image/README/1770620270764.png">
 
-   # Install software interactively
-   kohakuriver docker container shell my-py312-env
-   # (inside container) pip install numpy pandas torch
-   # (inside container) exit
+</td>
+<td width="25%">
 
-   # Package it into a tarball
-   kohakuriver docker tar create my-py312-env
-   ```
+**VPS Create**
 
-6. **Submit Your First Task** (from the Client machine):
+<img src="image/README/1770620338639.png">
 
-   ```bash
-   # Submit a simple echo command using the default Docker env to node1
-   kohakuriver task submit -t node1 -- echo "Hello KohakuRiver!"
+</td>
+</tr>
+</table>
 
-   # Submit a Python script using your custom env on node2 with 2 cores
-   # (Assuming myscript.py is in the shared dir, accessible via /shared)
-   kohakuriver task submit -t node2 -c 2 --container my-py312-env -- python /shared/myscript.py
+### Terminal TUI
 
-   # Submit a GPU command task to node3 using GPU 0 and 1
-   kohakuriver task submit -t node3::0,1 --container my-cuda-env -- python /shared/train_gpu_model.py
-   ```
+<table>
+<tr>
+<td width="50%">
 
-7. **Launch a VPS Task** (from the Client machine):
+**TUI Dashboard**
 
-   ```bash
-   # Create a VPS with 4 cores and 8GB memory
-   kohakuriver vps create -t node1 -c 4 -m 8G
+![1770657989063](image/README/1770657989063.png)
+![1770658004247](image/README/1770658004247.png)
 
-   # Connect via SSH proxy
-   kohakuriver vps connect <task_id>
+</td>
+<td width="50%">
 
-   # Or use WebSocket terminal (works without Docker port mapping)
-   kohakuriver connect <task_id>
+**IDE Mode**
 
-   # Or open TUI IDE with file tree and terminal
-   kohakuriver connect <task_id> --ide
-   ```
+![1770656962491](image/README/1770656962491.png)
 
-8. **Forward Ports to Container Services** (without Docker port mapping):
-
-   ```bash
-   # Forward local port 8888 to Jupyter running on container port 8888
-   kohakuriver forward <task_id> 8888
-
-   # Forward local port 3000 to container port 80
-   kohakuriver forward <task_id> 80 --local-port 3000
-
-   # Forward UDP traffic
-   kohakuriver forward <task_id> 5353 --proto udp
-   ```
-
-9. **Use Terminal TUI Dashboard**:
-
-   ```bash
-   # Launch full-screen dashboard
-   kohakuriver terminal
-   ```
+</td>
+</tr>
+</table>
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Clients: CLI / Web Dashboard / Terminal TUI                │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ HTTP/WebSocket
-┌──────────────────────────▼──────────────────────────────────┐
-│  HOST SERVER (Port 8000)                                    │
-│  - Task scheduling and dispatch                             │
-│  - Node registration and health monitoring                  │
-│  - Docker environment management                            │
-│  - SSH proxy for VPS access (Port 8002)                     │
-│  - WebSocket proxy for terminal and port forwarding         │
-│  - SQLite database for state                                │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-         ┌─────────────────┼─────────────────┐
-         ▼                 ▼                 ▼
-┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│  RUNNER 1       │ │  RUNNER 2       │ │  RUNNER N       │
-│  Port 8001      │ │  Port 8001      │ │  Port 8001      │
-│  - Task exec    │ │  - Task exec    │ │  - Task exec    │
-│  - VPS mgmt     │ │  - VPS mgmt     │ │  - VPS mgmt     │
-│  - Resource mon │ │  - Resource mon │ │  - Resource mon │
-│  - Tunnel srv   │ │  - Tunnel srv   │ │  - Tunnel srv   │
-└─────────────────┘ └─────────────────┘ └─────────────────┘
-         │                 │                 │
-         ▼                 ▼                 ▼
-    ┌─────────┐       ┌─────────┐       ┌─────────┐
-    │Container│       │Container│       │Container│
-    │(tunnel- │       │(tunnel- │       │(tunnel- │
-    │ client) │       │ client) │       │ client) │
-    └─────────┘       └─────────┘       └─────────┘
-
-┌─────────────────────────────────────────────────────────────┐
-│  SHARED STORAGE (/mnt/cluster-share)                        │
-│  - kohakuriver-containers/  (Docker tarballs)               │
-│  - shared_data/             (Mounted as /shared in tasks)   │
-└─────────────────────────────────────────────────────────────┘
+                  ┌──────────┐   ┌──────────────────────┐
+                  │   CLI    │   │    Web Dashboard     │
+                  └────┬─────┘   └──────────┬───────────┘
+                       │                    │
+                       ▼                    ▼
+┌────────────────────────────────────────────────────────────┐
+│                  Host Server (:8000)                       │
+│                                                            │
+│  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐  │
+│  │  FastAPI  │ │   Task    │ │  Overlay  │ │ SSH Proxy │  │
+│  │   API     │ │ Scheduler │ │  Manager  │ │  (:8002)  │  │
+│  └───────────┘ └───────────┘ └───────────┘ └───────────┘  │
+│  ┌────────────┐ ┌────────────────────────────────────┐     │
+│  │   Auth     │ │  SQLite DB (Peewee ORM)            │     │
+│  │  Service   │ │  tasks, nodes, users, auth         │     │
+│  └────────────┘ └────────────────────────────────────┘     │
+└────────────────────────────┬───────────────────────────────┘
+                             │  HTTP + VXLAN
+            ┌────────────────┴────────────────┐
+            │                                 │
+┌───────────▼────────────────┐  ┌─────────────▼──────────────┐
+│  Runner Node A (:8001)     │  │  Runner Node B (:8001)     │
+│                            │  │                            │
+│  ┌──────────────────────┐  │  │  ┌──────────────────────┐  │
+│  │  Runner Agent        │  │  │  │  Runner Agent        │  │
+│  │  (FastAPI)           │  │  │  │  (FastAPI)           │  │
+│  └──────────────────────┘  │  │  └──────────────────────┘  │
+│                            │  │                            │
+│  ┌──────────┐ ┌──────────┐ │  │  ┌──────────┐ ┌──────────┐ │
+│  │  Docker  │ │  Tunnel  │ │  │  │  Docker  │ │   QEMU   │ │
+│  │  Engine  │ │  Server  │ │  │  │  Engine  │ │   /KVM   │ │
+│  └──────────┘ └──────────┘ │  │  └──────────┘ └──────────┘ │
+│  ┌──────────┐ ┌──────────┐ │  │  ┌──────────┐ ┌──────────┐ │
+│  │   VPS    │ │  VXLAN   │ │  │  │  Tunnel  │ │  VXLAN   │ │
+│  │  Manager │ │  Agent   │ │  │  │  Server  │ │  Agent   │ │
+│  └──────────┘ └──────────┘ │  │  └──────────┘ └──────────┘ │
+│                            │  │                            │
+│  ┌──────┐ ┌──────┐        │  │  ┌──────┐ ┌──────┐        │
+│  │VPS 1 │ │VPS 2 │        │  │  │VPS 3 │ │ VM 1 │        │
+│  └──────┘ └──────┘        │  │  └──────┘ └──────┘        │
+└────────────────────────────┘  └────────────────────────────┘
+                             │
+            ┌────────────────▼────────────────┐
+            │   Shared Storage (optional)     │
+            │   NFS / Samba / SSHFS           │
+            └─────────────────────────────────┘
 ```
 
-### TTY and Port Forwarding Architecture
-
-The tunnel system enables access to container services without Docker port mapping:
-
-```
-End user/application
-        │
-        ▼ TCP/UDP (for Port forwarding)
-kohakuriver connect/forward
-        │
-        ▼ WebSocket
-   HOST (proxy) ------> RUNNER (tunnel server) ------> Container
-                                                        (tunnel-client)
-                                                            │
-                                                            ▼ TCP/UDP (for Port forwarding)
-                                                      Service inside Container
-```
-
-This design allows:
-- Long-running containers to survive system restarts
-- Multiple services on same port across different containers (no port conflicts)
-- Secure access through Host without exposing runner nodes directly
+| Tier | Role |
+|------|------|
+| **Host** (:8000) | Central control plane. Task scheduling, node management, overlay hub, SSH/WebSocket proxy, SQLite database. |
+| **Runners** (:8001) | Compute node agents. Execute tasks in Docker/QEMU, monitor resources, run tunnel server, manage overlay agent. |
+| **Containers / VMs** | Workloads. Docker for lightweight tasks, QEMU/KVM for full isolation with GPU passthrough. |
+| **Shared Storage** | (Optional) NFS/Samba/SSHFS. Simplifies tarball distribution. Path can differ per node. Not required with registry images or VMs. |
 
 ---
 
-## CLI Reference
+## Quick Start
 
-### Task Management
+### Prerequisites
+
+- Python >= 3.10
+- Docker Engine on host and runner nodes
+- (Optional) Shared filesystem, NVIDIA drivers + Container Toolkit, QEMU/KVM + IOMMU
+
+### Install
+
 ```bash
-kohakuriver task list                      # List all tasks
-kohakuriver task submit [OPTIONS] -- CMD   # Submit a command task
-kohakuriver task status <task_id>          # Get task status
-kohakuriver task logs <task_id>            # View task output
-kohakuriver task kill <task_id>            # Kill a running task
-kohakuriver task pause <task_id>           # Pause a task
-kohakuriver task resume <task_id>          # Resume a paused task
+git clone https://github.com/KohakuBlueleaf/KohakuRiver.git
+cd KohakuRiver
+pip install .
+
+# With GPU monitoring
+pip install ".[gpu]"
 ```
 
-### VPS Management
+### Configure
+
 ```bash
-kohakuriver vps list                       # List VPS instances
-kohakuriver vps create [OPTIONS]           # Create a VPS
-kohakuriver vps stop <task_id>             # Stop a VPS
-kohakuriver vps connect <task_id>          # SSH to VPS via proxy
-kohakuriver vps restart <task_id>          # Restart a VPS
+kohakuriver init config --generate
 ```
 
-### Terminal & Port Access
-```bash
-kohakuriver connect <task_id>              # WebSocket terminal (full TTY)
-kohakuriver connect <task_id> --ide        # TUI IDE with file tree & terminal
-kohakuriver forward <task_id> <port>       # Forward local port to container
-kohakuriver forward <task_id> <port> -l <local_port>  # Custom local port
-kohakuriver forward <task_id> <port> --proto udp      # UDP forwarding
-kohakuriver terminal                       # Launch Terminal TUI dashboard
+Edit `~/.kohakuriver/host_config.py`:
+```python
+HOST_REACHABLE_ADDRESS = "192.168.1.100"  # IP that runners can reach
+SHARED_DIR = "/mnt/cluster-share"         # shared storage path (optional)
 ```
 
-### Node Management
-```bash
-kohakuriver node list                      # List registered nodes
-kohakuriver node overlay                   # View overlay network status
-kohakuriver status                         # Quick cluster overview
+Edit `~/.kohakuriver/runner_config.py`:
+```python
+HOST_ADDRESS = "192.168.1.100"            # host IP
+SHARED_DIR = "/mnt/cluster-share"         # same shared storage
 ```
 
-### Docker Management
+### Start
+
 ```bash
-kohakuriver docker container list          # List Host containers
-kohakuriver docker container create IMG NAME  # Create container from image
-kohakuriver docker container shell NAME    # Shell into container
-kohakuriver docker container start NAME    # Start a container
-kohakuriver docker container stop NAME     # Stop a container
-kohakuriver docker container delete NAME   # Delete a container
-kohakuriver docker tar list                # List tarballs
-kohakuriver docker tar create NAME         # Create tarball from container
-kohakuriver docker tar delete NAME         # Delete a tarball
+# On the host machine
+kohakuriver.host
+
+# On each runner node
+kohakuriver.runner
 ```
 
-### Configuration
+For production, use systemd:
 ```bash
-kohakuriver init config --all              # Generate all config files
-kohakuriver init config --host             # Generate host config only
-kohakuriver init config --runner           # Generate runner config only
-kohakuriver init service --all             # Register all systemd services
-kohakuriver init service --host            # Register host service
-kohakuriver init service --runner          # Register runner service
+kohakuriver init service --host     # on host
+kohakuriver init service --runner   # on runners
+sudo systemctl enable --now kohakuriver-host
+sudo systemctl enable --now kohakuriver-runner
+```
+
+### First Task
+
+```bash
+kohakuriver task submit -t mynode -- echo "Hello from the cluster!"
+kohakuriver task logs <task_id>
+```
+
+### First VPS
+
+```bash
+kohakuriver vps create -t mynode -c 4 -m 8G --ssh
+kohakuriver vps connect <task_id>          # SSH
+kohakuriver connect <task_id>              # WebSocket terminal
+kohakuriver connect <task_id> --ide        # TUI IDE
 ```
 
 ---
 
-## Configuration
+## Features
 
-Configuration files use Python with KohakuEngine. They are auto-loaded from `~/.kohakuriver/` if present.
+### Container as Portable Environment
 
-### Host Configuration (`~/.kohakuriver/host_config.py`)
+Create a Docker container on the host, customize it interactively, package it as a tarball. Every runner automatically syncs it. Or pull directly from any Docker registry.
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `HOST_BIND_IP` | str | `"0.0.0.0"` | IP address the Host server binds to |
-| `HOST_PORT` | int | `8000` | API server port |
-| `HOST_SSH_PROXY_PORT` | int | `8002` | SSH proxy port for VPS access |
-| `HOST_REACHABLE_ADDRESS` | str | `"127.0.0.1"` | **CRITICAL**: IP/hostname runners use to reach Host (and VXLAN local IP) |
-| `SHARED_DIR` | str | `"/mnt/cluster-share"` | Shared storage path (must match on all nodes) |
-| `DB_FILE` | str | `"/var/lib/kohakuriver/kohakuriver.db"` | SQLite database path |
-| `DEFAULT_CONTAINER_NAME` | str | `"kohakuriver-base"` | Default environment for tasks |
-| `OVERLAY_ENABLED` | bool | `False` | Enable VXLAN overlay networking |
+```bash
+kohakuriver docker container create python:3.12-slim my-env
+kohakuriver docker container shell my-env        # customize interactively
+kohakuriver docker tar create my-env             # package for distribution
+```
 
-### Runner Configuration (`~/.kohakuriver/runner_config.py`)
+### Resource Management
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `RUNNER_BIND_IP` | str | `"0.0.0.0"` | IP address the Runner binds to |
-| `RUNNER_PORT` | int | `8001` | Runner API port |
-| `HOST_ADDRESS` | str | `"127.0.0.1"` | **CRITICAL**: Host server address |
-| `HOST_PORT` | int | `8000` | Host server port |
-| `SHARED_DIR` | str | `"/mnt/cluster-share"` | Shared storage path (must match Host) |
-| `LOCAL_TEMP_DIR` | str | `"/tmp/kohakuriver"` | Local temporary storage |
-| `OVERLAY_ENABLED` | bool | `False` | Enable VXLAN overlay networking |
+```bash
+# 4 cores, 8GB memory, GPUs 0 and 1 on node "alpha"
+kohakuriver task submit -t alpha::0,1 -c 4 -m 8G --container my-env -- python train.py
+```
 
-### Environment Variables
+- **CPU** — core count with pinning, NUMA binding (`-t node:numa_id`)
+- **Memory** — per-task limits (`-m 8G`)
+- **GPU** — target by index (`-t node::0,1`), NVIDIA Container Toolkit for Docker, VFIO for VMs
+- **Multi-target** — submit to multiple nodes/GPUs in one command
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `KOHAKURIVER_HOST` | Host server address | `localhost` |
-| `KOHAKURIVER_PORT` | Host server port | `8000` |
-| `KOHAKURIVER_SSH_PROXY_PORT` | SSH proxy port | `8002` |
-| `KOHAKURIVER_SHARED_DIR` | Shared storage path | `/mnt/cluster-share` |
+### QEMU/KVM Virtual Machines
+
+Full VMs with VFIO GPU passthrough. Cloud-init provisions SSH keys, networking, and NVIDIA drivers automatically.
+
+```bash
+kohakuriver qemu check                                          # discover capabilities
+kohakuriver vps create --backend qemu -t mynode::0 --vm-memory 16384 -c 8 --ssh
+```
+
+### Overlay Network
+
+VXLAN L3 hub topology with host as central router. Set `OVERLAY_ENABLED=True` and open UDP 4789 — tunnel setup, subnet allocation, IP reservation, routing, and firewall rules are handled automatically.
+
+```
+              Host (10.128.0.1/12)
+                    │
+         ┌─────────┴──────────┐
+    VXLAN VNI=101        VXLAN VNI=102
+         │                    │
+   Runner 1              Runner 2
+   10.128.64.0/18        10.128.128.0/18
+```
+
+Supports up to 63 runners with ~16,380 IPs each (configurable).
+
+### Access Without Port Mapping
+
+A Rust tunnel client (Tokio + Tungstenite) inside containers enables access through WebSocket tunnels:
+
+```bash
+kohakuriver connect <task_id>              # full TTY terminal (vim, htop)
+kohakuriver connect <task_id> --ide        # TUI IDE with file tree
+kohakuriver forward <task_id> 8888         # port forwarding (Jupyter, etc.)
+kohakuriver forward <task_id> 5353 --proto udp
+kohakuriver vps connect <task_id>          # SSH through host proxy
+```
+
+No port conflicts. Works through firewalls. Survives container restarts.
+
+### Snapshots
+
+Docker VPS instances support snapshots — auto-snapshot on stop, manual creation, restore on restart, configurable retention (default: 3 per VPS).
+
+### Authentication
+
+Session-based and token-based auth with role hierarchy (admin, operator, user). Invitation-based registration. API tokens for CLI and automation.
 
 ---
 
 ## Web Dashboard
 
-The Vue.js frontend provides:
-- Cluster overview with node status and resource monitoring
-- Task submission with target selection and resource configuration
-- VPS creation with SSH key management
-- Docker environment management (containers and tarballs)
-- Web-based terminal access to containers and tasks
-- GPU utilization monitoring
+The Vue.js frontend provides cluster overview, task/VPS management, Docker environment management, web terminal (xterm.js), GPU monitoring (Plotly.js), and admin panel.
 
 ```bash
 cd src/kohakuriver-manager
 npm install
-npm run dev
+npm run dev      # port 5173
+npm run build    # production build
 ```
 
 ---
 
-## Requirements Summary
+## CLI Reference
 
-| Component | Requirements |
-|-----------|-------------|
-| **Host Node** | Docker Engine, Python >= 3.10, Shared storage access |
-| **Runner Nodes** | Docker Engine, Python >= 3.10, Shared storage access, Optional: `numactl`, `nvidia-ml-py` |
-| **Client Machines** | Python >= 3.10, SSH client |
-| **Shared Storage** | NFS or similar, same mount path on all nodes, read/write access |
+### Tasks
+
+```bash
+kohakuriver task submit [OPTIONS] -- CMD    # submit a command task
+kohakuriver task list                       # list tasks
+kohakuriver task status <id>                # detailed status
+kohakuriver task logs <id>                  # stdout (--stderr, --follow)
+kohakuriver task kill <id>                  # kill running task
+kohakuriver task pause <id>                 # pause
+kohakuriver task resume <id>               # resume
+kohakuriver task watch <id>                # live monitor
+```
+
+<details>
+<summary>Submit options</summary>
+
+| Flag | Description |
+|------|-------------|
+| `-t, --target NODE[::GPU,GPU]` | Target node, optional NUMA (`:numa`) and GPU (`::0,1`) |
+| `-c, --cores N` | CPU cores (0 = no limit) |
+| `-m, --memory SIZE` | Memory limit (e.g., `8G`, `512M`) |
+| `--container NAME` | Container environment name |
+| `--image NAME` | Docker registry image (alternative to tarball) |
+| `--privileged` | Run with Docker `--privileged` |
+| `--mount SRC:DST` | Additional bind mounts |
+| `--wait` | Wait for task completion |
+
+</details>
+
+### VPS
+
+```bash
+kohakuriver vps create [OPTIONS]            # create VPS
+kohakuriver vps list                        # list instances (--all for stopped)
+kohakuriver vps status <id>                 # detailed status
+kohakuriver vps stop <id>                   # stop (preserves state)
+kohakuriver vps restart <id>                # restart
+kohakuriver vps pause <id> / resume <id>    # pause / resume
+kohakuriver vps connect <id>                # SSH via proxy
+```
+
+<details>
+<summary>VPS options</summary>
+
+| Flag | Description |
+|------|-------------|
+| `--backend docker\|qemu` | Workload backend (default: docker) |
+| `--ssh` | Enable SSH access |
+| `--gen-ssh-key` | Generate SSH keypair |
+| `--public-key-file PATH` | SSH public key file |
+| `--vm-memory MB` | VM RAM in MB (QEMU only, default: 4096) |
+| `--vm-disk GB` | VM disk in GB (QEMU only, default: 20) |
+| `--vm-image NAME` | Base VM image (QEMU only, default: ubuntu-22.04) |
+
+</details>
+
+### Access & Terminal
+
+```bash
+kohakuriver connect <id>                    # WebSocket terminal (full TTY)
+kohakuriver connect <id> --ide              # TUI IDE with file tree
+kohakuriver forward <id> <port>             # port forwarding
+kohakuriver forward <id> <port> -l <local>  # custom local port
+kohakuriver forward <id> <port> --proto udp # UDP forwarding
+kohakuriver terminal                        # TUI dashboard
+```
+
+### Nodes
+
+```bash
+kohakuriver node list                       # list nodes (--status online|offline)
+kohakuriver node status <hostname>          # node details
+kohakuriver node health [hostname]          # health metrics
+kohakuriver node summary                    # cluster summary
+kohakuriver node overlay                    # overlay network status
+```
+
+### Docker
+
+```bash
+kohakuriver docker container list           # list host containers
+kohakuriver docker container create IMG NAME # create from image
+kohakuriver docker container shell NAME     # interactive shell
+kohakuriver docker container start NAME     # start
+kohakuriver docker container stop NAME      # stop
+kohakuriver docker container delete NAME    # delete
+kohakuriver docker tar list                 # list tarballs
+kohakuriver docker tar create NAME          # create tarball
+kohakuriver docker tar delete NAME          # delete tarball
+kohakuriver docker images                   # list images on runners
+```
+
+<details>
+<summary>QEMU/KVM, Auth, SSH, Setup</summary>
+
+**QEMU/KVM**
+
+```bash
+kohakuriver qemu check                      # verify KVM, IOMMU, VFIO GPUs
+kohakuriver qemu image create               # create base VM image
+kohakuriver qemu image list                 # list base images
+kohakuriver qemu instances                  # list VM instances
+kohakuriver qemu cleanup <id>               # delete VM instance
+kohakuriver qemu acs-override               # apply ACS override
+```
+
+**Authentication**
+
+```bash
+kohakuriver auth login                      # login
+kohakuriver auth logout                     # logout (--revoke to revoke token)
+kohakuriver auth status                     # current auth status
+kohakuriver auth token list                 # list API tokens
+kohakuriver auth token create <name>        # create token
+kohakuriver auth token revoke <id>          # revoke token
+```
+
+**SSH**
+
+```bash
+kohakuriver ssh connect <id>                # SSH to VPS via proxy
+kohakuriver ssh config                      # generate SSH config for all VPS
+```
+
+**Setup**
+
+```bash
+kohakuriver init config --generate          # generate config files
+kohakuriver init service --host             # create host systemd service
+kohakuriver init service --runner           # create runner systemd service
+kohakuriver config show                     # show current config
+```
+
+</details>
+
+---
+
+## Configuration
+
+Configuration files are Python modules in `~/.kohakuriver/`. Generate with `kohakuriver init config --generate`.
+
+<details>
+<summary>Host settings (<code>~/.kohakuriver/host_config.py</code>)</summary>
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `HOST_REACHABLE_ADDRESS` | `"127.0.0.1"` | IP/hostname runners and clients use to reach the host |
+| `HOST_PORT` | `8000` | API server port |
+| `HOST_SSH_PROXY_PORT` | `8002` | SSH proxy port |
+| `SHARED_DIR` | `"/mnt/cluster-share"` | Shared storage path |
+| `DB_FILE` | `"cluster_management.db"` | SQLite database path |
+| `OVERLAY_ENABLED` | `False` | Enable VXLAN overlay networking |
+| `DEFAULT_CONTAINER_NAME` | `"kohakuriver-base"` | Default container environment |
+| `HEARTBEAT_INTERVAL_SECONDS` | `5` | Runner heartbeat interval |
+| `HEARTBEAT_TIMEOUT_FACTOR` | `6` | Missed heartbeats before offline |
+| `TASKS_PRIVILEGED` | `False` | Run containers with `--privileged` |
+
+</details>
+
+<details>
+<summary>Runner settings (<code>~/.kohakuriver/runner_config.py</code>)</summary>
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `HOST_ADDRESS` | `"127.0.0.1"` | Host server address |
+| `HOST_PORT` | `8000` | Host server port |
+| `SHARED_DIR` | `"/mnt/cluster-share"` | Shared storage path (can differ from host) |
+| `LOCAL_TEMP_DIR` | `"/tmp/kohakuriver"` | Local temporary storage |
+| `OVERLAY_ENABLED` | `False` | Enable VXLAN overlay networking |
+| `TUNNEL_ENABLED` | `True` | Enable tunnel server |
+| `VM_IMAGES_DIR` | `"~/.kohakuriver/vm-images"` | QEMU base image directory |
+| `VM_DEFAULT_MEMORY_MB` | `4096` | Default VM RAM |
+| `VM_ACS_OVERRIDE` | `False` | Enable ACS override for IOMMU groups |
+
+</details>
+
+<details>
+<summary>Environment variables</summary>
+
+| Variable | Description |
+|----------|-------------|
+| `KOHAKURIVER_HOST` | Host server address (for CLI) |
+| `KOHAKURIVER_PORT` | Host server port (for CLI) |
+| `KOHAKURIVER_SSH_PROXY_PORT` | SSH proxy port (for CLI) |
+
+</details>
+
+---
+
+## What KohakuRiver Is (and Isn't)
+
+| KohakuRiver is for... | KohakuRiver is not for... |
+|---|---|
+| Small clusters (3-20 nodes) | Large-scale HPC (Slurm, PBS) |
+| Command tasks and interactive VPS sessions | Multi-service orchestration (Kubernetes) |
+| Docker containers as portable environments | Complex CI/CD pipelines |
+| Independent tasks and batch submission | DAG workflow orchestration (Airflow, Prefect) |
+| Research labs, home labs, small teams | Multi-tenant production environments |
+| GPU workloads with simple allocation | Advanced GPU scheduling (MIG, time-slicing) |
+
+---
+
+## Project Structure
+
+```
+src/
+├── kohakuriver/              # Python backend
+│   ├── host/                 # Host server (FastAPI :8000)
+│   ├── runner/               # Runner agent (FastAPI :8001)
+│   ├── cli/                  # CLI (Typer + Rich + Textual)
+│   ├── db/                   # Peewee ORM models
+│   ├── docker/               # Docker client wrapper
+│   ├── qemu/                 # QEMU/KVM + VFIO + cloud-init
+│   ├── models/               # Pydantic request/response models
+│   └── utils/                # Shared utilities, config
+├── kohakuriver-manager/      # Vue.js web dashboard
+├── kohakuriver-tunnel/       # Rust tunnel client
+└── kohakuriver-doc/          # Documentation site
+```
+
+## Tech Stack
+
+| Layer | Technologies |
+|-------|-------------|
+| **Backend** | Python 3.10+, FastAPI, Uvicorn, Peewee ORM, SQLite, pyroute2 |
+| **CLI** | Typer, Rich, Textual |
+| **Frontend** | Vue.js 3, Vite, Element Plus, Pinia, xterm.js, Plotly.js |
+| **Tunnel** | Rust, Tokio, Tungstenite |
+| **VM** | QEMU/KVM, VFIO, cloud-init, virtio-9p |
+| **Auth** | bcrypt, session cookies, API tokens |
+
+## Documentation
+
+Full documentation: **[riverdoc.kohaku-lab.org](https://riverdoc.kohaku-lab.org)**
+
+- **User Guide** — Installation, setup, tasks, VPS, CLI reference, administration
+- **Developer Guide** — Architecture internals, code structure, conventions
+- **Technical Report** — Deep-dive analyses of overlay networking, QEMU virtualization, tunnel protocol, authentication
 
 ---
 
@@ -458,4 +595,4 @@ npm run dev
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
-If you need a license exemption for commercial or proprietary use, please contact: **kohaku@kblueleaf.net**
+For commercial or proprietary license exemptions, contact: **kohaku@kblueleaf.net**
