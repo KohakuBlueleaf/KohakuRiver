@@ -269,6 +269,12 @@ defineExpose({
 .gpu-checkbox {
   margin: 0 !important;
   width: 100%;
+  overflow: hidden;
+}
+
+:deep(.gpu-checkbox .el-checkbox__label) {
+  overflow: hidden;
+  width: 100%;
 }
 
 .gpu-checkbox-content {
@@ -277,6 +283,15 @@ defineExpose({
   align-items: flex-start;
   font-size: 0.85em;
   line-height: 1.4;
+  overflow: hidden;
+  width: 100%;
+}
+
+.gpu-checkbox-content > .font-medium {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
 }
 
 .gpu-stats {
