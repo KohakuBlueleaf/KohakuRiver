@@ -399,6 +399,7 @@ def _generate_service_file(
     env_path: str,
     after_units: list[str] | None = None,
     wants_units: list[str] | None = None,
+    kill_mode: str | None = None,
 ) -> str:
     """Generate a systemd unit file content string.
 
@@ -411,6 +412,7 @@ def _generate_service_file(
         env_path: PATH value for the Environment directive (empty to omit).
         after_units: List of units for After= directive. Defaults to ["network.target"].
         wants_units: List of units for Wants= directive. Defaults to none.
+        kill_mode: KillMode= directive (e.g. "process"). Omitted if None.
 
     Returns:
         The complete systemd service file content.
@@ -425,6 +427,7 @@ def _generate_service_file(
         wants_line = "Wants=" + " ".join(wants_units)
 
     env_line = f'Environment="PATH={env_path}"' if env_path else ""
+    kill_mode_line = f"KillMode={kill_mode}" if kill_mode else ""
 
     service_content = f"""[Unit]
 Description={description}
@@ -437,6 +440,7 @@ WorkingDirectory={working_dir}
 ExecStart={exec_command}
 Restart=on-failure
 RestartSec=5
+{kill_mode_line}
 {env_line}
 
 [Install]
@@ -621,6 +625,7 @@ def init_service(
             env_path=env_path,
             after_units=["network.target", "docker.service"],
             wants_units=["docker.service"],
+            kill_mode="process",
         )
 
         output_path = os.path.join(output_dir, "kohakuriver-runner.service")

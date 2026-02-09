@@ -21,6 +21,8 @@ export const useVpsStore = defineStore('vps', () => {
   const loading = ref(false)
   const creating = ref(false)
   const error = ref(null)
+  /** @type {import('vue').Ref<boolean>} */
+  const initialized = ref(false)
 
   // Getters
   const activeVps = computed(() =>
@@ -31,8 +33,7 @@ export const useVpsStore = defineStore('vps', () => {
 
   // Actions
   async function fetchVpsList(activeOnly = false) {
-    const isInitialLoad = vpsList.value.length === 0
-    if (isInitialLoad) {
+    if (!initialized.value) {
       loading.value = true
     }
     error.value = null
@@ -43,9 +44,8 @@ export const useVpsStore = defineStore('vps', () => {
       error.value = e.response?.data?.detail || e.message
       console.error('Failed to fetch VPS list:', e)
     } finally {
-      if (isInitialLoad) {
-        loading.value = false
-      }
+      loading.value = false
+      initialized.value = true
     }
   }
 

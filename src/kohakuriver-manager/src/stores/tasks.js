@@ -22,6 +22,8 @@ export const useTasksStore = defineStore('tasks', () => {
   const loading = ref(false)
   const submitting = ref(false)
   const error = ref(null)
+  /** @type {import('vue').Ref<boolean>} */
+  const initialized = ref(false)
 
   // Getters
   const runningTasks = computed(() => tasks.value.filter((t) => t.status === 'running'))
@@ -34,8 +36,7 @@ export const useTasksStore = defineStore('tasks', () => {
 
   // Actions
   async function fetchTasks(params = {}) {
-    const isInitialLoad = tasks.value.length === 0
-    if (isInitialLoad) {
+    if (!initialized.value) {
       loading.value = true
     }
     error.value = null
@@ -46,9 +47,8 @@ export const useTasksStore = defineStore('tasks', () => {
       error.value = e.response?.data?.detail || e.message
       console.error('Failed to fetch tasks:', e)
     } finally {
-      if (isInitialLoad) {
-        loading.value = false
-      }
+      loading.value = false
+      initialized.value = true
     }
   }
 

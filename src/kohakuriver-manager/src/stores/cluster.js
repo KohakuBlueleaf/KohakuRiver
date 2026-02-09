@@ -17,6 +17,8 @@ export const useClusterStore = defineStore('cluster', () => {
   const health = ref(null)
   const loading = ref(false)
   const error = ref(null)
+  /** @type {import('vue').Ref<boolean>} */
+  const initialized = ref(false)
 
   // Getters
   const onlineNodes = computed(() => nodes.value.filter((n) => n.status === 'online'))
@@ -45,8 +47,7 @@ export const useClusterStore = defineStore('cluster', () => {
 
   // Actions
   async function fetchNodes() {
-    const isInitialLoad = nodes.value.length === 0
-    if (isInitialLoad) {
+    if (!initialized.value) {
       loading.value = true
     }
     error.value = null
@@ -57,9 +58,8 @@ export const useClusterStore = defineStore('cluster', () => {
       error.value = e.response?.data?.detail || e.message
       console.error('Failed to fetch nodes:', e)
     } finally {
-      if (isInitialLoad) {
-        loading.value = false
-      }
+      loading.value = false
+      initialized.value = true
     }
   }
 
