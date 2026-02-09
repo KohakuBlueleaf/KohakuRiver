@@ -33,6 +33,21 @@ def report_killed_task(task_id: int, reason: str):
     )
 
 
+def _normalize_pci(pci: str) -> str:
+    """Normalize PCI bus ID to 4-digit domain format for comparison.
+
+    pynvml uses ``00000000:XX:XX.X`` (8-digit domain) while sysfs/VFIO
+    uses ``0000:XX:XX.X`` (4-digit domain).  This strips the domain to
+    4 digits so both formats match.
+    """
+    pci = pci.strip().lower()
+    # "00000000:41:00.0" -> split on ":" gives ["00000000", "41", "00.0"]
+    parts = pci.split(":")
+    if len(parts) >= 3 and len(parts[0]) > 4:
+        parts[0] = parts[0][-4:]  # keep last 4 chars of domain
+    return ":".join(parts)
+
+
 def _collect_gpu_stats_with_vm_info() -> list[dict]:
     """Collect GPU stats with stable IDs and VM-reserved GPU info.
 
@@ -59,23 +74,22 @@ def _collect_gpu_stats_with_vm_info() -> list[dict]:
         if not cap.vfio_gpus:
             return gpu_info
 
-        # Build PCI address -> stable VFIO gpu_id mapping
+        # Build normalized PCI address -> stable VFIO gpu_id mapping
         pci_to_vfio_id: dict[str, int] = {}
         vfio_pci_set: set[str] = set()
         for g in cap.vfio_gpus:
-            pci = g.pci_address.lower()
+            pci = _normalize_pci(g.pci_address)
             pci_to_vfio_id[pci] = g.gpu_id
             vfio_pci_set.add(pci)
-
-        vfio_by_pci = {g.pci_address.lower(): g for g in cap.vfio_gpus}
 
         # Remap pynvml gpu_ids to stable VFIO gpu_ids via PCI address
         seen_pci: set[str] = set()
         for gpu in gpu_info:
-            pci = gpu.get("pci_bus_id", "").lower()
+            pci = _normalize_pci(gpu.get("pci_bus_id", ""))
             if pci and pci in pci_to_vfio_id:
                 gpu["gpu_id"] = pci_to_vfio_id[pci]
-            seen_pci.add(pci)
+            if pci:
+                seen_pci.add(pci)
 
         # Map VM PCI addresses to (VMInstance, vm_gpu_stats_dict)
         qemu_mgr = get_qemu_manager()
@@ -85,9 +99,9 @@ def _collect_gpu_stats_with_vm_info() -> list[dict]:
                 continue
             # Filter to GPU-class PCI addresses only (exclude audio companions)
             gpu_pcis = [
-                addr.lower()
+                _normalize_pci(addr)
                 for addr in vm.gpu_pci_addresses
-                if addr.lower() in vfio_pci_set
+                if _normalize_pci(addr) in vfio_pci_set
             ]
             for i, vm_gpu in enumerate(vm.vm_gpu_info):
                 if i < len(gpu_pcis):
@@ -95,7 +109,7 @@ def _collect_gpu_stats_with_vm_info() -> list[dict]:
 
         # Add VFIO-bound GPUs not visible to pynvml
         for vfio_gpu in cap.vfio_gpus:
-            pci = vfio_gpu.pci_address.lower()
+            pci = _normalize_pci(vfio_gpu.pci_address)
             if pci in seen_pci:
                 continue  # Already in gpu_info from pynvml
 

@@ -196,6 +196,7 @@ class QEMUManager:
                         qemu_cmd,
                         stdout=subprocess.DEVNULL,
                         stderr=err_file,
+                        start_new_session=True,
                         timeout=30,
                     )
 
@@ -423,6 +424,7 @@ class QEMUManager:
                     vm.qemu_cmd,
                     stdout=subprocess.DEVNULL,
                     stderr=err_file,
+                    start_new_session=True,
                     timeout=30,
                 )
 
