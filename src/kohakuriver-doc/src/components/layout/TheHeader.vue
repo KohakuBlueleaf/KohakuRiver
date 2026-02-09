@@ -12,6 +12,15 @@
 
       <!-- Nav -->
       <nav class="flex items-center gap-4">
+        <!-- Search trigger -->
+        <button
+          class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 bg-gray-100 dark:bg-gray-700/60 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600/60 transition-colors"
+          @click="searchRef?.open()">
+          <div class="i-carbon-search text-sm" />
+          <span class="hidden sm:inline">Search</span>
+          <kbd class="hidden sm:inline text-xs text-gray-400 ml-1">{{ shortcutKey }}K</kbd>
+        </button>
+
         <router-link
           to="/docs"
           class="text-sm text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400">
@@ -36,11 +45,16 @@
       </nav>
     </div>
   </header>
+
+  <DocSearch ref="searchRef" />
 </template>
 
 <script setup>
 import siteConfig from '../../../site.config.js'
 import { useThemeStore } from '@/stores/theme'
+import DocSearch from '@/framework/components/DocSearch.vue'
 
 const themeStore = useThemeStore()
+const searchRef = ref(null)
+const shortcutKey = navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl+'
 </script>
