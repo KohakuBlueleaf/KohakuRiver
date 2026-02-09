@@ -165,6 +165,7 @@ onMounted(() => renderMermaidDiagrams())
   font-size: 15px;
   line-height: 1.7;
   word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .markdown-body h1,
@@ -180,19 +181,31 @@ onMounted(() => renderMermaidDiagrams())
 }
 
 .markdown-body h1 {
-  font-size: 2em;
+  font-size: 1.75em;
   border-bottom: 1px solid #eaecef;
   padding-bottom: 0.3em;
 }
 
 .markdown-body h2 {
-  font-size: 1.5em;
+  font-size: 1.35em;
   border-bottom: 1px solid #eaecef;
   padding-bottom: 0.3em;
 }
 
 .markdown-body h3 {
-  font-size: 1.25em;
+  font-size: 1.15em;
+}
+
+@media (min-width: 640px) {
+  .markdown-body h1 {
+    font-size: 2em;
+  }
+  .markdown-body h2 {
+    font-size: 1.5em;
+  }
+  .markdown-body h3 {
+    font-size: 1.25em;
+  }
 }
 
 .markdown-body p {
@@ -209,13 +222,21 @@ onMounted(() => renderMermaidDiagrams())
 }
 
 .markdown-body pre {
-  padding: 16px;
+  padding: 12px;
   overflow: auto;
-  font-size: 85%;
+  font-size: 82%;
   line-height: 1.45;
   background-color: #f6f8fa;
   border-radius: 6px;
   margin-bottom: 16px;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (min-width: 640px) {
+  .markdown-body pre {
+    padding: 16px;
+    font-size: 85%;
+  }
 }
 
 .markdown-body pre code,
@@ -241,9 +262,16 @@ onMounted(() => renderMermaidDiagrams())
 
 .markdown-body ul,
 .markdown-body ol {
-  padding-left: 2em;
+  padding-left: 1.5em;
   margin-bottom: 16px;
   list-style: revert;
+}
+
+@media (min-width: 640px) {
+  .markdown-body ul,
+  .markdown-body ol {
+    padding-left: 2em;
+  }
 }
 
 .markdown-body li {
@@ -261,12 +289,30 @@ onMounted(() => renderMermaidDiagrams())
   border-collapse: collapse;
   width: 100%;
   margin-bottom: 16px;
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (min-width: 640px) {
+  .markdown-body table {
+    display: table;
+  }
 }
 
 .markdown-body table th,
 .markdown-body table td {
-  padding: 6px 13px;
+  padding: 6px 10px;
   border: 1px solid #d0d7de;
+  white-space: nowrap;
+}
+
+@media (min-width: 640px) {
+  .markdown-body table th,
+  .markdown-body table td {
+    padding: 6px 13px;
+    white-space: normal;
+  }
 }
 
 .markdown-body table th {
@@ -424,12 +470,20 @@ onMounted(() => renderMermaidDiagrams())
 .markdown-body .mermaid-diagram {
   text-align: center;
   overflow: visible;
-  min-height: 200px;
-  max-height: 600px;
+  min-height: 150px;
+  max-height: 400px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: grab;
+  touch-action: pan-x pan-y;
+}
+
+@media (min-width: 640px) {
+  .markdown-body .mermaid-diagram {
+    min-height: 200px;
+    max-height: 600px;
+  }
 }
 
 .markdown-body .mermaid-diagram:active {
@@ -438,9 +492,15 @@ onMounted(() => renderMermaidDiagrams())
 
 .markdown-body .mermaid-diagram svg {
   max-width: 100%;
-  max-height: 600px;
+  max-height: 400px;
   width: auto;
   height: auto;
+}
+
+@media (min-width: 640px) {
+  .markdown-body .mermaid-diagram svg {
+    max-height: 600px;
+  }
 }
 
 .markdown-body .mermaid-wrapper:fullscreen .mermaid-diagram {

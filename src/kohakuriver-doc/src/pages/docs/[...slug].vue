@@ -183,7 +183,7 @@ watch(
       <!-- Previous / Next navigation -->
       <nav
         v-if="adjacentPages.prev || adjacentPages.next"
-        class="flex items-stretch gap-4 mt-12 pt-6 border-t border-gray-200 dark:border-gray-700">
+        class="flex flex-col sm:flex-row items-stretch gap-3 sm:gap-4 mt-8 sm:mt-12 pt-6 border-t border-gray-200 dark:border-gray-700">
         <router-link
           v-if="adjacentPages.prev"
           :to="adjacentPages.prev.path"

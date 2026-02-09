@@ -5,16 +5,16 @@
       <!-- Logo / Home -->
       <router-link
         to="/"
-        class="flex items-center gap-2 font-bold text-lg text-gray-900 dark:text-white hover:opacity-80">
+        class="flex items-center gap-2 font-bold text-lg text-gray-900 dark:text-white hover:opacity-80 shrink-0">
         <div class="i-carbon-flow text-blue-600 dark:text-blue-400 text-xl" />
         <span>{{ siteConfig.name }}</span>
       </router-link>
 
       <!-- Nav -->
-      <nav class="flex items-center gap-4">
+      <nav class="flex items-center gap-2 sm:gap-4">
         <!-- Search trigger -->
         <button
-          class="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 bg-gray-100 dark:bg-gray-700/60 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600/60 transition-colors"
+          class="flex items-center gap-2 px-2.5 py-1.5 sm:px-3 text-sm text-gray-400 bg-gray-100 dark:bg-gray-700/60 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600/60 transition-colors min-h-[36px]"
           @click="searchRef?.open()">
           <div class="i-carbon-search text-sm" />
           <span class="hidden sm:inline">Search</span>
@@ -23,19 +23,25 @@
 
         <router-link
           to="/docs"
-          class="text-sm text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400">
+          class="hidden sm:block text-sm text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400">
           Documentation
+        </router-link>
+        <router-link
+          to="/docs"
+          class="sm:hidden p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
+          title="Documentation">
+          <div class="i-carbon-book text-lg" />
         </router-link>
         <a
           v-if="siteConfig.links?.github"
           :href="siteConfig.links.github"
           target="_blank"
           rel="noopener"
-          class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white">
+          class="p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white">
           <div class="i-carbon-logo-github text-xl" />
         </a>
         <button
-          class="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white p-1"
+          class="p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
           title="Toggle dark mode"
           @click="themeStore.toggle()">
           <div

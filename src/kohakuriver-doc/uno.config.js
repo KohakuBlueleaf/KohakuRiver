@@ -28,16 +28,19 @@ export default defineConfig({
 
     // Layout
     'container-doc': 'max-w-7xl mx-auto px-4 sm:px-6',
-    'doc-content': 'flex-1 min-w-0 px-6 py-8 lg:px-12',
+    'doc-content': 'flex-1 min-w-0 px-4 py-6 sm:px-6 sm:py-8 lg:px-12',
     'doc-card': 'card-hover p-6',
 
     // Sidebar container — fixed position, solid bg
     'doc-sidebar-wrap':
       'w-64 border-r border-blue-100 dark:border-blue-950 overflow-y-auto bg-blue-50 dark:bg-gray-950',
+    // Mobile sidebar: full-width drawer capped at 20rem
+    'doc-sidebar-mobile':
+      'w-[85vw] max-w-80 border-r border-blue-100 dark:border-blue-950 overflow-y-auto bg-blue-50 dark:bg-gray-950 shadow-xl lg:shadow-none',
 
-    // Sidebar tree items — all use bg-transparent as base
+    // Sidebar tree items — all use bg-transparent as base, min-h for touch targets
     'sidebar-item':
-      'w-full flex items-center gap-1.5 px-2 py-1.5 text-sm rounded transition-colors bg-transparent cursor-pointer',
+      'w-full flex items-center gap-1.5 px-2 py-2 lg:py-1.5 text-sm rounded transition-colors bg-transparent cursor-pointer',
     'sidebar-item-idle':
       'sidebar-item text-gray-700 dark:text-gray-300 hover:bg-blue-100/70 dark:hover:bg-blue-900/30 hover:text-blue-700 dark:hover:text-blue-300',
     'sidebar-item-ancestor':
@@ -128,6 +131,7 @@ export default defineConfig({
     'i-carbon-zoom-out',
     'i-carbon-zoom-reset',
     'i-carbon-maximize',
+    'i-carbon-arrow-right',
     'i-carbon-circle-dash',
     'i-carbon-sun',
     'i-carbon-moon',

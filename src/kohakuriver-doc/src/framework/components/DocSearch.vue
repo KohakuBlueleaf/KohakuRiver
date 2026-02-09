@@ -3,7 +3,7 @@
     <Transition name="search-fade">
       <div
         v-if="visible"
-        class="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]"
+        class="fixed inset-0 z-50 flex items-start justify-center pt-[5vh] sm:pt-[10vh]"
         @mousedown.self="close">
         <!-- Backdrop -->
         <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" />
@@ -11,7 +11,7 @@
         <!-- Modal -->
         <div
           ref="modalRef"
-          class="relative w-full max-w-xl mx-4 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+          class="relative w-full max-w-xl mx-2 sm:mx-4 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
           <!-- Search input -->
           <div class="flex items-center border-b border-gray-200 dark:border-gray-700 px-4">
             <div class="i-carbon-search text-gray-400 mr-3 text-lg shrink-0" />
@@ -32,7 +32,7 @@
           </div>
 
           <!-- Results -->
-          <div class="max-h-80 overflow-y-auto overscroll-contain">
+          <div class="max-h-[60vh] sm:max-h-80 overflow-y-auto overscroll-contain">
             <div
               v-if="!searchReady"
               class="px-4 py-8 text-center text-gray-400 text-sm">

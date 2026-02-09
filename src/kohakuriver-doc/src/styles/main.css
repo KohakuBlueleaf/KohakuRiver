@@ -67,3 +67,26 @@ body {
 html.dark {
   color-scheme: dark;
 }
+
+/* Hide scrollbar but keep scrollable (for breadcrumb, etc.) */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Touch-friendly: prevent text selection during swipe */
+.touch-none {
+  touch-action: none;
+}
+
+/* Mobile tap highlight removal */
+@media (hover: none) {
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
