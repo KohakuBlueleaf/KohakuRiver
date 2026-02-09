@@ -165,6 +165,31 @@ The `nvidia-persistenced` daemon keeps `/dev/nvidia*` file descriptors open, whi
 
 The restart happens in the `bind_iommu_group()` / `unbind_iommu_group()` `finally` blocks, so remaining GPUs on the host (not passed through) regain persistence mode.
 
+## Xorg GPU Auto-Detection
+
+On nodes running a display manager (common on servers with ASPEED AST2400/2500 BMC VGA), Xorg auto-adds **all** GPUs — including NVIDIA compute GPUs — even when the display is connected to the AST device only. This creates open file descriptors on `/dev/nvidia*` that block VFIO unbinding entirely.
+
+The symptom is VFIO bind timeouts followed by "No such device" errors, because the nvidia driver cannot cleanly release the GPU while Xorg holds it.
+
+**Diagnosis**:
+
+```bash
+sudo fuser /dev/nvidia*
+# If Xorg appears here, it is blocking VFIO bind:
+#   /dev/nvidia0:   root  12345 F...m Xorg
+```
+
+**Solution**: Disable Xorg GPU auto-detection via the `AutoAddGPU` server flag:
+
+```
+# /etc/X11/xorg.conf.d/01-no-auto-gpu.conf
+Section "ServerFlags"
+    Option "AutoAddGPU" "false"
+EndSection
+```
+
+After restarting the display manager, Xorg uses only the primary display device (e.g., AST BMC), leaving all NVIDIA GPUs available for VFIO passthrough. This is a prerequisite for GPU passthrough on any node with a running display manager.
+
 ## Group-Level Operations
 
 ```python

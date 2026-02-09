@@ -74,7 +74,35 @@ vfio_pci
 vfio_iommu_type1
 ```
 
-### Step 3: Check Setup
+### Step 3: Prevent Xorg from Grabbing GPUs
+
+On nodes with a display manager (e.g., using ASPEED AST2400/2500 BMC for display), Xorg will by default auto-add **all** GPUs — including NVIDIA compute GPUs. This blocks VFIO unbinding because Xorg holds `/dev/nvidia*` file descriptors open.
+
+To prevent this, disable Xorg GPU auto-detection:
+
+```bash
+sudo mkdir -p /etc/X11/xorg.conf.d
+echo 'Section "ServerFlags"
+    Option "AutoAddGPU" "false"
+EndSection' | sudo tee /etc/X11/xorg.conf.d/01-no-auto-gpu.conf
+```
+
+Then restart the display manager:
+
+```bash
+sudo systemctl restart gdm   # or lightdm/sddm
+```
+
+Verify Xorg no longer holds NVIDIA devices:
+
+```bash
+sudo fuser /dev/nvidia*
+# Should show only nvidia-persistenced, NOT Xorg
+```
+
+> **Note**: This is required on any node running a display manager where you want GPU passthrough. Without this, VFIO bind will fail with timeouts or "No such device" errors. Headless nodes (no display manager) are not affected.
+
+### Step 3b: Check Setup
 
 ```bash
 kohakuriver qemu check
@@ -161,7 +189,7 @@ kohakuriver qemu check  # Verify groups are split
 Test binding a GPU to VFIO manually:
 
 ```bash
-scripts/test-vfio-bind.sh
+scripts/test-vfio-bind.sh 0000:XX:00.0
 ```
 
 Recover after failed VFIO operations:
@@ -169,3 +197,9 @@ Recover after failed VFIO operations:
 ```bash
 scripts/recover-vfio.sh
 ```
+
+### Xorg Blocking VFIO Bind
+
+**Symptom**: VFIO bind times out or fails with "No such device". `fuser /dev/nvidia*` shows Xorg holding all GPUs.
+
+**Solution**: Disable Xorg GPU auto-detection (see Step 3 above). This is the most common cause of VFIO bind failures on nodes with a display manager.

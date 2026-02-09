@@ -81,13 +81,19 @@ WorkingDirectory=/home/user/.kohakuriver
 ExecStart=/usr/bin/python -m kohakuriver.cli.runner --config /home/user/.kohakuriver/runner_config.py
 Restart=on-failure
 RestartSec=5
+KillMode=process
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Note: The runner service has `After=docker.service` and `Wants=docker.service` to ensure Docker is available.
+Key runner-specific settings:
+
+- `After=docker.service` and `Wants=docker.service` ensure Docker is available
+- **`KillMode=process`** -- only kills the runner process on restart/stop, preserving QEMU VM child processes. Without this, systemd's default `KillMode=control-group` kills all processes in the cgroup, which would terminate running VMs when the runner service restarts.
+
+> **Important**: If you have an existing runner service file that predates this setting, add `KillMode=process` to the `[Service]` section manually, then run `sudo systemctl daemon-reload && sudo systemctl restart kohakuriver-runner`.
 
 ## Managing Services
 

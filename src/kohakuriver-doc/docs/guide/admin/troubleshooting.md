@@ -160,6 +160,44 @@ The runner detects resources automatically on startup. If the hardware changed, 
 3. Enable ACS override if GPUs share IOMMU groups
 4. Ensure the GPU is not in use by another task or the host X server
 
+### VFIO Bind Fails (Xorg Holding GPUs)
+
+**Symptom**: VM creation fails with "No such device" or VFIO bind timeout. `sudo fuser /dev/nvidia*` shows Xorg holding all GPUs.
+
+**Cause**: Xorg auto-adds all GPUs by default, even on nodes using an ASPEED BMC (AST2400/2500) for display. This keeps `/dev/nvidia*` file descriptors open, blocking VFIO unbinding.
+
+**Solution**: Disable Xorg GPU auto-detection:
+
+```bash
+sudo mkdir -p /etc/X11/xorg.conf.d
+echo 'Section "ServerFlags"
+    Option "AutoAddGPU" "false"
+EndSection' | sudo tee /etc/X11/xorg.conf.d/01-no-auto-gpu.conf
+sudo systemctl restart gdm   # or lightdm/sddm
+```
+
+See [GPU Passthrough setup](../setup/gpu-passthrough.md) for details.
+
+### VMs Killed When Runner Restarts
+
+**Symptom**: Running QEMU VMs die when the runner service is restarted.
+
+**Cause**: systemd's default `KillMode=control-group` kills all processes in the service's cgroup, including daemonized QEMU processes.
+
+**Solution**: Ensure `KillMode=process` is set in the runner service file:
+
+```bash
+# Check current setting
+grep KillMode /etc/systemd/system/kohakuriver-runner.service
+
+# If missing, add to [Service] section:
+#   KillMode=process
+sudo systemctl daemon-reload
+sudo systemctl restart kohakuriver-runner
+```
+
+See [Systemd Services](../setup/systemd-services.md) for the full service configuration.
+
 ## Overlay Network Issues
 
 ### Containers Cannot Communicate Across Nodes
