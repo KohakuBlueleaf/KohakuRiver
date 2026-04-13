@@ -14,6 +14,7 @@ Responsibilities:
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Path, Query, WebSocket
 
@@ -52,11 +53,19 @@ logger = get_logger(__name__)
 # Background tasks tracking
 background_tasks: set[asyncio.Task] = set()
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await startup_event()
+    yield
+    await shutdown_event()
+
+
 # FastAPI application instance
 app = FastAPI(
     title="HakuRiver Host",
     description="Cluster management host server",
     version="0.4.0",
+    lifespan=lifespan,
 )
 
 # Include API routers (all under /api prefix)
@@ -192,9 +201,6 @@ async def shutdown_event():
     logger.info("Host server shut down complete")
 
 
-# Register lifecycle handlers
-app.add_event_handler("startup", startup_event)
-app.add_event_handler("shutdown", shutdown_event)
 
 
 # =============================================================================

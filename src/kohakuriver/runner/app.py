@@ -7,6 +7,7 @@ Main entry point for the runner server.
 import asyncio
 import os
 import socket
+from contextlib import asynccontextmanager
 
 import docker as docker_lib
 import httpx
@@ -46,11 +47,19 @@ background_tasks: set[asyncio.Task] = set()
 numa_topology: dict | None = None
 task_store: TaskStateStore | None = None
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await startup_event()
+    yield
+    await shutdown_event()
+
+
 # FastAPI app
 app = FastAPI(
     title="HakuRiver Runner",
     description="Cluster runner node",
     version="0.2.0",
+    lifespan=lifespan,
 )
 
 # Include routers (all under /api prefix)
@@ -463,8 +472,6 @@ async def shutdown_event():
             )
 
 
-app.add_event_handler("startup", startup_event)
-app.add_event_handler("shutdown", shutdown_event)
 
 
 def run():
