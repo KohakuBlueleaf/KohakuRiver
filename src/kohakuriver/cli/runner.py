@@ -81,6 +81,15 @@ def run(
             f"Using built-in defaults. Run 'kohakuriver init config --runner' to generate config."
         )
 
+    # Pre-flight: verify native extensions load on this CPU
+    from kohakuriver.utils.preflight import check_native_extensions
+
+    try:
+        check_native_extensions()
+    except RuntimeError as e:
+        print(f"ERROR: {e}")
+        raise typer.Exit(1)
+
     # Run the server
     try:
         print("Starting KohakuRiver Runner agent...")
