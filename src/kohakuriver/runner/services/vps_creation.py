@@ -79,6 +79,7 @@ def _build_vps_docker_command(
     gpu_ids: list[int],
     privileged: bool,
     reserved_ip: str | None = None,
+    network_name: str | None = None,
 ) -> list[str]:
     """
     Build docker run command for VPS container.
@@ -95,6 +96,7 @@ def _build_vps_docker_command(
         gpu_ids: List of GPU indices.
         privileged: Run with --privileged.
         reserved_ip: Pre-reserved IP address for the container (optional).
+        network_name: Overlay network name to use (optional).
 
     Returns:
         Docker command as list of strings.
@@ -107,7 +109,7 @@ def _build_vps_docker_command(
     # Use overlay network if configured, otherwise kohakuriver-net bridge
     # Containers on same node can communicate via container name
     # With overlay, containers across nodes can communicate via overlay IPs
-    container_network = config.get_container_network()
+    container_network = config.get_container_network(network_name)
     docker_cmd.extend(["--network", container_network])
 
     # Assign specific IP if reserved
@@ -453,6 +455,8 @@ async def create_vps(
     restore_from_snapshot: bool | None = None,
     reserved_ip: str | None = None,
     registry_image: str | None = None,
+    network_name: str | None = None,
+    network_names: list[str] | None = None,
 ) -> dict:
     """
     Create a VPS container with SSH access using subprocess.
@@ -546,6 +550,11 @@ async def create_vps(
     # Step 4: Build and execute docker run command
     # (SSH port is assigned by Docker automatically, we query it after creation)
     # =========================================================================
+    # Resolve networks: network_names takes precedence over network_name
+    networks = network_names or ([network_name] if network_name else [None])
+    primary_network = networks[0]
+    additional_networks = networks[1:]  # May be empty
+
     docker_cmd = _build_vps_docker_command(
         docker_image_tag=docker_image_tag,
         task_id=task_id,
@@ -558,6 +567,7 @@ async def create_vps(
         gpu_ids=required_gpus or [],
         privileged=config.TASKS_PRIVILEGED,
         reserved_ip=reserved_ip,
+        network_name=primary_network,
     )
 
     try:
@@ -585,8 +595,38 @@ async def create_vps(
                 task_id, error_message, start_time, exit_code=exit_code
             )
 
-        # Finalize: discover SSH port, persist state, report success
         container_name_full = vps_container_name(task_id)
+
+        # Attach additional networks (multi-network support)
+        for net in additional_networks:
+            if not net:
+                continue
+            net_docker_name = config.get_container_network(net)
+            connect_cmd = [
+                "docker", "network", "connect", net_docker_name, container_name_full
+            ]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *connect_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, conn_err = await proc.communicate()
+                if proc.returncode == 0:
+                    logger.info(
+                        f"VPS {task_id}: connected to additional network '{net}'"
+                    )
+                else:
+                    logger.error(
+                        f"VPS {task_id}: failed to connect to network '{net}': "
+                        f"{conn_err.decode(errors='replace').strip()}"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"VPS {task_id}: exception connecting to network '{net}': {e}"
+                )
+
+        # Finalize: discover SSH port, persist state, report success
         return await _finalize_vps_creation(
             task_id=task_id,
             container_name=container_name_full,

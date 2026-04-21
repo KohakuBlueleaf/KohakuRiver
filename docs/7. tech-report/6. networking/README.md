@@ -10,6 +10,7 @@ Container and VM networking documentation for KohakuRiver clusters.
 | [overview.md](overview.md) | Architecture summary and component reference |
 | [overlay-setup.md](overlay-setup.md) | Step-by-step setup guide |
 | [configuration.md](configuration.md) | Complete configuration reference |
+| [public-ip-wireguard.md](public-ip-wireguard.md) | Assign real public IPs to containers via WireGuard tunnel to a BGP router |
 | [vm-networking.md](vm-networking.md) | VM TAP networking, dual-mode bridge attachment, and IP allocation |
 | [troubleshooting.md](troubleshooting.md) | Common issues and solutions |
 
@@ -34,6 +35,14 @@ Enable container communication across all nodes with minimal setup:
 KohakuRiver automatically handles VXLAN tunnels, IP allocation, routing, and firewall rules.
 
 See [overlay-setup.md](overlay-setup.md) for detailed instructions.
+
+### Multi-Overlay Networks (Optional)
+
+Run multiple overlay networks simultaneously — each with its own subnet, VXLAN, and NAT policy. Containers can attach to one or more. Common use case: a private network for internal traffic + a public network with real public IPs via BGP/WireGuard.
+
+See [configuration.md](configuration.md#multi-overlay-network-configuration) for the `OVERLAY_NETWORKS` config.
+
+For assigning real public IPs to containers (via BGP + WireGuard tunnel), see [public-ip-wireguard.md](public-ip-wireguard.md).
 
 ## Architecture Summary
 

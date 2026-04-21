@@ -166,6 +166,11 @@ def _run_migrations(Task) -> None:
             migrator.add_column("tasks", "vm_ip", peewee.CharField(null=True))
         )
 
+    if "network_name" not in existing_columns:
+        migrations.append(
+            migrator.add_column("tasks", "network_name", peewee.CharField(null=True))
+        )
+
     if migrations:
         migrate(*migrations)
         logger.info(f"Ran {len(migrations)} database migration(s)")

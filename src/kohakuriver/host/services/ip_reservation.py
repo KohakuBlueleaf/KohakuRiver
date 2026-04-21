@@ -27,7 +27,10 @@ from typing import TYPE_CHECKING
 from kohakuriver.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from kohakuriver.host.services.overlay_manager import OverlayNetworkManager
+    from kohakuriver.host.services.overlay.manager import (
+        MultiOverlayManager,
+        OverlayNetworkManager,
+    )
 
 logger = get_logger(__name__)
 
@@ -44,6 +47,7 @@ class IPReservation:
     runner_name: str
     runner_id: int
     token: str
+    network_name: str = "default"
     created_at: datetime = field(default_factory=datetime.now)
     expires_at: datetime = field(default_factory=lambda: datetime.now())
     container_id: str | None = None  # Set when used by a container
@@ -59,15 +63,16 @@ class IPReservation:
 
 class IPReservationManager:
     """
-    Manages IP address reservations for the overlay network.
+    Manages IP address reservations for overlay networks.
 
-    Reservations are stored in-memory and cleaned up periodically.
+    Supports multiple overlay networks. Reservations are keyed by
+    (network_name, ip) to allow the same IP to exist on different networks.
     Tokens are cryptographically signed to prevent tampering.
     """
 
     def __init__(
         self,
-        overlay_manager: OverlayNetworkManager,
+        overlay_manager: MultiOverlayManager | OverlayNetworkManager,
         secret_key: str | None = None,
         default_ttl: int = DEFAULT_RESERVATION_TTL,
     ):
@@ -75,27 +80,53 @@ class IPReservationManager:
         Initialize IP reservation manager.
 
         Args:
-            overlay_manager: Reference to overlay network manager
+            overlay_manager: Reference to overlay network manager.
+                Accepts both MultiOverlayManager and legacy OverlayNetworkManager.
             secret_key: Secret for token signing (auto-generated if not provided)
             default_ttl: Default reservation TTL in seconds
         """
-        self.overlay_manager = overlay_manager
+        from kohakuriver.host.services.overlay.manager import MultiOverlayManager
+
+        # Normalize: wrap single manager in multi-manager-like interface
+        if isinstance(overlay_manager, MultiOverlayManager):
+            self.multi_manager = overlay_manager
+        else:
+            # Legacy single manager - wrap it
+            self.multi_manager = None
+            self.overlay_manager = overlay_manager
+
         self.secret_key = secret_key or secrets.token_hex(32)
         self.default_ttl = default_ttl
 
-        # ip -> IPReservation
-        self._reservations: dict[str, IPReservation] = {}
-        # token -> ip (for quick lookup)
-        self._token_to_ip: dict[str, str] = {}
+        # (network_name, ip) -> IPReservation
+        self._reservations: dict[tuple[str, str], IPReservation] = {}
+        # token -> (network_name, ip) for quick lookup
+        self._token_to_key: dict[str, tuple[str, str]] = {}
         self._lock = asyncio.Lock()
 
-        # Track used IPs per runner (allocated to running containers)
-        # These are IPs actually assigned to containers, not just reserved
-        self._used_ips: dict[str, set[str]] = {}  # runner_name -> set of IPs
+        # Track used IPs per (runner_name, network_name)
+        self._used_ips: dict[tuple[str, str], set[str]] = {}
 
         logger.info("IP reservation manager initialized")
 
-    def _generate_token(self, ip: str, runner_name: str, expires_at: datetime) -> str:
+    def _get_manager_for_network(
+        self, network_name: str = "default"
+    ) -> OverlayNetworkManager | None:
+        """Get the overlay manager for a specific network."""
+        if self.multi_manager:
+            return self.multi_manager.get_manager(network_name)
+        # Legacy mode: return single manager only for "default"
+        if network_name == "default" and hasattr(self, "overlay_manager"):
+            return self.overlay_manager
+        return None
+
+    def _generate_token(
+        self,
+        ip: str,
+        runner_name: str,
+        expires_at: datetime,
+        network_name: str = "default",
+    ) -> str:
         """
         Generate a signed token for an IP reservation.
 
@@ -106,6 +137,7 @@ class IPReservationManager:
             "ip": ip,
             "runner": runner_name,
             "exp": int(expires_at.timestamp()),
+            "net": network_name,
         }
         payload_json = json.dumps(payload, separators=(",", ":"))
 
@@ -151,34 +183,42 @@ class IPReservationManager:
             logger.warning(f"Token verification error: {e}")
             return None
 
-    def _get_available_ips_for_runner(self, runner_name: str) -> list[str]:
+    def _get_available_ips_for_runner(
+        self, runner_name: str, network_name: str = "default"
+    ) -> list[str]:
         """
-        Get list of available IPs for a runner.
+        Get list of available IPs for a runner on a specific network.
 
         Excludes:
         - Reserved IPs (not yet expired)
         - Used IPs (assigned to running containers)
         """
+        manager = self._get_manager_for_network(network_name)
+        if not manager:
+            return []
+
         # Get runner allocation
-        allocation = self.overlay_manager._allocations.get(runner_name)
+        allocation = manager._allocations.get(runner_name)
         if not allocation:
             return []
 
         runner_id = allocation.runner_id
-        subnet_config = self.overlay_manager.subnet_config
+        subnet_config = manager.subnet_config
 
         # Get IP range for this runner
         first_ip_str, last_ip_str = subnet_config.get_container_ip_range(runner_id)
         first_ip = ipaddress.IPv4Address(first_ip_str)
         last_ip = ipaddress.IPv4Address(last_ip_str)
 
-        # Get reserved and used IPs
+        # Get reserved and used IPs for this network
         reserved_ips = {
             r.ip
-            for r in self._reservations.values()
-            if r.runner_name == runner_name and not r.is_expired()
+            for key, r in self._reservations.items()
+            if key[0] == network_name
+            and r.runner_name == runner_name
+            and not r.is_expired()
         }
-        used_ips = self._used_ips.get(runner_name, set())
+        used_ips = self._used_ips.get((runner_name, network_name), set())
         unavailable = reserved_ips | used_ips
 
         # Also exclude .254 (host on runner subnet)
@@ -198,6 +238,7 @@ class IPReservationManager:
         self,
         runner_name: str | None = None,
         limit: int = 100,
+        network_name: str = "default",
     ) -> dict[str, list[str]]:
         """
         Get available IPs, optionally filtered by runner.
@@ -205,6 +246,7 @@ class IPReservationManager:
         Args:
             runner_name: Specific runner to query (None for all)
             limit: Max IPs to return per runner
+            network_name: Overlay network name
 
         Returns:
             Dict of runner_name -> list of available IPs
@@ -212,13 +254,17 @@ class IPReservationManager:
         async with self._lock:
             result = {}
 
+            manager = self._get_manager_for_network(network_name)
+            if not manager:
+                return result
+
             if runner_name:
                 runners = [runner_name]
             else:
-                runners = list(self.overlay_manager._allocations)
+                runners = list(manager._allocations)
 
             for name in runners:
-                ips = self._get_available_ips_for_runner(name)
+                ips = self._get_available_ips_for_runner(name, network_name)
                 result[name] = ips[:limit]
 
             return result
@@ -228,14 +274,16 @@ class IPReservationManager:
         runner_name: str,
         ip: str | None = None,
         ttl: int | None = None,
+        network_name: str = "default",
     ) -> IPReservation | None:
         """
-        Reserve an IP address on a specific runner.
+        Reserve an IP address on a specific runner and network.
 
         Args:
             runner_name: Runner to reserve IP on
             ip: Specific IP to reserve (None for random available)
             ttl: Time-to-live in seconds (None for default)
+            network_name: Overlay network name
 
         Returns:
             IPReservation if successful, None if IP unavailable
@@ -244,8 +292,15 @@ class IPReservationManager:
             # Cleanup expired reservations first
             self._cleanup_expired_sync()
 
+            manager = self._get_manager_for_network(network_name)
+            if not manager:
+                logger.warning(
+                    f"Cannot reserve IP: network '{network_name}' not found"
+                )
+                return None
+
             # Verify runner exists
-            allocation = self.overlay_manager._allocations.get(runner_name)
+            allocation = manager._allocations.get(runner_name)
             if not allocation:
                 logger.warning(f"Cannot reserve IP: runner '{runner_name}' not found")
                 return None
@@ -255,16 +310,17 @@ class IPReservationManager:
 
             # Get or validate IP
             if ip is None:
-                # Pick a random available IP
-                available = self._get_available_ips_for_runner(runner_name)
+                available = self._get_available_ips_for_runner(
+                    runner_name, network_name
+                )
                 if not available:
                     logger.warning(f"No available IPs for runner '{runner_name}'")
                     return None
-                # Pick a random one for better distribution
                 ip = secrets.choice(available)
             else:
-                # Validate the requested IP
-                available = self._get_available_ips_for_runner(runner_name)
+                available = self._get_available_ips_for_runner(
+                    runner_name, network_name
+                )
                 if ip not in available:
                     logger.warning(
                         f"IP {ip} is not available on runner '{runner_name}'"
@@ -273,21 +329,23 @@ class IPReservationManager:
 
             # Create reservation
             expires_at = datetime.now() + timedelta(seconds=ttl)
-            token = self._generate_token(ip, runner_name, expires_at)
+            token = self._generate_token(ip, runner_name, expires_at, network_name)
 
             reservation = IPReservation(
                 ip=ip,
                 runner_name=runner_name,
                 runner_id=runner_id,
                 token=token,
+                network_name=network_name,
                 expires_at=expires_at,
             )
 
-            self._reservations[ip] = reservation
-            self._token_to_ip[token] = ip
+            key = (network_name, ip)
+            self._reservations[key] = reservation
+            self._token_to_key[token] = key
 
             logger.info(
-                f"Reserved IP {ip} on runner '{runner_name}' "
+                f"Reserved IP {ip} on runner '{runner_name}' network '{network_name}' "
                 f"(expires in {ttl}s, token={token[:16]}...)"
             )
 
@@ -314,13 +372,12 @@ class IPReservationManager:
             return None
 
         async with self._lock:
-            ip = self._token_to_ip.get(token)
-            if not ip:
-                # Token valid but reservation was released/expired
-                logger.debug(f"Token valid but reservation not found")
+            key = self._token_to_key.get(token)
+            if not key:
+                logger.debug("Token valid but reservation not found")
                 return None
 
-            reservation = self._reservations.get(ip)
+            reservation = self._reservations.get(key)
             if not reservation:
                 return None
 
@@ -334,7 +391,9 @@ class IPReservationManager:
 
             # Check if already used
             if reservation.is_used():
-                logger.warning(f"Reservation for {ip} is already in use")
+                logger.warning(
+                    f"Reservation for {reservation.ip} is already in use"
+                )
                 return None
 
             return reservation
@@ -357,26 +416,25 @@ class IPReservationManager:
             Reserved IP if successful, None otherwise
         """
         async with self._lock:
-            # Validate token first
             payload = self._verify_token(token)
             if not payload:
                 return None
 
-            ip = self._token_to_ip.get(token)
-            if not ip:
+            key = self._token_to_key.get(token)
+            if not key:
                 return None
 
-            reservation = self._reservations.get(ip)
+            reservation = self._reservations.get(key)
             if not reservation:
                 return None
 
             if expected_runner and reservation.runner_name != expected_runner:
-                logger.warning(f"Token runner mismatch during use")
+                logger.warning("Token runner mismatch during use")
                 return None
 
             if reservation.is_used():
                 logger.warning(
-                    f"Reservation for {ip} already used by another container"
+                    f"Reservation for {reservation.ip} already used by another container"
                 )
                 return None
 
@@ -384,16 +442,18 @@ class IPReservationManager:
             reservation.container_id = container_id
 
             # Add to used IPs tracking
-            if reservation.runner_name not in self._used_ips:
-                self._used_ips[reservation.runner_name] = set()
-            self._used_ips[reservation.runner_name].add(ip)
+            used_key = (reservation.runner_name, reservation.network_name)
+            if used_key not in self._used_ips:
+                self._used_ips[used_key] = set()
+            self._used_ips[used_key].add(reservation.ip)
 
             logger.info(
-                f"Reservation {ip} on '{reservation.runner_name}' "
+                f"Reservation {reservation.ip} on '{reservation.runner_name}' "
+                f"network '{reservation.network_name}' "
                 f"now used by container {container_id}"
             )
 
-            return ip
+            return reservation.ip
 
     async def release_by_container(self, container_id: str) -> list[str]:
         """
@@ -410,20 +470,21 @@ class IPReservationManager:
         async with self._lock:
             released = []
 
-            for ip, reservation in list(self._reservations.items()):
+            for key, reservation in list(self._reservations.items()):
                 if reservation.container_id == container_id:
                     # Remove from tracking
-                    if reservation.runner_name in self._used_ips:
-                        self._used_ips[reservation.runner_name].discard(ip)
+                    used_key = (reservation.runner_name, reservation.network_name)
+                    if used_key in self._used_ips:
+                        self._used_ips[used_key].discard(reservation.ip)
 
                     # Remove reservation
-                    del self._reservations[ip]
-                    if reservation.token in self._token_to_ip:
-                        del self._token_to_ip[reservation.token]
+                    del self._reservations[key]
+                    if reservation.token in self._token_to_key:
+                        del self._token_to_key[reservation.token]
 
-                    released.append(ip)
+                    released.append(reservation.ip)
                     logger.info(
-                        f"Released IP {ip} from container {container_id} "
+                        f"Released IP {reservation.ip} from container {container_id} "
                         f"on runner '{reservation.runner_name}'"
                     )
 
@@ -440,30 +501,39 @@ class IPReservationManager:
             True if released, False if not found or in use
         """
         async with self._lock:
-            ip = self._token_to_ip.get(token)
-            if not ip:
+            key = self._token_to_key.get(token)
+            if not key:
                 return False
 
-            reservation = self._reservations.get(ip)
+            reservation = self._reservations.get(key)
             if not reservation:
                 return False
 
             # Don't allow release if in use
             if reservation.is_used():
                 logger.warning(
-                    f"Cannot release reservation {ip}: in use by container "
+                    f"Cannot release reservation {reservation.ip}: in use by container "
                     f"{reservation.container_id}"
                 )
                 return False
 
             # Release
-            del self._reservations[ip]
-            del self._token_to_ip[token]
+            del self._reservations[key]
+            del self._token_to_key[token]
 
-            logger.info(f"Released reservation for {ip} on '{reservation.runner_name}'")
+            logger.info(
+                f"Released reservation for {reservation.ip} "
+                f"on '{reservation.runner_name}'"
+            )
             return True
 
-    async def mark_ip_used(self, runner_name: str, ip: str, container_id: str) -> None:
+    async def mark_ip_used(
+        self,
+        runner_name: str,
+        ip: str,
+        container_id: str,
+        network_name: str = "default",
+    ) -> None:
         """
         Mark an IP as used by a container (without reservation).
 
@@ -473,37 +543,48 @@ class IPReservationManager:
             runner_name: Runner hosting the container
             ip: IP address assigned
             container_id: Container ID
+            network_name: Overlay network name
         """
         async with self._lock:
-            if runner_name not in self._used_ips:
-                self._used_ips[runner_name] = set()
-            self._used_ips[runner_name].add(ip)
+            used_key = (runner_name, network_name)
+            if used_key not in self._used_ips:
+                self._used_ips[used_key] = set()
+            self._used_ips[used_key].add(ip)
             logger.debug(f"Marked IP {ip} as used by {container_id} on {runner_name}")
 
-    async def mark_ip_free(self, runner_name: str, ip: str) -> None:
+    async def mark_ip_free(
+        self,
+        runner_name: str,
+        ip: str,
+        network_name: str = "default",
+    ) -> None:
         """
         Mark an IP as free (container exited).
 
         Args:
             runner_name: Runner that hosted the container
             ip: IP address to free
+            network_name: Overlay network name
         """
         async with self._lock:
-            if runner_name in self._used_ips:
-                self._used_ips[runner_name].discard(ip)
+            used_key = (runner_name, network_name)
+            if used_key in self._used_ips:
+                self._used_ips[used_key].discard(ip)
                 logger.debug(f"Marked IP {ip} as free on {runner_name}")
 
             # Also clean up any reservation for this IP
-            if ip in self._reservations:
-                reservation = self._reservations[ip]
-                if reservation.token in self._token_to_ip:
-                    del self._token_to_ip[reservation.token]
-                del self._reservations[ip]
+            res_key = (network_name, ip)
+            if res_key in self._reservations:
+                reservation = self._reservations[res_key]
+                if reservation.token in self._token_to_key:
+                    del self._token_to_key[reservation.token]
+                del self._reservations[res_key]
 
     async def get_reservations(
         self,
         runner_name: str | None = None,
         include_used: bool = True,
+        network_name: str | None = None,
     ) -> list[IPReservation]:
         """
         Get all active reservations.
@@ -511,6 +592,7 @@ class IPReservationManager:
         Args:
             runner_name: Filter by runner (None for all)
             include_used: Include reservations in use
+            network_name: Filter by network (None for all)
 
         Returns:
             List of reservations
@@ -520,6 +602,11 @@ class IPReservationManager:
 
             reservations = list(self._reservations.values())
 
+            if network_name:
+                reservations = [
+                    r for r in reservations if r.network_name == network_name
+                ]
+
             if runner_name:
                 reservations = [r for r in reservations if r.runner_name == runner_name]
 
@@ -528,20 +615,26 @@ class IPReservationManager:
 
             return reservations
 
-    async def get_ip_info(self, runner_name: str) -> dict:
+    async def get_ip_info(
+        self, runner_name: str, network_name: str = "default"
+    ) -> dict:
         """
-        Get IP allocation info for a runner.
+        Get IP allocation info for a runner on a specific network.
 
         Returns:
             Dict with total, available, reserved, used counts and ranges
         """
         async with self._lock:
-            allocation = self.overlay_manager._allocations.get(runner_name)
+            manager = self._get_manager_for_network(network_name)
+            if not manager:
+                return {"error": f"Network '{network_name}' not found"}
+
+            allocation = manager._allocations.get(runner_name)
             if not allocation:
                 return {"error": f"Runner '{runner_name}' not found"}
 
             runner_id = allocation.runner_id
-            subnet_config = self.overlay_manager.subnet_config
+            subnet_config = manager.subnet_config
 
             first_ip, last_ip = subnet_config.get_container_ip_range(runner_id)
             first_int = int(ipaddress.IPv4Address(first_ip))
@@ -550,17 +643,21 @@ class IPReservationManager:
 
             reserved_count = sum(
                 1
-                for r in self._reservations.values()
-                if r.runner_name == runner_name
+                for key, r in self._reservations.items()
+                if key[0] == network_name
+                and r.runner_name == runner_name
                 and not r.is_expired()
                 and not r.is_used()
             )
-            used_count = len(self._used_ips.get(runner_name, set()))
+            used_count = len(
+                self._used_ips.get((runner_name, network_name), set())
+            )
             available_count = total - reserved_count - used_count
 
             return {
                 "runner_name": runner_name,
                 "runner_id": runner_id,
+                "network_name": network_name,
                 "subnet": allocation.subnet,
                 "gateway": allocation.gateway,
                 "ip_range": {"first": first_ip, "last": last_ip},
@@ -578,16 +675,16 @@ class IPReservationManager:
             Number of cleaned up reservations
         """
         expired = [
-            (ip, r)
-            for ip, r in self._reservations.items()
+            (key, r)
+            for key, r in self._reservations.items()
             if r.is_expired() and not r.is_used()
         ]
 
-        for ip, reservation in expired:
-            del self._reservations[ip]
-            if reservation.token in self._token_to_ip:
-                del self._token_to_ip[reservation.token]
-            logger.debug(f"Cleaned up expired reservation for {ip}")
+        for key, reservation in expired:
+            del self._reservations[key]
+            if reservation.token in self._token_to_key:
+                del self._token_to_key[reservation.token]
+            logger.debug(f"Cleaned up expired reservation for {reservation.ip}")
 
         return len(expired)
 
@@ -617,5 +714,7 @@ class IPReservationManager:
                 "pending_reservations": pending,
                 "in_use_reservations": in_use,
                 "total_used_ips": total_used_ips,
-                "runners_with_used_ips": len(self._used_ips),
+                "runners_with_used_ips": len(
+                    {k[0] for k in self._used_ips if self._used_ips[k]}
+                ),
             }

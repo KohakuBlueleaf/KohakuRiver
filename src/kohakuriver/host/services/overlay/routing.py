@@ -15,6 +15,8 @@ def setup_host_routing_sync(
     host_ip: str,
     host_prefix: int,
     subnet_config: OverlaySubnetConfig,
+    masquerade: bool = True,
+    network_name: str = "default",
 ) -> None:
     """
     Set up host for L3 routing between VXLAN interfaces.
@@ -22,6 +24,14 @@ def setup_host_routing_sync(
     1. Enable IP forwarding
     2. Create dummy interface with host overlay IP (10.0.0.1)
        - This allows containers to reach host at consistent IP
+
+    Args:
+        ipr: IPRoute instance.
+        host_ip: Host's overlay IP address.
+        host_prefix: Prefix length for the host IP.
+        subnet_config: Overlay subnet configuration.
+        masquerade: Whether to set up NAT masquerade rules for this network.
+        network_name: Name of the overlay network (for logging).
     """
     # Enable IP forwarding
     try:
@@ -70,22 +80,31 @@ def setup_host_routing_sync(
             break
 
     if not has_ip:
-        # Use /8 prefix so host can receive packets for any 10.x.x.x
         logger.info(f"Adding IP {host_ip}/{host_prefix} to {dummy_name}")
         ipr.addr("add", index=dummy_idx, address=host_ip, prefixlen=host_prefix)
 
-    logger.info(f"Host routing ready: {dummy_name} has {host_ip}/{host_prefix}")
+    logger.info(
+        f"Host routing ready for '{network_name}': "
+        f"{dummy_name} has {host_ip}/{host_prefix}"
+    )
 
     # Set up iptables rules for overlay forwarding
-    setup_iptables_rules_sync(subnet_config)
+    setup_iptables_rules_sync(subnet_config, masquerade=masquerade)
 
 
-def setup_iptables_rules_sync(subnet_config: OverlaySubnetConfig) -> None:
+def setup_iptables_rules_sync(
+    subnet_config: OverlaySubnetConfig, masquerade: bool = True
+) -> None:
     """
     Set up iptables rules to allow forwarding between overlay interfaces.
 
     This ensures cross-runner communication works even when firewalld
     or default iptables policies block forwarding.
+
+    Args:
+        subnet_config: Overlay subnet configuration.
+        masquerade: Whether to add NAT masquerade rules. Set to False for
+            public IP networks where traffic should keep its original source IP.
     """
     overlay_cidr = subnet_config.get_overlay_network_cidr()
 

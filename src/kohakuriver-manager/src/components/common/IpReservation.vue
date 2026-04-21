@@ -25,6 +25,11 @@ const props = defineProps({
     type: Boolean,
     default: true,
   },
+  // Overlay network name (e.g., "private", "public", "default")
+  network: {
+    type: String,
+    default: 'default',
+  },
 })
 
 const emit = defineEmits(['update:token', 'update:reservedIp'])
@@ -56,10 +61,10 @@ const isIpAvailable = computed(() => {
   return availableIps.value.includes(selectedIp.value)
 })
 
-// Watch runner changes - refresh IP info
+// Watch runner or network changes - refresh IP info
 watch(
-  () => props.runner,
-  async (newRunner) => {
+  [() => props.runner, () => props.network],
+  async ([newRunner]) => {
     if (newRunner && enabled.value) {
       await fetchIpInfo()
     } else {
@@ -90,8 +95,8 @@ async function fetchIpInfo() {
 
   try {
     const [infoRes, availRes] = await Promise.all([
-      overlayAPI.getRunnerIpInfo(props.runner),
-      overlayAPI.getAvailableIps(props.runner, 50),
+      overlayAPI.getRunnerIpInfo(props.runner, props.network),
+      overlayAPI.getAvailableIps(props.runner, 50, props.network),
     ])
 
     ipInfo.value = infoRes.data
@@ -113,7 +118,7 @@ async function reserveIp() {
 
   try {
     const ip = selectedIp.value || null
-    const res = await overlayAPI.reserveIp(props.runner, ip, 300) // 5 min TTL
+    const res = await overlayAPI.reserveIp(props.runner, ip, 300, props.network) // 5 min TTL
 
     reservedToken.value = res.data.token
     reservedIp.value = res.data.ip

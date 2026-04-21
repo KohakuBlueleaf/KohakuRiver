@@ -100,7 +100,7 @@ class HostConfig:
     # When disabled, containers use isolated per-node bridge networks
     OVERLAY_ENABLED: bool = False
 
-    # Overlay subnet configuration
+    # Overlay subnet configuration (single-network mode, backward compat)
     # Format: BASE_IP/NETWORK_PREFIX/NODE_BITS/SUBNET_BITS (must sum to 32)
     # Default: 10.128.0.0/12/6/14 = 10.128-143.x.x range, avoids common 10.x.x.x
     # Example: 10.0.0.0/8/8/16 = full 10.x.x.x range, 255 runners, 64K IPs each
@@ -114,6 +114,24 @@ class HostConfig:
 
     # MTU for overlay network (1500 - 50 bytes VXLAN overhead)
     OVERLAY_MTU: int = 1450
+
+    # -------------------------------------------------------------------------
+    # Multi-Overlay Network Configuration
+    # -------------------------------------------------------------------------
+    # Define multiple overlay networks with different subnets and masquerade settings.
+    # Each entry is a dict with: name, subnet, vxlan_id_base, masquerade, vxlan_port, mtu
+    #
+    # Requires OVERLAY_ENABLED = True. When OVERLAY_NETWORKS is non-empty, it takes
+    # precedence over the single-network OVERLAY_* fields above. When empty and
+    # OVERLAY_ENABLED is True, a single network named "default" is synthesized from
+    # the OVERLAY_* fields for backward compatibility.
+    #
+    # Example:
+    # OVERLAY_NETWORKS = [
+    #     {"name": "private", "subnet": "10.128.0.0/12/6/14", "vxlan_id_base": 100, "masquerade": True},
+    #     {"name": "public", "subnet": "163.227.172.128/26", "vxlan_id_base": 200, "masquerade": False},
+    # ]
+    OVERLAY_NETWORKS: list[dict] = field(default_factory=list)
 
     # -------------------------------------------------------------------------
     # Authentication Configuration
@@ -170,6 +188,36 @@ class HostConfig:
             Number of seconds after which a node is considered dead.
         """
         return self.HEARTBEAT_INTERVAL_SECONDS * self.HEARTBEAT_TIMEOUT_FACTOR
+
+    def get_overlay_network_configs(self) -> list[dict]:
+        """
+        Get overlay network configurations as a list of dicts.
+
+        If OVERLAY_NETWORKS is non-empty, returns it directly.
+        If OVERLAY_ENABLED is True with legacy single-network config,
+        synthesizes a single-element list for backward compatibility.
+        Otherwise returns empty list.
+        """
+        if self.OVERLAY_NETWORKS:
+            return self.OVERLAY_NETWORKS
+
+        if self.OVERLAY_ENABLED:
+            return [
+                {
+                    "name": "default",
+                    "subnet": self.OVERLAY_SUBNET,
+                    "vxlan_id_base": self.OVERLAY_VXLAN_ID,
+                    "masquerade": True,
+                    "vxlan_port": self.OVERLAY_VXLAN_PORT,
+                    "mtu": self.OVERLAY_MTU,
+                }
+            ]
+
+        return []
+
+    def get_overlay_enabled(self) -> bool:
+        """Check if overlay network is enabled. OVERLAY_ENABLED is the master switch."""
+        return self.OVERLAY_ENABLED
 
 
 # =============================================================================

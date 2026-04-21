@@ -84,7 +84,7 @@ async def register_node(request: RegisterRequest):
 
     # Handle overlay network allocation if enabled
     overlay_info = None
-    if config.OVERLAY_ENABLED:
+    if config.get_overlay_enabled():
         overlay_info = await _allocate_overlay_for_runner(hostname, url)
 
     return {
@@ -98,32 +98,68 @@ async def _allocate_overlay_for_runner(hostname: str, url: str) -> dict | None:
     """
     Allocate overlay network configuration for a runner.
 
-    Returns overlay info dict or None if overlay manager is not available.
+    Returns overlay info dict with multi-network support.
+    For backward compatibility, top-level fields from the first network
+    are included alongside the "networks" list.
     """
-
-    overlay_manager = get_overlay_manager()
-    if not overlay_manager:
+    multi_manager = get_overlay_manager()
+    if not multi_manager:
         return None
 
     try:
         physical_ip = _extract_ip_from_url(url)
-        allocation = await overlay_manager.allocate_for_runner(hostname, physical_ip)
 
+        # MultiOverlayManager returns {network_name: allocation}
+        allocations = await multi_manager.allocate_for_runner(hostname, physical_ip)
+        if not allocations:
+            return None
+
+        # Build per-network info list
+        networks = []
+        for net_name, allocation in allocations.items():
+            manager = multi_manager.get_manager(net_name)
+            if not manager:
+                continue
+
+            net_info = {
+                "name": net_name,
+                "runner_id": allocation.runner_id,
+                "overlay_subnet": allocation.subnet,
+                "overlay_gateway": allocation.gateway,
+                "host_overlay_ip": manager.host_ip,
+                "host_physical_ip": config.HOST_REACHABLE_ADDRESS,
+                "overlay_network_cidr": manager.subnet_config.get_overlay_network_cidr(),
+                "host_ip_on_runner_subnet": manager.subnet_config.get_host_ip_on_runner_subnet(
+                    allocation.runner_id
+                ),
+                "masquerade": manager.masquerade,
+                "vxlan_id_base": manager.base_vxlan_id,
+                "vxlan_port": manager.vxlan_port,
+                "mtu": manager.mtu,
+            }
+            networks.append(net_info)
+
+        if not networks:
+            return None
+
+        # Build response: "networks" list + backward-compat flat fields from first network
+        first = networks[0]
         overlay_info = {
-            "runner_id": allocation.runner_id,
-            "overlay_subnet": allocation.subnet,
-            "overlay_gateway": allocation.gateway,
-            "host_overlay_ip": overlay_manager.host_ip,
-            "host_physical_ip": config.HOST_REACHABLE_ADDRESS,
-            "overlay_network_cidr": overlay_manager.subnet_config.get_overlay_network_cidr(),
-            "host_ip_on_runner_subnet": overlay_manager.subnet_config.get_host_ip_on_runner_subnet(
-                allocation.runner_id
-            ),
+            # Backward compatibility: flat fields from first network
+            "runner_id": first["runner_id"],
+            "overlay_subnet": first["overlay_subnet"],
+            "overlay_gateway": first["overlay_gateway"],
+            "host_overlay_ip": first["host_overlay_ip"],
+            "host_physical_ip": first["host_physical_ip"],
+            "overlay_network_cidr": first["overlay_network_cidr"],
+            "host_ip_on_runner_subnet": first["host_ip_on_runner_subnet"],
+            # Multi-network info
+            "networks": networks,
         }
 
         logger.info(
-            f"Overlay allocated for {hostname}: runner_id={allocation.runner_id}, "
-            f"subnet={allocation.subnet}"
+            f"Overlay allocated for {hostname}: "
+            f"{len(networks)} network(s) = {[n['name'] for n in networks]}"
         )
         return overlay_info
 
@@ -439,20 +475,24 @@ async def get_overlay_status():
         - allocations: List of runner allocations
         - stats: Overlay network statistics
     """
-    if not config.OVERLAY_ENABLED:
-        return {"enabled": False}
+    if not config.get_overlay_enabled():
+        return {"enabled": False, "networks": []}
 
-    overlay_manager = get_overlay_manager()
-    if not overlay_manager:
-        return {"enabled": True, "error": "Overlay manager not initialized"}
+    multi_manager = get_overlay_manager()
+    if not multi_manager:
+        return {"enabled": True, "error": "Overlay manager not initialized", "networks": []}
 
-    allocations = await overlay_manager.get_all_allocations()
-    stats = await overlay_manager.get_stats()
+    allocations = await multi_manager.get_all_allocations()
+    stats = await multi_manager.get_stats()
+
+    # Get default manager for backward-compat fields
+    default_mgr = multi_manager.get_default_manager()
 
     return {
         "enabled": True,
-        "subnet_config": config.OVERLAY_SUBNET,
-        "host_ip": f"{overlay_manager.host_ip}/{overlay_manager.host_prefix}",
+        "networks": multi_manager.network_names,
+        "subnet_config": config.OVERLAY_SUBNET if default_mgr else "",
+        "host_ip": f"{default_mgr.host_ip}/{default_mgr.host_prefix}" if default_mgr else "",
         "allocations": [
             {
                 "runner_name": a.runner_name,
@@ -478,7 +518,7 @@ async def release_overlay_allocation(runner_name: str = Path(...)):
     WARNING: This will disconnect the runner from the overlay network.
     Use with caution - running containers may lose connectivity.
     """
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
     overlay_manager = get_overlay_manager()
@@ -502,7 +542,7 @@ async def cleanup_overlay():
     Use with caution - only do this when you're sure no containers need
     the overlay network.
     """
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
     overlay_manager = get_overlay_manager()
@@ -523,13 +563,14 @@ async def cleanup_overlay():
 async def get_available_ips(
     runner: str | None = Query(None, description="Filter by runner name"),
     limit: int = Query(100, description="Max IPs per runner", ge=1, le=1000),
+    network: str = Query("default", description="Overlay network name"),
 ):
     """
     Get available IPs for reservation.
 
     Returns a dict of runner_name -> list of available IP addresses.
     """
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
     ip_manager = get_ip_reservation_manager()
@@ -538,18 +579,23 @@ async def get_available_ips(
             status_code=500, detail="IP reservation manager not initialized"
         )
 
-    available = await ip_manager.get_available_ips(runner_name=runner, limit=limit)
+    available = await ip_manager.get_available_ips(
+        runner_name=runner, limit=limit, network_name=network
+    )
     return {"available_ips": available}
 
 
 @router.get("/overlay/ip/info/{runner_name}")
-async def get_runner_ip_info(runner_name: str = Path(...)):
+async def get_runner_ip_info(
+    runner_name: str = Path(...),
+    network: str = Query("default", description="Overlay network name"),
+):
     """
     Get IP allocation info for a specific runner.
 
     Returns subnet, IP range, and usage statistics.
     """
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
     ip_manager = get_ip_reservation_manager()
@@ -558,7 +604,7 @@ async def get_runner_ip_info(runner_name: str = Path(...)):
             status_code=500, detail="IP reservation manager not initialized"
         )
 
-    info = await ip_manager.get_ip_info(runner_name)
+    info = await ip_manager.get_ip_info(runner_name, network_name=network)
     if "error" in info:
         raise HTTPException(status_code=404, detail=info["error"])
 
@@ -570,6 +616,7 @@ async def reserve_ip(
     runner: str = Query(..., description="Runner to reserve IP on"),
     ip: str | None = Query(None, description="Specific IP to reserve (optional)"),
     ttl: int = Query(300, description="Time-to-live in seconds", ge=60, le=1800),
+    network: str = Query("default", description="Overlay network name"),
 ):
     """
     Reserve an IP address on a runner.
@@ -582,7 +629,7 @@ async def reserve_ip(
     Use case: Multi-node distributed training where master address must be
     known before launching worker tasks.
     """
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
     ip_manager = get_ip_reservation_manager()
@@ -591,7 +638,9 @@ async def reserve_ip(
             status_code=500, detail="IP reservation manager not initialized"
         )
 
-    reservation = await ip_manager.reserve_ip(runner_name=runner, ip=ip, ttl=ttl)
+    reservation = await ip_manager.reserve_ip(
+        runner_name=runner, ip=ip, ttl=ttl, network_name=network
+    )
     if not reservation:
         raise HTTPException(
             status_code=409,
@@ -601,6 +650,7 @@ async def reserve_ip(
     return {
         "ip": reservation.ip,
         "runner": reservation.runner_name,
+        "network": reservation.network_name,
         "token": reservation.token,
         "expires_at": reservation.expires_at.isoformat(),
         "ttl_seconds": ttl,
@@ -616,7 +666,7 @@ async def release_ip_reservation(
 
     Cannot release reservations that are currently in use by a container.
     """
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
     ip_manager = get_ip_reservation_manager()
@@ -639,11 +689,12 @@ async def release_ip_reservation(
 async def list_ip_reservations(
     runner: str | None = Query(None, description="Filter by runner name"),
     include_used: bool = Query(True, description="Include reservations in use"),
+    network: str | None = Query(None, description="Filter by network name"),
 ):
     """
     List active IP reservations.
     """
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
     ip_manager = get_ip_reservation_manager()
@@ -653,7 +704,7 @@ async def list_ip_reservations(
         )
 
     reservations = await ip_manager.get_reservations(
-        runner_name=runner, include_used=include_used
+        runner_name=runner, include_used=include_used, network_name=network
     )
 
     return {
@@ -661,6 +712,7 @@ async def list_ip_reservations(
             {
                 "ip": r.ip,
                 "runner": r.runner_name,
+                "network": r.network_name,
                 "token": r.token[:20] + "..." if len(r.token) > 20 else r.token,
                 "created_at": r.created_at.isoformat(),
                 "expires_at": r.expires_at.isoformat(),
@@ -682,7 +734,7 @@ async def validate_ip_token(
 
     Returns the reservation details if valid and not expired.
     """
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
     ip_manager = get_ip_reservation_manager()
@@ -712,7 +764,7 @@ async def get_ip_reservation_stats():
     """
     Get IP reservation statistics.
     """
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         raise HTTPException(status_code=400, detail="Overlay network is not enabled")
 
     ip_manager = get_ip_reservation_manager()

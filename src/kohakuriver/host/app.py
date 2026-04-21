@@ -170,7 +170,7 @@ async def startup_event():
     await _ensure_default_container(container_tar_dir)
 
     # Initialize overlay network manager if enabled
-    if config.OVERLAY_ENABLED:
+    if config.get_overlay_enabled():
         await _initialize_overlay_network()
 
     # Start background tasks
@@ -252,25 +252,26 @@ def _start_background_tasks():
 
 async def _initialize_overlay_network():
     """
-    Initialize the VXLAN overlay network manager.
+    Initialize the VXLAN overlay network manager(s).
 
-    Creates the overlay bridge and recovers state from existing VXLAN interfaces.
+    Supports multiple overlay networks via MultiOverlayManager.
+    Creates VXLAN bridges and recovers state from existing interfaces.
     """
-    from kohakuriver.host.services.overlay_manager import OverlayNetworkManager
+    from kohakuriver.host.services.overlay.manager import MultiOverlayManager
 
-    logger.info("Initializing VXLAN overlay network...")
+    logger.info("Initializing VXLAN overlay network(s)...")
 
     try:
-        overlay_manager = OverlayNetworkManager(config)
-        await overlay_manager.initialize()
+        multi_manager = MultiOverlayManager(config)
+        await multi_manager.initialize()
 
         # Store in app.state and shared state module
-        app.state.overlay_manager = overlay_manager
+        app.state.overlay_manager = multi_manager
 
         # Initialize IP reservation manager
         from kohakuriver.host.services.ip_reservation import IPReservationManager
 
-        ip_reservation_manager = IPReservationManager(overlay_manager)
+        ip_reservation_manager = IPReservationManager(multi_manager)
         app.state.ip_reservation_manager = ip_reservation_manager
         logger.info("IP reservation manager initialized")
 
@@ -280,12 +281,12 @@ async def _initialize_overlay_network():
             set_ip_reservation_manager,
         )
 
-        set_overlay_manager(overlay_manager)
+        set_overlay_manager(multi_manager)
         set_ip_reservation_manager(ip_reservation_manager)
 
+        network_names = multi_manager.network_names
         logger.info(
-            f"Overlay network initialized: subnet={config.OVERLAY_SUBNET}, "
-            f"host_ip={overlay_manager.host_ip}/{overlay_manager.host_prefix}"
+            f"Overlay network(s) initialized: {network_names}"
         )
     except Exception as e:
         logger.error(f"Failed to initialize overlay network: {e}")

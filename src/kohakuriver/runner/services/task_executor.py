@@ -246,6 +246,7 @@ def build_docker_run_command(
     env_vars: dict[str, str],
     privileged: bool = False,
     reserved_ip: str | None = None,
+    network_name: str | None = None,
 ) -> list[str]:
     """
     Build a 'docker run --rm' command list for subprocess execution.
@@ -267,6 +268,7 @@ def build_docker_run_command(
         env_vars: Environment variables.
         privileged: Run in privileged mode.
         reserved_ip: Pre-reserved IP address for the container (optional).
+        network_name: Overlay network name to use (optional).
 
     Returns:
         Command list for subprocess execution.
@@ -293,7 +295,7 @@ def build_docker_run_command(
     # Use overlay network if configured, otherwise kohakuriver-net bridge
     # Containers on same node can communicate via container name
     # With overlay, containers across nodes can communicate via overlay IPs
-    container_network = config.get_container_network()
+    container_network = config.get_container_network(network_name)
     docker_cmd.extend(["--network", container_network])
 
     # Assign specific IP if reserved
@@ -537,6 +539,56 @@ async def _report_task_failure(
     logger.info(f"[Task {task_id}] ========== TASK EXECUTION FAILED ==========")
 
 
+async def _attach_additional_networks(
+    task_id: int, container_name: str, networks: list[str | None]
+) -> None:
+    """
+    Attach additional Docker networks to a running container.
+
+    Used for multi-network tasks. The primary network is attached via
+    `docker run --network`, and additional networks are attached here
+    via `docker network connect` after the container starts.
+
+    Retries briefly because the container may not be ready immediately.
+    """
+    for net in networks:
+        if not net:
+            continue
+        net_docker_name = config.get_container_network(net)
+        connect_cmd = [
+            "docker", "network", "connect", net_docker_name, container_name
+        ]
+
+        # Retry up to 3 times with 0.5s delay (container may be initializing)
+        for attempt in range(3):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *connect_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, err = await proc.communicate()
+                if proc.returncode == 0:
+                    logger.info(
+                        f"[Task {task_id}] Connected to additional network '{net}'"
+                    )
+                    break
+                err_msg = err.decode(errors="replace").strip()
+                if "not running" in err_msg.lower() or "No such container" in err_msg:
+                    if attempt < 2:
+                        await asyncio.sleep(0.5)
+                        continue
+                logger.error(
+                    f"[Task {task_id}] Failed to connect network '{net}': {err_msg}"
+                )
+                break
+            except Exception as e:
+                logger.error(
+                    f"[Task {task_id}] Exception connecting to '{net}': {e}"
+                )
+                break
+
+
 async def execute_task(
     task_id: int,
     command: str,
@@ -554,6 +606,8 @@ async def execute_task(
     task_store: TaskStateStore,
     reserved_ip: str | None = None,
     registry_image: str | None = None,
+    network_name: str | None = None,
+    network_names: list[str] | None = None,
 ):
     """
     Execute a task in a Docker container using subprocess.
@@ -648,6 +702,11 @@ async def execute_task(
         docker_image_tag = image_tag(container_name)
     logger.debug(f"[Task {task_id}] Docker image tag: {docker_image_tag}")
 
+    # Resolve networks: network_names takes precedence over network_name
+    networks = network_names or ([network_name] if network_name else [None])
+    primary_network = networks[0]
+    additional_networks = networks[1:]  # May be empty
+
     # Build the docker run command
     docker_cmd = build_docker_run_command(
         task_id=task_id,
@@ -664,6 +723,7 @@ async def execute_task(
         env_vars=task_env,
         privileged=config.TASKS_PRIVILEGED,
         reserved_ip=reserved_ip,
+        network_name=primary_network,
     )
 
     logger.info(f"[Task {task_id}] Step 2 complete: Task configuration built")
@@ -705,6 +765,15 @@ async def execute_task(
             stderr=asyncio.subprocess.PIPE,
         )
         logger.debug(f"[Task {task_id}] Subprocess PID: {process.pid}")
+
+        # Attach additional networks (multi-network support)
+        # Kick off in background so the main task can proceed
+        if additional_networks:
+            asyncio.create_task(
+                _attach_additional_networks(
+                    task_id, container_name_full, additional_networks
+                )
+            )
 
         logger.info(f"[Task {task_id}] Container started, waiting for completion...")
 

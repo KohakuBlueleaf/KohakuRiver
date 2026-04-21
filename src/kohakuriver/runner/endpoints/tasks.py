@@ -82,6 +82,8 @@ async def execute_task_endpoint(
         numa_topology=numa_topology,
         task_store=task_store,
         reserved_ip=request.reserved_ip,
+        network_name=request.network_name,
+        network_names=request.network_names,
     )
 
     return {"message": "Task accepted for launch", "task_id": task_id}

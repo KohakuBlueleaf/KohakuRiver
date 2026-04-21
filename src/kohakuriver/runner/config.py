@@ -202,13 +202,26 @@ class RunnerConfig:
         # Uses overlay gateway if configured, otherwise default gateway
         return f"ws://{self.get_container_gateway()}:{self.RUNNER_PORT}"
 
-    def get_container_network(self) -> str:
+    def get_container_network(self, network_name: str | None = None) -> str:
         """
         Get the Docker network name for containers.
+
+        Args:
+            network_name: Specific overlay network name to use.
+                If None, returns the first configured overlay network
+                or the default bridge.
 
         Returns overlay network if overlay is enabled and configured,
         otherwise returns the default kohakuriver-net.
         """
+        if hasattr(self, "_overlay_networks") and self._overlay_networks:
+            if network_name and network_name in self._overlay_networks:
+                return self._overlay_networks[network_name]["docker_network"]
+            # Return first configured overlay as default
+            first = next(iter(self._overlay_networks.values()))
+            return first["docker_network"]
+
+        # Legacy single-network fallback
         if (
             self.OVERLAY_ENABLED
             and hasattr(self, "_overlay_configured")
@@ -217,13 +230,23 @@ class RunnerConfig:
             return self.OVERLAY_NETWORK_NAME
         return self.DOCKER_NETWORK_NAME
 
-    def get_container_gateway(self) -> str:
+    def get_container_gateway(self, network_name: str | None = None) -> str:
         """
         Get the gateway IP for containers to reach the runner.
+
+        Args:
+            network_name: Specific overlay network name to use.
 
         Returns overlay gateway if overlay is enabled and configured,
         otherwise returns the default gateway.
         """
+        if hasattr(self, "_overlay_networks") and self._overlay_networks:
+            if network_name and network_name in self._overlay_networks:
+                return self._overlay_networks[network_name]["gateway"]
+            first = next(iter(self._overlay_networks.values()))
+            return first["gateway"]
+
+        # Legacy single-network fallback
         if (
             self.OVERLAY_ENABLED
             and hasattr(self, "_overlay_gateway")
@@ -232,8 +255,34 @@ class RunnerConfig:
             return self._overlay_gateway
         return self.DOCKER_NETWORK_GATEWAY
 
+    def add_overlay_network(
+        self, name: str, gateway: str, docker_network_name: str
+    ) -> None:
+        """
+        Register a configured overlay network.
+
+        Called after successful overlay setup for each network.
+
+        Args:
+            name: Network name (e.g., "private", "public").
+            gateway: Gateway IP for this network.
+            docker_network_name: Docker network name for this network.
+        """
+        if not hasattr(self, "_overlay_networks"):
+            self._overlay_networks: dict[str, dict] = {}
+        self._overlay_networks[name] = {
+            "gateway": gateway,
+            "docker_network": docker_network_name,
+        }
+
+    def get_overlay_network_names(self) -> list[str]:
+        """Get names of all configured overlay networks."""
+        if hasattr(self, "_overlay_networks") and self._overlay_networks:
+            return list(self._overlay_networks.keys())
+        return []
+
     def set_overlay_configured(self, gateway: str) -> None:
-        """Mark overlay as configured with the given gateway IP."""
+        """Mark overlay as configured with the given gateway IP (legacy)."""
         self._overlay_configured = True
         self._overlay_gateway = gateway
 

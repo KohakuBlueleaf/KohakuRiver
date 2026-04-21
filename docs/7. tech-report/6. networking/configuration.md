@@ -38,9 +38,10 @@ Add these to `~/.kohakuriver/host_config.py`:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `HOST_REACHABLE_ADDRESS` | str | `"127.0.0.1"` | **Must set to Host's actual IP!** |
-| `OVERLAY_ENABLED` | bool | `False` | Enable VXLAN overlay networking |
-| `OVERLAY_SUBNET` | str | `"10.128.0.0/12/6/14"` | Subnet configuration (see below) |
-| `OVERLAY_VXLAN_ID` | int | `100` | Base VXLAN ID (runners get 100+id) |
+| `OVERLAY_ENABLED` | bool | `False` | Master switch — enable overlay networking |
+| `OVERLAY_NETWORKS` | list[dict] | `[]` | Multi-network config (see [Multi-Overlay](#multi-overlay-network-configuration)) |
+| `OVERLAY_SUBNET` | str | `"10.128.0.0/12/6/14"` | Legacy single-network subnet (used when `OVERLAY_NETWORKS` is empty) |
+| `OVERLAY_VXLAN_ID` | int | `100` | Legacy single-network VXLAN ID base |
 | `OVERLAY_VXLAN_PORT` | int | `4789` | UDP port for VXLAN traffic |
 | `OVERLAY_MTU` | int | `1450` | MTU for overlay network |
 
@@ -78,6 +79,89 @@ OVERLAY_VXLAN_PORT: int = 4789
 # MTU for overlay network (1500 - 50 bytes VXLAN overhead)
 OVERLAY_MTU: int = 1450
 ```
+
+---
+
+## Multi-Overlay Network Configuration
+
+KohakuRiver supports **multiple overlay networks** on the same cluster. Each network has its own VXLAN tunnels, Docker bridge, IP pool, and NAT/masquerade policy. A container can be attached to one or more networks simultaneously.
+
+### When to Use Multi-Overlay
+
+- **Private + Public**: one internal overlay (NAT to internet) + one public overlay (real public IPs via BGP/WireGuard). See [public-ip-wireguard.md](public-ip-wireguard.md).
+- **Isolation**: separate production/staging networks on the same cluster.
+- **Different CIDR policies**: some networks NATed, others with real IPs.
+
+### Configuration
+
+```python
+OVERLAY_ENABLED: bool = True   # Master switch
+
+OVERLAY_NETWORKS: list[dict] = [
+    {
+        "name": "private",
+        "subnet": "10.128.0.0/12/6/14",  # per-runner splitting
+        "vxlan_id_base": 100,
+        "masquerade": True,              # NAT outbound (for private IPs)
+    },
+    {
+        "name": "public",
+        "subnet": "163.227.172.128/26",  # flat subnet (all runners share)
+        "vxlan_id_base": 200,            # must not overlap with other networks
+        "masquerade": False,             # no NAT (public IPs should route as-is)
+    },
+]
+```
+
+### Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | ✓ | Unique network name (used in `--network` CLI, Web UI selector) |
+| `subnet` | ✓ | Either `IP/PREFIX/NODE_BITS/SUBNET_BITS` (hierarchical) or `IP/PREFIX` (flat) |
+| `vxlan_id_base` | ✓ | Base VXLAN ID; each runner gets `base + runner_id`. Must not overlap |
+| `masquerade` | ✗ | Default `True`. `True` = NAT outbound (private subnets). `False` = preserve source IP (public subnets) |
+| `vxlan_port` | ✗ | Default `4789`. Can be shared across networks (VNI differentiates) |
+| `mtu` | ✗ | Default `1450` |
+
+### Subnet Formats
+
+**Hierarchical** (`IP/PREFIX/NODE_BITS/SUBNET_BITS`):
+- Each runner gets its own sub-subnet
+- Bits must sum to 32
+- Example: `10.128.0.0/12/6/14` → max 63 runners, ~16K IPs each
+
+**Flat** (`IP/PREFIX`):
+- All runners share the same subnet
+- IP allocation coordinated by the Host's `IPReservationManager`
+- Useful for small public IP ranges (e.g., `/26` with 60 usable IPs)
+- Example: `163.227.172.128/26`
+
+### Masquerade Behavior
+
+| Setting | Outbound Behavior | Use Case |
+|---------|-------------------|----------|
+| `masquerade: True` | NAT to Runner's IP | Private subnets (internal-only) — containers need internet but subnet isn't routable externally |
+| `masquerade: False` | Source IP preserved | Public subnets or when external return path exists (BGP, direct routing) — NAT would break return traffic |
+
+For `masquerade: False` networks, the Runner automatically adds **policy routing** so outbound traffic from this subnet returns to the Host via VXLAN (instead of leaking out the Runner's default route with a non-routable source IP).
+
+### VXLAN Device Naming
+
+With multiple overlays, Host-side VXLAN interfaces use a network-index prefix:
+
+| Network Index | Runner 1 | Runner 2 |
+|---------------|----------|----------|
+| 0 (first network, e.g. `private`) | `vx0_1` | `vx0_2` |
+| 1 (second, e.g. `public`) | `vx1_1` | `vx1_2` |
+
+Runner-side bridges: `kohaku-{name}` (e.g., `kohaku-private`, `kohaku-public`).
+Runner-side VXLANs: `vxlan-{name}`.
+Docker networks: `kohakuriver-{name}`.
+
+### Backward Compatibility
+
+If `OVERLAY_NETWORKS = []` (empty) but `OVERLAY_ENABLED = True`, KohakuRiver synthesizes a single network named `"default"` from the legacy `OVERLAY_SUBNET`, `OVERLAY_VXLAN_ID` fields. Existing single-overlay deployments continue to work unchanged.
 
 ---
 

@@ -13,6 +13,7 @@ import { useVpsStore } from '@/stores/vps'
 import { useNotification } from '@/composables/useNotification'
 
 import apiClient from '@/utils/api/client'
+import { overlayAPI } from '@/utils/api/overlay'
 import { formatBytes } from '@/utils/format'
 import { generateRandomName } from '@/utils/randomName'
 
@@ -53,6 +54,7 @@ const createForm = ref({
   gpuFeatureEnabled: false,
   selectedGpus: {}, // { hostname: [gpu_id1, gpu_id2], ... }
   ip_reservation_token: null, // Token from IP reservation
+  network_names: [], // Overlay networks (first is primary). Empty = default
   // VM-specific options (qemu backend)
   vm_image: 'ubuntu-24.04',
   vm_disk_size: '500G',
@@ -68,6 +70,9 @@ const gpuSelectorRef = ref(null)
 
 // IP Reservation component ref
 const ipReservationRef = ref(null)
+
+// Available overlay networks (fetched from host)
+const overlayNetworks = ref([])
 
 // Computed: selected runner (either from node selection or GPU selection)
 const selectedRunner = computed(() => {
@@ -155,6 +160,21 @@ function formatNumaMemory(mb) {
   return `${mb} MB`
 }
 
+// Fetch overlay networks when dialog opens
+watch(
+  () => props.visible,
+  async (visible) => {
+    if (visible) {
+      try {
+        const res = await overlayAPI.getStatus()
+        overlayNetworks.value = res.data?.networks || []
+      } catch {
+        overlayNetworks.value = []
+      }
+    }
+  }
+)
+
 // Clear NUMA selection when runner changes
 watch(selectedRunner, () => {
   createForm.value.target_numa_node_id = null
@@ -195,6 +215,7 @@ function buildVpsCreateData(form, targetHostname, requiredGpus) {
     ssh_key_mode: form.ssh_key_mode,
     required_gpus: requiredGpus,
     ip_reservation_token: form.ip_reservation_token || null,
+    network_names: form.network_names && form.network_names.length > 0 ? form.network_names : null,
     // Fields that differ by backend, set below
     required_cores: 0,
     required_memory_bytes: null,
@@ -296,6 +317,7 @@ function resetCreateForm() {
     gpuFeatureEnabled: false,
     selectedGpus: {},
     ip_reservation_token: null,
+    network_names: [],
     vm_image: 'ubuntu-24.04',
     vm_disk_size: '500G',
     vm_memory_mb: 4096,
@@ -524,11 +546,35 @@ function resetCreateForm() {
         <div class="text-xs text-muted mt-1">Pin VPS to a specific NUMA node for better memory locality</div>
       </el-form-item>
 
+      <!-- Network Selection -->
+      <el-form-item
+        v-if="overlayNetworks.length > 0"
+        label="Networks">
+        <el-select
+          v-model="createForm.network_names"
+          placeholder="Default (first available)"
+          multiple
+          collapse-tags
+          collapse-tags-tooltip
+          class="w-full">
+          <el-option
+            v-for="net in overlayNetworks"
+            :key="net"
+            :label="net"
+            :value="net" />
+        </el-select>
+        <div class="text-xs text-muted mt-1">
+          Select one or more networks. First = primary (default gateway).
+          Multiple = container has multiple IPs, one per network.
+        </div>
+      </el-form-item>
+
       <!-- IP Reservation -->
       <el-form-item label="IP Reservation">
         <IpReservation
           ref="ipReservationRef"
           :runner="selectedRunner"
+          :network="createForm.network_names?.[0] || 'default'"
           @update:token="handleIpTokenUpdate" />
       </el-form-item>
 

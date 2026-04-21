@@ -44,6 +44,8 @@ class OverlayConfig:
     host_ip_on_runner_subnet: str = (
         ""  # Host's IP within this runner's subnet (e.g., 10.128.64.254)
     )
+    network_name: str = "default"  # Network name for multi-network support
+    masquerade: bool = True  # Whether to NAT outbound traffic
 
 
 class RunnerOverlayManager:
@@ -52,23 +54,36 @@ class RunnerOverlayManager:
 
     Creates a VXLAN tunnel to the Host and a Docker network that uses
     the overlay bridge for container networking.
-    """
 
-    # Network configuration
-    BRIDGE_NAME = "kohaku-overlay"
-    VXLAN_NAME = "vxlan0"
-    DOCKER_NETWORK_NAME = "kohakuriver-overlay"
+    In multi-network mode, names are parameterized by network name:
+    - Bridge: kohaku-{name} (e.g., kohaku-private, kohaku-public)
+    - VXLAN: vxlan-{name} (truncated to 15 chars for Linux limit)
+    - Docker: kohakuriver-{name} (e.g., kohakuriver-private)
+    """
 
     def __init__(
         self,
         base_vxlan_id: int = 100,
         vxlan_port: int = 4789,
         mtu: int = 1450,
+        network_name: str = "default",
     ):
         """Initialize runner overlay manager."""
         self.base_vxlan_id = base_vxlan_id
         self.vxlan_port = vxlan_port
         self.mtu = mtu
+        self.network_name = network_name
+
+        # Generate names based on network name
+        if network_name == "default":
+            # Backward compatible names for single-network mode
+            self.BRIDGE_NAME = "kohaku-overlay"
+            self.VXLAN_NAME = "vxlan0"
+            self.DOCKER_NETWORK_NAME = "kohakuriver-overlay"
+        else:
+            self.BRIDGE_NAME = f"kohaku-{network_name}"[:15]
+            self.VXLAN_NAME = f"vxlan-{network_name}"[:15]
+            self.DOCKER_NETWORK_NAME = f"kohakuriver-{network_name}"
 
         self._config: OverlayConfig | None = None
         self._ipr = None
@@ -221,15 +236,20 @@ class RunnerOverlayManager:
         if vxlan_idx is not None:
             logger.info(f"VXLAN {vxlan_name} already exists, checking config")
 
-            # Verify VNI matches
+            # Verify VNI and remote IP match
             linkinfo = vxlan_link.get_attr("IFLA_LINKINFO") if vxlan_link else None
             if linkinfo:
                 vxlan_data = linkinfo.get_attr("IFLA_INFO_DATA")
                 if vxlan_data:
                     existing_vni = vxlan_data.get_attr("IFLA_VXLAN_ID")
-                    if existing_vni != vni:
+                    existing_remote = vxlan_data.get_attr(
+                        "IFLA_VXLAN_GROUP"
+                    ) or vxlan_data.get_attr("IFLA_VXLAN_REMOTE")
+                    if existing_vni != vni or existing_remote != remote_ip:
                         logger.warning(
-                            f"Existing VXLAN VNI {existing_vni} doesn't match expected {vni}, recreating"
+                            f"Existing VXLAN config mismatch "
+                            f"(vni={existing_vni} vs {vni}, "
+                            f"remote={existing_remote} vs {remote_ip}), recreating"
                         )
                         ipr.link("del", index=vxlan_idx)
                         vxlan_idx = None
@@ -321,6 +341,11 @@ class RunnerOverlayManager:
         host_gateway = config.host_ip_on_runner_subnet
         self._ensure_overlay_routes(ipr, bridge_idx, host_gateway, config)
 
+        # For non-masquerade networks (public IP), set up policy routing
+        # so ALL outbound traffic from this subnet goes via host (VXLAN → WireGuard)
+        if not config.masquerade:
+            self._setup_policy_routing(config, host_gateway)
+
         # Set up iptables and firewalld rules for overlay forwarding
         self._setup_firewall_rules()
 
@@ -362,6 +387,66 @@ class RunnerOverlayManager:
         except Exception as e:
             # Route may already exist
             logger.debug(f"Overlay route handling: {e}")
+
+    def _setup_policy_routing(
+        self, config: OverlayConfig, host_gateway: str
+    ) -> None:
+        """
+        Set up policy routing for non-masquerade (public IP) networks.
+
+        Without masquerade, outbound traffic from the public subnet must go
+        through the host (via VXLAN) so it exits via the host's WireGuard
+        tunnel with the correct source IP.
+
+        This adds:
+        1. A routing table with default route via host gateway
+        2. An ip rule: traffic FROM this subnet uses that table
+
+        Result: container outbound → runner bridge → VXLAN → host → WireGuard → internet
+        Source IP stays as the public IP (no NAT).
+        """
+        overlay_cidr = config.overlay_network_cidr
+        # Use a stable table ID derived from the network name
+        table_id = 100 + abs(hash(self.network_name)) % 100
+
+        try:
+            # Add default route in the policy table
+            route_cmd = [
+                "ip", "route", "replace", "default",
+                "via", host_gateway,
+                "table", str(table_id),
+            ]
+            subprocess.run(route_cmd, check=True, capture_output=True)
+            logger.info(
+                f"Policy routing table {table_id}: default via {host_gateway}"
+            )
+
+            # Add ip rule: traffic FROM this subnet uses our table
+            # Check if rule already exists
+            check_cmd = ["ip", "rule", "show", "from", overlay_cidr]
+            result = subprocess.run(check_cmd, capture_output=True, text=True)
+            if f"lookup {table_id}" not in result.stdout:
+                rule_cmd = [
+                    "ip", "rule", "add",
+                    "from", overlay_cidr,
+                    "table", str(table_id),
+                ]
+                subprocess.run(rule_cmd, check=True, capture_output=True)
+                logger.info(
+                    f"Policy routing rule: from {overlay_cidr} lookup table {table_id}"
+                )
+            else:
+                logger.debug(
+                    f"Policy routing rule already exists for {overlay_cidr}"
+                )
+
+        except subprocess.CalledProcessError as e:
+            logger.error(
+                f"Failed to set up policy routing for '{self.network_name}': {e}"
+            )
+            logger.warning(
+                f"Containers on '{self.network_name}' may not have outbound connectivity"
+            )
 
     def _setup_firewall_rules(self) -> None:
         """
@@ -407,45 +492,56 @@ class RunnerOverlayManager:
                 except subprocess.CalledProcessError as e:
                     logger.warning(f"Failed to add iptables rule {rule}: {e}")
 
-        # Set up NAT/masquerade for external network access
-        # This allows containers to reach the internet through the Runner
-        # Only masquerade traffic going to non-overlay destinations
-        nat_rule = [
-            "-t",
-            "nat",
-            "-A",
-            "POSTROUTING",
-            "-s",
-            overlay_cidr,
-            "!",
-            "-d",
-            overlay_cidr,
-            "-j",
-            "MASQUERADE",
-        ]
-        nat_check = [
-            "-t",
-            "nat",
-            "-C",
-            "POSTROUTING",
-            "-s",
-            overlay_cidr,
-            "!",
-            "-d",
-            overlay_cidr,
-            "-j",
-            "MASQUERADE",
-        ]
+        # Set up NAT/masquerade for external network access (only for private networks)
+        # For public IP networks (masquerade=False), traffic keeps its original source IP
+        if config.masquerade:
+            nat_rule = [
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-s",
+                overlay_cidr,
+                "!",
+                "-d",
+                overlay_cidr,
+                "-j",
+                "MASQUERADE",
+            ]
+            nat_check = [
+                "-t",
+                "nat",
+                "-C",
+                "POSTROUTING",
+                "-s",
+                overlay_cidr,
+                "!",
+                "-d",
+                overlay_cidr,
+                "-j",
+                "MASQUERADE",
+            ]
 
-        try:
-            subprocess.run(["iptables"] + nat_check, check=True, capture_output=True)
-            logger.debug("NAT masquerade rule already exists")
-        except subprocess.CalledProcessError:
             try:
-                subprocess.run(["iptables"] + nat_rule, check=True, capture_output=True)
-                logger.info("Added NAT masquerade rule for external network access")
-            except subprocess.CalledProcessError as e:
-                logger.warning(f"Failed to add NAT masquerade rule: {e}")
+                subprocess.run(
+                    ["iptables"] + nat_check, check=True, capture_output=True
+                )
+                logger.debug("NAT masquerade rule already exists")
+            except subprocess.CalledProcessError:
+                try:
+                    subprocess.run(
+                        ["iptables"] + nat_rule, check=True, capture_output=True
+                    )
+                    logger.info(
+                        "Added NAT masquerade rule for external network access"
+                    )
+                except subprocess.CalledProcessError as e:
+                    logger.warning(f"Failed to add NAT masquerade rule: {e}")
+        else:
+            logger.info(
+                f"Skipping NAT masquerade for network '{self.network_name}' "
+                f"(public IP mode)"
+            )
 
         # Check if firewall-cmd exists and firewalld is running
         if shutil.which("firewall-cmd") is None:
@@ -528,6 +624,10 @@ class RunnerOverlayManager:
         )
         ipam_config = docker.types.IPAMConfig(pool_configs=[ipam_pool])
 
+        # For public IP networks, disable Docker's own masquerade
+        # For private networks, also disable (we handle masquerade ourselves in iptables)
+        enable_masq = "false"
+
         client.networks.create(
             self.DOCKER_NETWORK_NAME,
             driver="bridge",
@@ -537,7 +637,7 @@ class RunnerOverlayManager:
                 "com.docker.network.driver.mtu": str(self.mtu),
                 # Disable iptables isolation to allow VXLAN traffic through bridge
                 "com.docker.network.bridge.enable_icc": "true",
-                "com.docker.network.bridge.enable_ip_masquerade": "false",
+                "com.docker.network.bridge.enable_ip_masquerade": enable_masq,
             },
         )
 

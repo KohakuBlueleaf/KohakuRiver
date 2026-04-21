@@ -49,6 +49,7 @@ def create_vxlan_sync(
         linkinfo = existing_link.get_attr("IFLA_LINKINFO")
         existing_vni = None
         existing_remote = None
+        existing_local = None
 
         if linkinfo:
             vxlan_data = linkinfo.get_attr("IFLA_INFO_DATA")
@@ -57,9 +58,10 @@ def create_vxlan_sync(
                 existing_remote = vxlan_data.get_attr(
                     "IFLA_VXLAN_GROUP"
                 ) or vxlan_data.get_attr("IFLA_VXLAN_REMOTE")
+                existing_local = vxlan_data.get_attr("IFLA_VXLAN_LOCAL")
 
-        # Check if config matches
-        if existing_vni == vni and existing_remote == physical_ip:
+        # Check if config matches (VNI, remote, and local IP)
+        if existing_vni == vni and existing_remote == physical_ip and existing_local == local_ip:
             # Case 2: Correct config - ensure IP assigned and up
             logger.info(
                 f"VXLAN {device_name} already exists with correct config, reusing"
@@ -73,8 +75,8 @@ def create_vxlan_sync(
             # Case 3: Wrong config - delete and recreate
             logger.info(
                 f"VXLAN {device_name} exists with wrong config "
-                f"(vni={existing_vni} vs {vni}, remote={existing_remote} vs {physical_ip}), "
-                f"deleting and recreating"
+                f"(vni={existing_vni} vs {vni}, remote={existing_remote} vs {physical_ip}, "
+                f"local={existing_local} vs {local_ip}), deleting and recreating"
             )
             ipr.link("del", index=vxlan_idx)
 

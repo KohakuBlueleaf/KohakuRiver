@@ -122,10 +122,12 @@ def cleanup_overlay() -> dict:
 # =============================================================================
 
 
-def get_available_ips(runner: str | None = None, limit: int = 100) -> dict:
+def get_available_ips(
+    runner: str | None = None, limit: int = 100, network: str = "default"
+) -> dict:
     """Get available IPs for reservation."""
     url = f"{_get_host_url()}/overlay/ip/available"
-    params = {"limit": limit}
+    params = {"limit": limit, "network": network}
     if runner:
         params["runner"] = runner
 
@@ -157,10 +159,12 @@ def get_runner_ip_info(runner_name: str) -> dict:
     return {}
 
 
-def reserve_ip(runner: str, ip: str | None = None, ttl: int = 300) -> dict:
+def reserve_ip(
+    runner: str, ip: str | None = None, ttl: int = 300, network: str = "default"
+) -> dict:
     """Reserve an IP address on a runner."""
     url = f"{_get_host_url()}/overlay/ip/reserve"
-    params = {"runner": runner, "ttl": ttl}
+    params = {"runner": runner, "ttl": ttl, "network": network}
     if ip:
         params["ip"] = ip
 

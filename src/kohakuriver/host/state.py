@@ -23,14 +23,14 @@ def set_ip_reservation_manager(manager):
 
 
 def get_overlay_manager():
-    """Get the overlay network manager instance (or None)."""
-    if not config.OVERLAY_ENABLED:
+    """Get the overlay network manager instance (MultiOverlayManager or None)."""
+    if not config.get_overlay_enabled():
         return None
     return _overlay_manager
 
 
 def get_ip_reservation_manager():
     """Get the IP reservation manager instance (or None)."""
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         return None
     return _ip_reservation_manager

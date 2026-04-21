@@ -115,6 +115,8 @@ The overlay uses a **hub-and-spoke topology** with the Host as the central route
 
 ### Key Components
 
+**Single-overlay mode** (legacy `OVERLAY_ENABLED` with no `OVERLAY_NETWORKS`):
+
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | `kohaku-host` | Host | Dummy interface with 10.0.0.1/8 for containers to reach Host |
@@ -122,6 +124,20 @@ The overlay uses a **hub-and-spoke topology** with the Host as the central route
 | `vxlan0` | Runner | VXLAN interface to Host |
 | `kohaku-overlay` | Runner | Linux bridge connecting vxlan0 and containers |
 | `kohakuriver-overlay` | Runner | Docker network using the bridge |
+
+**Multi-overlay mode** (`OVERLAY_NETWORKS` list config) — each network gets its own set of interfaces named by network name and index:
+
+| Component | Location | Example (first network "private", Runner 1) |
+|-----------|----------|---------------------------------------------|
+| `kohaku-host` | Host | Shared dummy interface (one for all networks) |
+| `vx{net_idx}_{runner_id}` | Host | `vx0_1` — VXLAN prefix encodes network index in base36 |
+| `vxlan-{name}` | Runner | `vxlan-private` (truncated to 15 chars) |
+| `kohaku-{name}` | Runner | `kohaku-private` — Linux bridge |
+| `kohakuriver-{name}` | Runner | `kohakuriver-private` — Docker network |
+
+With two networks (e.g., `private` and `public`) and two runners, you get VXLAN devices `vx0_1`, `vx0_2` (private network, runners 1-2) and `vx1_1`, `vx1_2` (public network). VNIs are `vxlan_id_base + runner_id`, so each network needs a non-overlapping `vxlan_id_base`.
+
+See [configuration.md](configuration.md#multi-overlay-network-configuration) for config details.
 
 ### IP Address Scheme
 
@@ -258,6 +274,119 @@ This masquerades overlay traffic (10.0.0.0/8) going to non-overlay destinations.
 
 ---
 
+## Multi-Overlay Networks
+
+A KohakuRiver cluster can run **multiple overlay networks in parallel**, each with its own subnet, VXLAN tunnels, and NAT policy. Containers can attach to one or more networks simultaneously, giving them multiple IPs — one per attached network.
+
+### Why Multi-Overlay?
+
+Common scenarios:
+
+- **Private + Public split**: one network with NATed private IPs (e.g., `10.128.0.0/12`) for internal traffic, and another with real public IPs (e.g., `163.227.172.128/26` via BGP/WireGuard) for inbound connections.
+- **Tenant isolation**: separate networks for staging vs. production workloads sharing the same cluster.
+- **Traffic policy separation**: e.g., one network bypasses NAT for performance-critical paths.
+
+### Dual-NIC Container
+
+A container attached to two networks gets two interfaces:
+
+```
+┌─────────────────────────────────────────────┐
+│             Container                       │
+│                                             │
+│   eth0: 10.128.64.2 (private)               │
+│     └── default gateway: 10.128.64.1        │
+│     └── outbound → NAT → internet           │
+│                                             │
+│   eth1: 163.227.172.130 (public)            │
+│     └── no default gateway                  │
+│     └── inbound only (external reaches here)│
+└─────────────────────────────────────────────┘
+```
+
+Behavior:
+- **Outbound** (e.g., `apt install`, `docker pull`, `wget`): default route on eth0 → private gateway → Runner NAT → Internet. Traffic never touches the public network.
+- **Inbound** (e.g., external SSH, HTTP to the container): reaches eth1 via the public overlay. The return path on the same connection goes out eth1 (kernel matches by connection tracking).
+
+The first network in `network_names` is the primary and owns the default route. Additional networks only provide IP addresses for reachability.
+
+### Attaching a Container to Multiple Networks
+
+**CLI:**
+```bash
+kohakuriver task submit -n private -n public -- python server.py
+kohakuriver vps create --network private --network public --ssh
+```
+
+**API:**
+```json
+{"network_names": ["private", "public"], ...}
+```
+
+Internally, the Runner runs `docker run --network kohakuriver-private ...` for the primary network, then `docker network connect kohakuriver-public <container>` to attach each additional network.
+
+---
+
+## Masquerade Modes
+
+Each overlay network has a `masquerade` flag controlling how outbound traffic is NATed on the Runner.
+
+### `masquerade: True` — Private Networks
+
+Used for subnets that aren't routable on the internet (`10.x.x.x`, `192.168.x.x`, etc.).
+
+```
+Container (10.128.64.2) → Runner bridge (10.128.64.1)
+                          ↓
+                          MASQUERADE: src changed to Runner's IP
+                          ↓
+                          Runner's default NIC → Internet
+```
+
+Required because the internet doesn't route back to private IPs. NAT masquerade rewrites the source IP so responses return to the Runner, which reverses the NAT and forwards back to the container.
+
+**iptables rule:**
+```bash
+iptables -t nat -A POSTROUTING -s 10.128.0.0/12 ! -d 10.128.0.0/12 -j MASQUERADE
+```
+
+### `masquerade: False` — Public Networks
+
+Used for subnets that **are** routable on the internet (real public IPs via BGP, or any range with external return path).
+
+```
+Container (163.227.172.130) → Runner bridge (163.227.172.129)
+                              ↓
+                              No NAT — source IP preserved
+                              ↓
+                              Runner policy route: from public subnet → back to Host via VXLAN
+                              ↓
+                              Host → WireGuard → BGP router → Internet
+```
+
+NAT would break inbound connections: external users dial the container's public IP, but NATed responses would come back from the Runner's internal IP → mismatch → connection dropped.
+
+**Policy routing on Runner** (auto-configured when `masquerade: False`):
+```bash
+# Default route for non-masquerade network: goes back to Host via VXLAN
+ip route add default via <host_ip_on_runner_subnet> table <N>
+ip rule add from <public_subnet> table <N>
+```
+
+This ensures container outbound traffic takes the path that matches the BGP return path, keeping the source IP legitimate.
+
+See [public-ip-wireguard.md](public-ip-wireguard.md) for the full public-IP-via-BGP setup.
+
+### Choosing the Right Mode
+
+| Network Type | `masquerade` | Reason |
+|--------------|--------------|--------|
+| Internal RFC1918 (10.x, 172.16.x, 192.168.x) | `True` | Not routable on internet; NAT required for outbound |
+| Real public IPs with BGP announcement | `False` | Routable; NAT would break inbound connection tracking |
+| Carrier-grade NAT / translated ranges | Depends | If upstream handles NAT, use `False`; else `True` |
+
+---
+
 ## VXLAN Encapsulation
 
 VXLAN (Virtual Extensible LAN) encapsulates Layer 2 frames in UDP packets:
@@ -293,31 +422,38 @@ KohakuRiver automatically handles:
 
 ### On Host startup:
 1. Enable IP forwarding (`net.ipv4.ip_forward=1`)
-2. Create `kohaku-host` dummy interface with 10.0.0.1/8
-3. Recover existing vxkr* interfaces from previous run
-4. Add iptables FORWARD rules for overlay traffic
-5. Add vxkr* interfaces to firewalld trusted zone (if firewalld running)
+2. Create `kohaku-host` dummy interface with the host overlay IP
+3. For each configured overlay network, recover existing VXLAN interfaces from previous run
+4. Add iptables FORWARD rules for each overlay subnet
+5. Add VXLAN interfaces to firewalld trusted zone (if firewalld running)
 
 ### On Runner registration:
-1. Host creates vxkr{N} interface with IP 10.N.0.254/16
-2. Runner creates vxlan0 interface pointing to Host
-3. Runner creates kohaku-overlay bridge with gateway 10.N.0.1
-4. Runner creates Docker network using the bridge
-5. Runner adds iptables FORWARD rules
-6. Runner adds NAT masquerade rule for internet access
-7. Runner adds interfaces to firewalld trusted zone (if running)
+1. For each overlay network, Host creates a VXLAN interface pointing to Runner
+2. Runner creates VXLAN interface pointing to Host (one per overlay)
+3. Runner creates bridge per overlay with the runner's gateway IP
+4. Runner creates Docker network per overlay using the bridge
+5. Runner adds iptables FORWARD rules per overlay CIDR
+6. For overlays with `masquerade: True`, Runner adds NAT masquerade rule
+7. For overlays with `masquerade: False`, Runner adds policy routing (see [Masquerade Modes](#masquerade-modes))
+8. Runner adds interfaces to firewalld trusted zone (if running)
 
-### Firewall rules added:
+### Firewall rules added (per overlay subnet):
 
 **FORWARD chain (Host and Runner):**
 ```bash
-iptables -I FORWARD 1 -s 10.0.0.0/8 -j ACCEPT
-iptables -I FORWARD 2 -d 10.0.0.0/8 -j ACCEPT
+iptables -I FORWARD 1 -s <OVERLAY_CIDR> -j ACCEPT
+iptables -I FORWARD 2 -d <OVERLAY_CIDR> -j ACCEPT
 ```
 
-**NAT POSTROUTING (Runner only):**
+**NAT POSTROUTING (Runner only, `masquerade: True` networks):**
 ```bash
-iptables -t nat -A POSTROUTING -s 10.0.0.0/8 ! -d 10.0.0.0/8 -j MASQUERADE
+iptables -t nat -A POSTROUTING -s <OVERLAY_CIDR> ! -d <OVERLAY_CIDR> -j MASQUERADE
+```
+
+**Policy routing (Runner only, `masquerade: False` networks):**
+```bash
+ip route replace default via <host_ip_on_runner_subnet> table <N>
+ip rule add from <OVERLAY_CIDR> table <N>
 ```
 
 ---
@@ -329,16 +465,21 @@ The overlay network is designed for minimal persistent state:
 ### Network interfaces ARE the source of truth
 
 - No database stores overlay allocations
-- On Host restart, state is recovered from existing vxkr* interfaces
-- VNI encodes runner_id: `runner_id = VNI - base_vxlan_id`
+- On Host restart, state is recovered from existing VXLAN interfaces (one network at a time)
+- VNI encodes runner_id: `runner_id = VNI - vxlan_id_base`
+- In multi-overlay, each network's VXLAN prefix (`vxkr`, `vx0`, `vx1`, ...) distinguishes them
 
 ### Host restart behavior:
 
-1. Host scans for existing vxkr* interfaces
+1. For each configured overlay, Host scans for VXLAN interfaces matching that network's prefix
 2. Extracts runner_id from interface name and VNI
 3. Creates placeholder allocations (marked inactive)
 4. When Runners reconnect, they reclaim their allocation by matching physical IP
 5. VXLAN tunnels persist - running containers keep connectivity
+
+### VXLAN config drift detection
+
+If a VXLAN interface exists but its **VNI, remote IP, or local IP** differs from the current configuration (e.g., `HOST_REACHABLE_ADDRESS` changed), KohakuRiver automatically deletes and recreates the interface with the correct parameters. This handles the common case where the Host's reachable address changes and old VXLANs need to be refreshed.
 
 ### Runner restart behavior:
 
@@ -349,15 +490,18 @@ The overlay network is designed for minimal persistent state:
 
 ---
 
-## Comparison with Default Networking
+## Comparison of Modes
 
-| Aspect | Default (`kohakuriver-net`) | Overlay (`kohakuriver-overlay`) |
-|--------|---------------------------|--------------------------------|
-| Cross-node communication | ✗ Not possible | ✓ Full connectivity |
-| Container IP scheme | 172.30.x.x (conflicts possible) | 10.X.x.x (unique per runner) |
-| Host reachable at | 172.30.0.1 (runner gateway) | 10.0.0.1 (consistent) |
-| Internet access | Via Docker NAT | Via Runner NAT |
-| Configuration | None required | Enable flag + HOST_REACHABLE_ADDRESS |
-| Max runners | Unlimited | 255 |
-| Network overhead | None | ~50 bytes/packet |
-| Requires root on Host | No | Yes (for VXLAN interfaces) |
+| Aspect | Default (`kohakuriver-net`) | Single Overlay | Multi-Overlay |
+|--------|---------------------------|----------------|---------------|
+| Cross-node communication | ✗ Not possible | ✓ One shared network | ✓ Multiple networks |
+| Container IP scheme | 172.30.x.x (conflicts possible) | 10.X.x.x (unique per runner) | One subnet per network (flexible) |
+| Multiple NICs per container | ✗ | ✗ (one overlay only) | ✓ (attach to multiple) |
+| Public IP support | ✗ | ✗ | ✓ (`masquerade: False` networks) |
+| Internet access | Via Docker NAT | Via Runner NAT | Per-network (NAT or preserve) |
+| Configuration | None | `OVERLAY_ENABLED` + subnet | `OVERLAY_NETWORKS` list |
+| Max runners per network | Unlimited | Up to node-bits (63 default) | Up to node-bits per network |
+| Network overhead | None | ~50 bytes/packet | ~50 bytes/packet (per VXLAN) |
+| Requires root on Host | No | Yes (for VXLAN interfaces) | Yes |
+
+**Upgrade path:** single-overlay is the default when you enable `OVERLAY_ENABLED` without `OVERLAY_NETWORKS`. To migrate to multi-overlay, add the `OVERLAY_NETWORKS` list — existing containers keep working under the synthesized `"default"` network name while you transition.

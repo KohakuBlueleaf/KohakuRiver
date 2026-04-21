@@ -125,6 +125,8 @@ async def _create_docker_vps(request: VPSCreateRequest):
         ssh_port=request.ssh_port,
         task_store=task_store,
         reserved_ip=request.reserved_ip,
+        network_name=request.network_name,
+        network_names=request.network_names,
     )
 
     if not result.get("success"):

@@ -169,7 +169,7 @@ async def _mark_overlay_inactive(hostname: str) -> None:
     and containers may still be running. LRU cleanup happens only
     when all 255 IPs are exhausted.
     """
-    if not config.OVERLAY_ENABLED:
+    if not config.get_overlay_enabled():
         return
 
     overlay_manager = get_overlay_manager()

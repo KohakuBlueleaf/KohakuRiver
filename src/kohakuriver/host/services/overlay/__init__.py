@@ -6,7 +6,10 @@ Re-exports main classes so existing imports continue to work:
     from kohakuriver.host.services.overlay import OverlayAllocation
 """
 
-from kohakuriver.host.services.overlay.manager import OverlayNetworkManager
+from kohakuriver.host.services.overlay.manager import (
+    MultiOverlayManager,
+    OverlayNetworkManager,
+)
 from kohakuriver.host.services.overlay.models import OverlayAllocation
 
-__all__ = ["OverlayNetworkManager", "OverlayAllocation"]
+__all__ = ["MultiOverlayManager", "OverlayNetworkManager", "OverlayAllocation"]

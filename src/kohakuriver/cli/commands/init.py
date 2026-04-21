@@ -117,6 +117,40 @@ LOG_LEVEL: LogLevel = LogLevel.INFO
 
 
 # =============================================================================
+# Overlay Network Configuration (VXLAN)
+# =============================================================================
+
+# Master switch: enable overlay networking for cross-node container communication.
+# When False, containers use isolated per-node Docker bridge (kohakuriver-net).
+OVERLAY_ENABLED: bool = False
+
+# Define overlay networks. Each network creates its own VXLAN tunnels and Docker bridge.
+# When empty and OVERLAY_ENABLED is True, a single "default" network is created
+# from OVERLAY_SUBNET/OVERLAY_VXLAN_ID/OVERLAY_VXLAN_PORT/OVERLAY_MTU below.
+#
+# Fields per network:
+#   name         - Unique name (used in CLI --network and Web UI selector)
+#   subnet       - "IP/PREFIX/NODE_BITS/SUBNET_BITS" (per-runner splitting)
+#                  or "IP/PREFIX" (flat, all runners share same subnet)
+#   vxlan_id_base - Base VXLAN ID (each runner gets base + runner_id, must not overlap)
+#   masquerade   - True = NAT outbound traffic (for private subnets)
+#                  False = keep original source IP (for public subnets)
+#
+# Example:
+# OVERLAY_NETWORKS: list[dict] = [
+#     {"name": "private", "subnet": "10.128.0.0/12/6/14", "vxlan_id_base": 100, "masquerade": True},
+#     {"name": "public", "subnet": "163.227.172.128/26", "vxlan_id_base": 200, "masquerade": False},
+# ]
+OVERLAY_NETWORKS: list[dict] = []
+
+# Legacy single-network settings (used only when OVERLAY_NETWORKS is empty)
+OVERLAY_SUBNET: str = "10.128.0.0/12/6/14"
+OVERLAY_VXLAN_ID: int = 100
+OVERLAY_VXLAN_PORT: int = 4789
+OVERLAY_MTU: int = 1450
+
+
+# =============================================================================
 # KohakuEngine config_gen - DO NOT MODIFY
 # =============================================================================
 

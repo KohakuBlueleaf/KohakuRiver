@@ -384,12 +384,14 @@ async def _setup_vm_network() -> None:
 
 async def _setup_overlay_network(overlay_info: dict) -> None:
     """
-    Set up the VXLAN overlay network on this runner.
+    Set up the VXLAN overlay network(s) on this runner.
+
+    Supports both single-network (legacy) and multi-network formats.
 
     Args:
         overlay_info: Overlay configuration from Host registration response
     """
-    logger.info("Setting up VXLAN overlay network...")
+    logger.info("Setting up VXLAN overlay network(s)...")
 
     # Get runner's physical IP (same logic as get_runner_url)
     runner_ip = config.RUNNER_BIND_IP
@@ -407,44 +409,92 @@ async def _setup_overlay_network(overlay_info: dict) -> None:
         except Exception:
             runner_ip = "127.0.0.1"
 
-    try:
-        overlay_config = OverlayConfig(
-            runner_id=overlay_info["runner_id"],
-            subnet=overlay_info["overlay_subnet"],
-            gateway=overlay_info["overlay_gateway"],
-            host_overlay_ip=overlay_info["host_overlay_ip"],
-            host_physical_ip=overlay_info["host_physical_ip"],
-            runner_physical_ip=runner_ip,
-            overlay_network_cidr=overlay_info.get(
-                "overlay_network_cidr", "10.128.0.0/12"
-            ),
-            host_ip_on_runner_subnet=overlay_info.get(
-                "host_ip_on_runner_subnet",
-                "",  # Will be calculated from runner_id if not provided
-            ),
-        )
+    # Determine network list: new multi-network format or legacy single-network
+    networks = overlay_info.get("networks")
+    if not networks:
+        # Legacy format: single network from flat fields
+        networks = [
+            {
+                "name": "default",
+                "runner_id": overlay_info["runner_id"],
+                "overlay_subnet": overlay_info["overlay_subnet"],
+                "overlay_gateway": overlay_info["overlay_gateway"],
+                "host_overlay_ip": overlay_info["host_overlay_ip"],
+                "host_physical_ip": overlay_info["host_physical_ip"],
+                "overlay_network_cidr": overlay_info.get(
+                    "overlay_network_cidr", "10.128.0.0/12"
+                ),
+                "host_ip_on_runner_subnet": overlay_info.get(
+                    "host_ip_on_runner_subnet", ""
+                ),
+                "masquerade": True,
+                "vxlan_id_base": config.OVERLAY_VXLAN_ID,
+                "vxlan_port": config.OVERLAY_VXLAN_PORT,
+                "mtu": config.OVERLAY_MTU,
+            }
+        ]
 
-        overlay_manager = RunnerOverlayManager(
-            base_vxlan_id=config.OVERLAY_VXLAN_ID,
-            vxlan_port=config.OVERLAY_VXLAN_PORT,
-            mtu=config.OVERLAY_MTU,
-        )
+    # Store all managers
+    overlay_managers = {}
 
-        await overlay_manager.setup(overlay_config)
+    for net_info in networks:
+        net_name = net_info.get("name", "default")
+        try:
+            overlay_config = OverlayConfig(
+                runner_id=net_info["runner_id"],
+                subnet=net_info["overlay_subnet"],
+                gateway=net_info["overlay_gateway"],
+                host_overlay_ip=net_info["host_overlay_ip"],
+                host_physical_ip=net_info["host_physical_ip"],
+                runner_physical_ip=runner_ip,
+                overlay_network_cidr=net_info.get(
+                    "overlay_network_cidr", "10.128.0.0/12"
+                ),
+                host_ip_on_runner_subnet=net_info.get(
+                    "host_ip_on_runner_subnet", ""
+                ),
+                network_name=net_name,
+                masquerade=net_info.get("masquerade", True),
+            )
 
-        # Store manager in app.state
-        app.state.overlay_manager = overlay_manager
+            overlay_manager = RunnerOverlayManager(
+                base_vxlan_id=net_info.get("vxlan_id_base", config.OVERLAY_VXLAN_ID),
+                vxlan_port=net_info.get("vxlan_port", config.OVERLAY_VXLAN_PORT),
+                mtu=net_info.get("mtu", config.OVERLAY_MTU),
+                network_name=net_name,
+            )
 
-        # Mark overlay as configured in config so containers use overlay network
-        config.set_overlay_configured(overlay_config.gateway)
+            await overlay_manager.setup(overlay_config)
+            overlay_managers[net_name] = overlay_manager
 
-        logger.info(
-            f"Overlay network setup complete: "
-            f"subnet={overlay_config.subnet}, gateway={overlay_config.gateway}"
-        )
+            # Register network in config for container network selection
+            config.add_overlay_network(
+                net_name,
+                overlay_config.gateway,
+                overlay_manager.DOCKER_NETWORK_NAME,
+            )
 
-    except Exception as e:
-        logger.error(f"Failed to set up overlay network: {e}")
+            logger.info(
+                f"Overlay network '{net_name}' setup complete: "
+                f"subnet={overlay_config.subnet}, "
+                f"gateway={overlay_config.gateway}, "
+                f"masquerade={overlay_config.masquerade}"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to set up overlay network '{net_name}': {e}")
+
+    # Store managers in app.state
+    if overlay_managers:
+        app.state.overlay_managers = overlay_managers
+        # Backward compat: store first manager as overlay_manager
+        app.state.overlay_manager = next(iter(overlay_managers.values()))
+
+        # Legacy compat: also set old-style overlay configured flag
+        first_net = networks[0]
+        config.set_overlay_configured(first_net["overlay_gateway"])
+    else:
+        logger.warning("No overlay networks were set up successfully")
         logger.warning("Containers will use default kohakuriver-net network")
 
 
@@ -456,8 +506,12 @@ async def shutdown_event():
     for task in background_tasks:
         task.cancel()
 
-    # Close overlay manager if active
-    if hasattr(app.state, "overlay_manager") and app.state.overlay_manager:
+    # Close overlay managers if active
+    if hasattr(app.state, "overlay_managers") and app.state.overlay_managers:
+        for name, mgr in app.state.overlay_managers.items():
+            mgr.close()
+        logger.info("Overlay network managers closed")
+    elif hasattr(app.state, "overlay_manager") and app.state.overlay_manager:
         app.state.overlay_manager.close()
         logger.info("Overlay network manager closed")
 

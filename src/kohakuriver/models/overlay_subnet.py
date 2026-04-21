@@ -134,6 +134,33 @@ class OverlaySubnetConfig:
         )
 
     @classmethod
+    def from_simple_cidr(cls, cidr: str) -> OverlaySubnetConfig:
+        """
+        Create config from a simple CIDR (e.g., "163.227.172.128/26").
+
+        For simple CIDRs, there's no per-runner subnet splitting.
+        All runners share the same flat subnet. This is used for
+        public IP networks where the subnet is small and doesn't
+        need hierarchical allocation.
+
+        node_bits is set to 0 to indicate flat mode. Methods like
+        get_runner_subnet() return the same subnet for any runner_id.
+        """
+        network = ipaddress.IPv4Network(cidr, strict=False)
+        prefix = network.prefixlen
+        return cls(
+            base_network=network,
+            total_prefix=prefix,
+            node_bits=0,
+            subnet_bits=32 - prefix,
+        )
+
+    @property
+    def is_flat(self) -> bool:
+        """Check if this is a flat (non-hierarchical) subnet config."""
+        return self.node_bits == 0
+
+    @classmethod
     def default(cls) -> OverlaySubnetConfig:
         """Get the default configuration (10.0.0.0/8/8/16)."""
         return cls.parse(cls.DEFAULT_CONFIG)
@@ -141,6 +168,9 @@ class OverlaySubnetConfig:
     @property
     def max_runners(self) -> int:
         """Maximum number of runners supported (excluding host at ID 0)."""
+        if self.is_flat:
+            # Flat mode: no per-runner splitting, cap at 63
+            return 63
         return (2**self.node_bits) - 1
 
     @property
@@ -164,10 +194,13 @@ class OverlaySubnetConfig:
         """
         Get the host's IP on the overlay network.
 
-        Host always gets the .1 address in the first subnet (node_id=0).
-        e.g., 10.0.0.1 for default config, 10.16.0.1 for 10.16.0.0/12/6/14
+        For hierarchical: .1 in the first subnet (node_id=0).
+        For flat: second-to-last IP in the subnet (same as host_ip_on_runner_subnet).
         """
         base_int = int(self.base_network.network_address)
+        if self.is_flat:
+            subnet_size = 2**self.subnet_bits
+            return str(ipaddress.IPv4Address(base_int + subnet_size - 2))
         return str(ipaddress.IPv4Address(base_int + 1))
 
     def get_runner_subnet(self, runner_id: int) -> str:
@@ -181,6 +214,10 @@ class OverlaySubnetConfig:
             Subnet in CIDR notation (e.g., "10.1.0.0/16")
         """
         self._validate_runner_id(runner_id)
+
+        if self.is_flat:
+            # Flat mode: all runners share the same subnet
+            return str(self.base_network)
 
         base_int = int(self.base_network.network_address)
         # Shift runner_id to the correct position
@@ -205,6 +242,11 @@ class OverlaySubnetConfig:
         self._validate_runner_id(runner_id)
 
         base_int = int(self.base_network.network_address)
+
+        if self.is_flat:
+            # Flat mode: gateway is base + 1 (e.g., 163.227.172.129)
+            return str(ipaddress.IPv4Address(base_int + 1))
+
         runner_offset = runner_id << self.subnet_bits
         gateway_addr = base_int + runner_offset + 1
 
@@ -226,6 +268,13 @@ class OverlaySubnetConfig:
         self._validate_runner_id(runner_id)
 
         base_int = int(self.base_network.network_address)
+
+        if self.is_flat:
+            # Flat mode: host IP is second-to-last in the subnet
+            # e.g., for /26 (64 IPs): base + 62 (broadcast is base + 63)
+            subnet_size = 2**self.subnet_bits
+            return str(ipaddress.IPv4Address(base_int + subnet_size - 2))
+
         runner_offset = runner_id << self.subnet_bits
         # Host IP is at offset 254 within the runner's subnet
         host_addr = base_int + runner_offset + 254
@@ -236,7 +285,7 @@ class OverlaySubnetConfig:
         """
         Get the usable container IP range for a runner.
 
-        Excludes: .0 (network), .1 (gateway), .254 (host), .255+ (broadcast region)
+        Excludes: network addr, gateway (.1), host IP, broadcast
 
         Args:
             runner_id: Runner ID (1 to max_runners)
@@ -247,6 +296,15 @@ class OverlaySubnetConfig:
         self._validate_runner_id(runner_id)
 
         base_int = int(self.base_network.network_address)
+        subnet_size = 2**self.subnet_bits
+
+        if self.is_flat:
+            # Flat mode: all runners share same pool
+            # Exclude: base (network), base+1 (gateway), base+size-2 (host), base+size-1 (broadcast)
+            first_ip = ipaddress.IPv4Address(base_int + 2)
+            last_ip = ipaddress.IPv4Address(base_int + subnet_size - 3)
+            return (str(first_ip), str(last_ip))
+
         runner_offset = runner_id << self.subnet_bits
         subnet_base = base_int + runner_offset
 
@@ -254,7 +312,6 @@ class OverlaySubnetConfig:
         first_ip = ipaddress.IPv4Address(subnet_base + 2)
 
         # Last usable: depends on subnet size, but exclude .254 (host) and broadcast
-        subnet_size = 2**self.subnet_bits
         # Max usable is one before broadcast, but also excluding .254
         # For /16: last would be .255.255 broadcast, so last usable is .255.253
         # But we also reserve .254 for host, so we need to handle gaps

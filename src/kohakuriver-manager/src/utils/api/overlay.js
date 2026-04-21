@@ -38,8 +38,8 @@ export const overlayAPI = {
    * @param {number} limit - Max IPs per runner (default 100)
    * @returns {Promise<Object>} Available IPs grouped by runner
    */
-  getAvailableIps: (runner = null, limit = 100) => {
-    const params = { limit }
+  getAvailableIps: (runner = null, limit = 100, network = 'default') => {
+    const params = { limit, network }
     if (runner) params.runner = runner
     return apiClient.get('/nodes/overlay/ip/available', { params })
   },
@@ -49,7 +49,8 @@ export const overlayAPI = {
    * @param {string} runnerName - Runner hostname
    * @returns {Promise<Object>} IP allocation info (subnet, gateway, range, counts)
    */
-  getRunnerIpInfo: (runnerName) => apiClient.get(`/nodes/overlay/ip/info/${encodeURIComponent(runnerName)}`),
+  getRunnerIpInfo: (runnerName, network = 'default') =>
+    apiClient.get(`/nodes/overlay/ip/info/${encodeURIComponent(runnerName)}`, { params: { network } }),
 
   /**
    * Reserve an IP address on a runner.
@@ -58,8 +59,8 @@ export const overlayAPI = {
    * @param {number} ttl - Time-to-live in seconds (default 300)
    * @returns {Promise<Object>} Reservation result with token
    */
-  reserveIp: (runner, ip = null, ttl = 300) => {
-    const data = { runner, ttl }
+  reserveIp: (runner, ip = null, ttl = 300, network = 'default') => {
+    const data = { runner, ttl, network }
     if (ip) data.ip = ip
     return apiClient.post('/nodes/overlay/ip/reserve', data)
   },

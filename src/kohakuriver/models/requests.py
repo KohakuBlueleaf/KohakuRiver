@@ -93,6 +93,14 @@ class TaskSubmitRequest(BaseModel):
         default=None,
         description="IP reservation token for fixed container IP",
     )
+    network_name: str | None = Field(
+        default=None,
+        description="Overlay network name (e.g., 'private', 'public'). None uses default.",
+    )
+    network_names: list[str] | None = Field(
+        default=None,
+        description="Multiple overlay networks to attach. First is primary (default gateway).",
+    )
 
 
 class TaskSubmission(BaseModel):
@@ -157,6 +165,14 @@ class TaskSubmission(BaseModel):
         default=None,
         description="IP reservation token for fixed container IP",
     )
+    network_name: str | None = Field(
+        default=None,
+        description="Overlay network name (e.g., 'private', 'public'). None uses default.",
+    )
+    network_names: list[str] | None = Field(
+        default=None,
+        description="Multiple overlay networks to attach. First is primary (default gateway).",
+    )
 
 
 class TaskExecuteRequest(BaseModel):
@@ -181,6 +197,8 @@ class TaskExecuteRequest(BaseModel):
     stdout_path: str
     stderr_path: str
     reserved_ip: str | None = None
+    network_name: str | None = None
+    network_names: list[str] | None = None
 
 
 class VPSSubmission(BaseModel):
@@ -209,6 +227,8 @@ class VPSSubmission(BaseModel):
     ssh_key_mode: str = "disabled"
     ssh_public_key: str | None = None
     ip_reservation_token: str | None = None
+    network_name: str | None = None
+    network_names: list[str] | None = None
     # VM-specific options (qemu backend)
     vps_backend: str = "docker"  # "docker" or "qemu"
     vm_image: str | None = None  # Base VM image name (qemu only)
@@ -230,6 +250,8 @@ class VPSCreateRequest(BaseModel):
     ssh_public_key: str | None = None
     ssh_port: int
     reserved_ip: str | None = None
+    network_name: str | None = None
+    network_names: list[str] | None = None
     # VM-specific options (qemu backend)
     vps_backend: str = "docker"  # "docker" or "qemu"
     vm_image: str | None = None  # Base VM image name (qemu only)

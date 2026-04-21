@@ -88,6 +88,7 @@ from kohakuriver.host.services.overlay.vxlan import (
     create_vxlan_sync,
     delete_vxlan_sync,
 )
+from kohakuriver.models.overlay_network import OverlayNetworkDefinition
 from kohakuriver.models.overlay_subnet import OverlaySubnetConfig
 from kohakuriver.utils.logger import get_logger
 
@@ -112,22 +113,59 @@ class OverlayNetworkManager:
     """
 
     # Device naming: "vxkr{base36_id}" - e.g., "vxkr1", "vxkra" (for id=10)
-    # Linux interface names limited to 15 chars, this scheme uses 5-7 chars max
+    # For multi-network: "vx{net_idx}_{base36_id}" - e.g., "vx0_1", "vx1_a"
+    # Linux interface names limited to 15 chars, this scheme uses 4-8 chars max
     VXLAN_PREFIX = "vxkr"
 
-    def __init__(self, config: HostConfig):
-        """Initialize overlay manager with configuration."""
+    def __init__(
+        self,
+        config: HostConfig,
+        network_def: OverlayNetworkDefinition | None = None,
+        network_index: int = 0,
+    ):
+        """
+        Initialize overlay manager with configuration.
+
+        Args:
+            config: Host configuration (used for HOST_REACHABLE_ADDRESS).
+            network_def: If provided, use this network definition instead of
+                legacy OVERLAY_* config fields. Used in multi-network mode.
+            network_index: Index of this network in the multi-network list.
+                Used for VXLAN device naming prefix (0-9, a-z).
+        """
         self.config = config
+        self.network_index = network_index
 
-        # Parse subnet configuration
-        self.subnet_config = OverlaySubnetConfig.parse(config.OVERLAY_SUBNET)
+        if network_def:
+            # Multi-network mode: use OverlayNetworkDefinition
+            self.network_name = network_def.name
+            self.masquerade = network_def.masquerade
 
-        # Configuration from HostConfig
+            if network_def.is_simple_cidr():
+                self.subnet_config = OverlaySubnetConfig.from_simple_cidr(
+                    network_def.subnet
+                )
+            else:
+                self.subnet_config = OverlaySubnetConfig.parse(network_def.subnet)
+
+            self.base_vxlan_id = network_def.vxlan_id_base
+            self.vxlan_port = network_def.vxlan_port
+            self.mtu = network_def.mtu
+
+            # Use network-specific VXLAN prefix to avoid collisions
+            self.VXLAN_PREFIX = f"vx{self._encode_runner_id(network_index)}_"
+        else:
+            # Legacy single-network mode: use OVERLAY_* config fields
+            self.network_name = "default"
+            self.masquerade = True
+            self.subnet_config = OverlaySubnetConfig.parse(config.OVERLAY_SUBNET)
+            self.base_vxlan_id = config.OVERLAY_VXLAN_ID
+            self.vxlan_port = config.OVERLAY_VXLAN_PORT
+            self.mtu = config.OVERLAY_MTU
+
+        # Configuration from parsed subnet
         self.host_ip = self.subnet_config.get_host_ip()
         self.host_prefix = self.subnet_config.overlay_prefix
-        self.base_vxlan_id = config.OVERLAY_VXLAN_ID
-        self.vxlan_port = config.OVERLAY_VXLAN_PORT
-        self.mtu = config.OVERLAY_MTU
 
         # In-Memory State (CACHE - derived from network interfaces)
         # These are rebuilt on every startup from existing interfaces
@@ -139,8 +177,9 @@ class OverlayNetworkManager:
         self._ipr = None
 
         logger.info(
-            f"Overlay subnet config: {self.subnet_config}, "
-            f"max_runners={self.subnet_config.max_runners}"
+            f"Overlay network '{self.network_name}': {self.subnet_config}, "
+            f"max_runners={self.subnet_config.max_runners}, "
+            f"masquerade={self.masquerade}, prefix={self.VXLAN_PREFIX}"
         )
 
     def _get_ipr(self):
@@ -224,6 +263,8 @@ class OverlayNetworkManager:
             host_ip=self.host_ip,
             host_prefix=self.host_prefix,
             subnet_config=self.subnet_config,
+            masquerade=self.masquerade,
+            network_name=self.network_name,
         )
 
     def _recover_state_from_interfaces_sync(self) -> None:
@@ -485,3 +526,120 @@ class OverlayNetworkManager:
         if self._ipr is not None:
             self._ipr.close()
             self._ipr = None
+
+
+class MultiOverlayManager:
+    """
+    Wraps multiple OverlayNetworkManager instances, one per overlay network.
+
+    Provides a unified interface for multi-network overlay management.
+    Each network is independent with its own VXLAN tunnels, subnets, and IP pools.
+    """
+
+    def __init__(self, config: HostConfig):
+        """
+        Initialize from host config.
+
+        Reads OVERLAY_NETWORKS (or synthesizes from legacy OVERLAY_* fields)
+        and creates one OverlayNetworkManager per network.
+        """
+        self.config = config
+        self._managers: dict[str, OverlayNetworkManager] = {}
+
+        network_configs = config.get_overlay_network_configs()
+        for idx, net_dict in enumerate(network_configs):
+            net_def = OverlayNetworkDefinition.from_dict(net_dict)
+            net_def.validate()
+            manager = OverlayNetworkManager(
+                config=config,
+                network_def=net_def,
+                network_index=idx,
+            )
+            self._managers[net_def.name] = manager
+
+        logger.info(
+            f"MultiOverlayManager: {len(self._managers)} network(s) configured: "
+            f"{list(self._managers.keys())}"
+        )
+
+    async def initialize(self) -> None:
+        """Initialize all overlay network managers."""
+        for name, manager in self._managers.items():
+            logger.info(f"Initializing overlay network '{name}'...")
+            await manager.initialize()
+
+    async def allocate_for_runner(
+        self, runner_name: str, physical_ip: str
+    ) -> dict[str, OverlayAllocation]:
+        """
+        Allocate overlay config for a runner across all networks.
+
+        Returns:
+            Dict of network_name -> OverlayAllocation
+        """
+        result = {}
+        for name, manager in self._managers.items():
+            try:
+                alloc = await manager.allocate_for_runner(runner_name, physical_ip)
+                result[name] = alloc
+            except Exception as e:
+                logger.error(
+                    f"Failed to allocate overlay '{name}' for {runner_name}: {e}"
+                )
+        return result
+
+    def get_manager(self, network_name: str) -> OverlayNetworkManager | None:
+        """Get manager for a specific network."""
+        return self._managers.get(network_name)
+
+    def get_default_manager(self) -> OverlayNetworkManager | None:
+        """Get the first (default) network manager."""
+        if not self._managers:
+            return None
+        return next(iter(self._managers.values()))
+
+    async def get_allocation(self, runner_name: str) -> OverlayAllocation | None:
+        """Get allocation from the default (first) network manager."""
+        default = self.get_default_manager()
+        if default:
+            return await default.get_allocation(runner_name)
+        return None
+
+    async def get_all_allocations(self) -> list[OverlayAllocation]:
+        """Get all allocations from the default manager."""
+        default = self.get_default_manager()
+        if default:
+            return await default.get_all_allocations()
+        return []
+
+    @property
+    def network_names(self) -> list[str]:
+        """Get all network names."""
+        return list(self._managers.keys())
+
+    @property
+    def managers(self) -> dict[str, OverlayNetworkManager]:
+        """Get all managers."""
+        return self._managers
+
+    async def mark_runner_inactive(self, runner_name: str) -> None:
+        """Mark runner as inactive across all networks."""
+        for manager in self._managers.values():
+            await manager.mark_runner_inactive(runner_name)
+
+    async def mark_runner_active(self, runner_name: str) -> None:
+        """Mark runner as active across all networks."""
+        for manager in self._managers.values():
+            await manager.mark_runner_active(runner_name)
+
+    async def get_stats(self) -> dict:
+        """Get stats for all networks."""
+        result = {}
+        for name, manager in self._managers.items():
+            result[name] = await manager.get_stats()
+        return result
+
+    def close(self) -> None:
+        """Close all managers."""
+        for manager in self._managers.values():
+            manager.close()

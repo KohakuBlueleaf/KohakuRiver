@@ -93,6 +93,8 @@ async def send_vps_to_runner(
     vm_image: str | None = None,
     vm_disk_size: str | None = None,
     memory_mb: int | None = None,
+    network_name: str | None = None,
+    network_names: list[str] | None = None,
 ) -> dict | None:
     """
     Send VPS creation request to a runner.
@@ -124,6 +126,8 @@ async def send_vps_to_runner(
         "ssh_public_key": ssh_public_key,
         "ssh_port": task.ssh_port,
         "vps_backend": vps_backend,
+        "network_name": network_name,
+        "network_names": network_names,
     }
 
     # Add VM-specific fields
@@ -322,6 +326,7 @@ def _create_vps_task_record(
         vps_backend=vps_backend,
         vm_image=submission.vm_image if vps_backend == "qemu" else None,
         vm_disk_size=submission.vm_disk_size if vps_backend == "qemu" else None,
+        network_name=submission.network_name,
     )
 
     logger.info(f"Created VPS task {task_id} assigned to {node.hostname}")
@@ -468,6 +473,8 @@ async def submit_vps(
         vm_image=submission.vm_image,
         vm_disk_size=submission.vm_disk_size,
         memory_mb=submission.memory_mb,
+        network_name=submission.network_name,
+        network_names=submission.network_names,
     )
 
     # Handle runner rejection
@@ -676,6 +683,7 @@ async def restart_vps(
             ssh_key_mode="none",  # Restart uses existing container, SSH should already be set up
             ssh_public_key=None,
             registry_image=task.registry_image,
+            network_name=task.network_name,
         )
 
         if result is None:

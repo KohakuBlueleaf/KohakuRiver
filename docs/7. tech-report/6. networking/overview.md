@@ -4,12 +4,15 @@ For detailed concepts and traffic flow explanations, see [concept.md](concept.md
 
 ## Networking Modes
 
-KohakuRiver supports two networking modes:
+KohakuRiver supports three networking modes:
 
 | Mode | Cross-Node | Setup Required | Container IPs |
 |------|------------|----------------|---------------|
 | **Default** | ✗ Isolated | None | 172.30.x.x |
-| **VXLAN Overlay** | ✓ Connected | Enable flag + Host IP | 10.X.x.x |
+| **Single VXLAN Overlay** | ✓ Connected | Enable flag + Host IP | 10.X.x.x |
+| **Multi-Overlay** | ✓ Connected, multi-network | `OVERLAY_NETWORKS` list config | Per-network subnets, can include public IPs |
+
+Multi-overlay extends the single-overlay design: a container can attach to one or more networks at the same time (e.g., a private network for outbound NAT + a public network for inbound traffic). See [configuration.md](configuration.md#multi-overlay-network-configuration) for config details and [public-ip-wireguard.md](public-ip-wireguard.md) for assigning real public IPs.
 
 ---
 
