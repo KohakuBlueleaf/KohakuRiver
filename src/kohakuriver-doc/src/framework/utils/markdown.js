@@ -66,17 +66,16 @@ const md = new MarkdownIt({
  * Converts - [ ] and - [x] to checkboxes
  */
 md.core.ruler.after('inline', 'task-lists', function (state) {
-  const tokens = state.tokens
-  for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].type !== 'inline') continue
+  for (const inlineToken of state.tokens) {
+    if (inlineToken.type !== 'inline') continue
 
-    const children = tokens[i].children
+    const children = inlineToken.children
     for (let j = 0; j < children.length; j++) {
       const token = children[j]
       if (token.type !== 'text') continue
 
       const content = token.content
-      const match = content.match(/^\[([ xX])\]\s+/)
+      const match = /^\[([ xX])\]\s+/.exec(content)
       if (!match) continue
 
       const isChecked = match[1].toLowerCase() === 'x'

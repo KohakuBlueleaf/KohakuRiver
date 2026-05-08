@@ -24,18 +24,19 @@ const docsPublicDir = path.join(publicDir, 'documentation')
  * @returns {string[]} ordered list
  */
 function applyOrder(sourceDir, items) {
+  const byLocale = (a, b) => a.localeCompare(b)
   const orderFile = path.join(sourceDir, '_order.json')
-  if (!fs.existsSync(orderFile)) return items.sort()
+  if (!fs.existsSync(orderFile)) return [...items].sort(byLocale)
 
   try {
     const order = JSON.parse(fs.readFileSync(orderFile, 'utf-8'))
     const orderSet = new Set(order)
     const ordered = order.filter((name) => items.includes(name))
-    const remaining = items.filter((name) => !orderSet.has(name)).sort()
+    const remaining = items.filter((name) => !orderSet.has(name)).sort(byLocale)
     return [...ordered, ...remaining]
   } catch (e) {
     console.warn(`  Warning: invalid _order.json in ${sourceDir}: ${e.message}`)
-    return items.sort()
+    return [...items].sort(byLocale)
   }
 }
 
@@ -111,7 +112,7 @@ function stripFrontmatter(text) {
  * @returns {{ title: string|null, description: string|null }}
  */
 function parseFrontmatter(text) {
-  const match = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n/)
+  const match = /^---\s*\n([\s\S]*?)\n---\s*\n/.exec(text)
   if (!match) return { title: null, description: null }
   const meta = {}
   for (const line of match[1].split('\n')) {
@@ -156,8 +157,8 @@ function markdownToPlainText(md) {
       // Remove blockquote markers
       .replace(/^>\s?/gm, '')
       // Remove list markers
-      .replace(/^[\s]*[-*+]\s+/gm, '')
-      .replace(/^[\s]*\d+\.\s+/gm, '')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/^\s*\d+\.\s+/gm, '')
       // Collapse whitespace
       .replace(/\n{3,}/g, '\n\n')
       .replace(/[ \t]+/g, ' ')

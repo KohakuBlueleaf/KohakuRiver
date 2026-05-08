@@ -45,7 +45,6 @@ const forwardForm = ref({
 
 // Computed CLI command
 const cliCommand = computed(() => {
-  const localPort = forwardForm.value.localPort || forwardForm.value.remotePort
   const proto = forwardForm.value.protocol === 'udp' ? ' --proto udp' : ''
   const localPortArg = forwardForm.value.localPort ? ` -l ${forwardForm.value.localPort}` : ''
   return `kohakuriver forward ${props.taskId} ${forwardForm.value.remotePort}${localPortArg}${proto}`
@@ -72,7 +71,7 @@ async function copyCommand() {
   try {
     await navigator.clipboard.writeText(cliCommand.value)
     notify.success('Command copied to clipboard')
-  } catch (err) {
+  } catch {
     // Fallback for non-secure contexts
     const textarea = document.createElement('textarea')
     textarea.value = cliCommand.value

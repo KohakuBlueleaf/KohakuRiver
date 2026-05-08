@@ -71,6 +71,7 @@ async function handleStartContainer(name) {
     await dockerStore.startContainer(name)
     notify.success('Container started')
   } catch (e) {
+    console.error('Failed to start container', e)
     notify.error('Failed to start container')
   }
 }
@@ -80,6 +81,7 @@ async function handleStopContainer(name) {
     await dockerStore.stopContainer(name)
     notify.success('Container stopped')
   } catch (e) {
+    console.error('Failed to stop container', e)
     notify.error('Failed to stop container')
   }
 }
@@ -89,6 +91,7 @@ async function handleDeleteContainer(name) {
     await dockerStore.deleteContainer(name)
     notify.success('Container deleted')
   } catch (e) {
+    console.error('Failed to delete container', e)
     notify.error('Failed to delete container')
   }
 }
@@ -125,6 +128,7 @@ async function handleDeleteTarball(name) {
     await dockerStore.deleteTarball(name)
     notify.success('Tarball deleted')
   } catch (e) {
+    console.error('Failed to delete tarball', e)
     notify.error('Failed to delete tarball')
   }
 }

@@ -78,7 +78,7 @@ def run(
     else:
         print("No config file specified and no default config found.")
         print(
-            f"Using built-in defaults. Run 'kohakuriver init config --host' to generate config."
+            "Using built-in defaults. Run 'kohakuriver init config --host' to generate config."
         )
 
     # Pre-flight: verify native extensions load on this CPU

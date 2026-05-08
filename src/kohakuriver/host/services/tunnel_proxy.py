@@ -122,7 +122,7 @@ async def _connect_and_handshake_runner(
         await websocket.close(code=1011)
         raise ConnectionError(f"Failed to connect to runner: {e}") from e
 
-    logger.debug(f"[ForwardProxy] Connected to runner WebSocket")
+    logger.debug("[ForwardProxy] Connected to runner WebSocket")
 
     try:
         first_msg = await asyncio.wait_for(runner_ws.recv(), timeout=10.0)
@@ -139,10 +139,10 @@ async def _connect_and_handshake_runner(
                 logger.warning(f"[ForwardProxy] Unexpected: {first_msg}")
                 await websocket.send_text(first_msg)
         else:
-            logger.warning(f"[ForwardProxy] Binary before CONNECTED")
+            logger.warning("[ForwardProxy] Binary before CONNECTED")
             await websocket.send_bytes(first_msg)
     except asyncio.TimeoutError:
-        logger.error(f"[ForwardProxy] Timeout waiting for runner CONNECTED")
+        logger.error("[ForwardProxy] Timeout waiting for runner CONNECTED")
         await websocket.send_text("Error: Timeout connecting to container tunnel")
         await websocket.close(code=1011)
         raise TimeoutError("Timeout waiting for runner CONNECTED") from None
@@ -172,7 +172,7 @@ async def _proxy_cli_to_runner(
             data = await websocket.receive_bytes()
             header = parse_header(data)
             if header:
-                msg_type, proto, client_id, port = header
+                msg_type, _, client_id, _ = header
                 msg_names = {
                     MSG_CONNECT: "CONNECT",
                     MSG_DATA: "DATA",
@@ -211,7 +211,7 @@ async def _proxy_runner_to_cli(
             if isinstance(msg, bytes):
                 header = parse_header(msg)
                 if header:
-                    msg_type, proto, client_id, port = header
+                    msg_type, _, client_id, _ = header
                     msg_names = {
                         MSG_CONNECT: "CONNECT",
                         MSG_CONNECTED: "CONNECTED",
@@ -247,7 +247,7 @@ async def _run_bidirectional_proxy(
         task_a: First coroutine to run (e.g., cli-to-runner direction).
         task_b: Second coroutine to run (e.g., runner-to-cli direction).
     """
-    done, pending = await asyncio.wait(
+    _, pending = await asyncio.wait(
         [
             asyncio.create_task(task_a),
             asyncio.create_task(task_b),

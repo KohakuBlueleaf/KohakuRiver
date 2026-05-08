@@ -52,7 +52,7 @@ export function useAutoSave() {
    */
   async function saveFile(path) {
     const file = ideStore.openFiles.find((f) => f.path === path)
-    if (!file || !file.isDirty) return true
+    if (!file?.isDirty) return true
 
     ideStore.setSaving(path, true)
 

@@ -32,6 +32,9 @@ logger = get_logger(__name__)
 # Lock for Docker image sync operations to prevent concurrent syncs
 docker_sync_lock = asyncio.Lock()
 
+# Strong-ref set for fire-and-forget background tasks (prevents GC).
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
 
 def _run_docker_command(
     cmd: list[str], check: bool = False, timeout: int | None = None
@@ -61,7 +64,7 @@ def _run_docker_command(
             if result.stderr:
                 logger.debug(f"  stderr: {result.stderr.strip()}")
         else:
-            logger.debug(f"  Command succeeded")
+            logger.debug("  Command succeeded")
         return result
     except subprocess.TimeoutExpired as e:
         logger.error(f"Docker command timed out: {e}")
@@ -135,7 +138,8 @@ async def docker_pull(image: str, timeout: int = 600) -> bool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        async with asyncio.timeout(timeout):
+            _, stderr = await process.communicate()
         if process.returncode != 0:
             logger.error(
                 f"docker pull failed for {image}: {stderr.decode(errors='replace').strip()}"
@@ -143,7 +147,7 @@ async def docker_pull(image: str, timeout: int = 600) -> bool:
             return False
         logger.info(f"Successfully pulled image: {image}")
         return True
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error(f"docker pull timed out for {image} after {timeout}s")
         return False
     except Exception as e:
@@ -392,7 +396,7 @@ def build_docker_run_command(
     shell_cmd = f"exec {inner_cmd} > {quoted_stdout} 2> {quoted_stderr}"
 
     # Wrap with tunnel-client startup if available
-    shell_cmd = wrap_command_with_tunnel(shell_cmd, container_name_full, use_exec=True)
+    shell_cmd = wrap_command_with_tunnel(shell_cmd, use_exec=True)
 
     logger.debug(f"[Task {task_id}] Inner shell command: {shell_cmd}")
 
@@ -767,13 +771,16 @@ async def execute_task(
         logger.debug(f"[Task {task_id}] Subprocess PID: {process.pid}")
 
         # Attach additional networks (multi-network support)
-        # Kick off in background so the main task can proceed
+        # Kick off in background so the main task can proceed.
+        # Hold a strong ref so the task isn't GC'd before it runs.
         if additional_networks:
-            asyncio.create_task(
+            attach_task = asyncio.create_task(
                 _attach_additional_networks(
                     task_id, container_name_full, additional_networks
                 )
             )
+            _BACKGROUND_TASKS.add(attach_task)
+            attach_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
         logger.info(f"[Task {task_id}] Container started, waiting for completion...")
 
@@ -886,7 +893,6 @@ def kill_task(
 def pause_task(
     task_id: int,
     container_name: str,
-    task_store: TaskStateStore,
 ) -> bool:
     """
     Pause a running task.
@@ -894,7 +900,6 @@ def pause_task(
     Args:
         task_id: Task ID to pause.
         container_name: Docker container name.
-        task_store: Task state store.
 
     Returns:
         True if pause was successful, False otherwise.
@@ -919,7 +924,6 @@ def pause_task(
 def resume_task(
     task_id: int,
     container_name: str,
-    task_store: TaskStateStore,
 ) -> bool:
     """
     Resume a paused task.
@@ -927,7 +931,6 @@ def resume_task(
     Args:
         task_id: Task ID to resume.
         container_name: Docker container name.
-        task_store: Task state store.
 
     Returns:
         True if resume was successful, False otherwise.

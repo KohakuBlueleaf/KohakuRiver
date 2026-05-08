@@ -303,7 +303,7 @@ class VMNetworkManager:
 
         Uses same IPReservationManager API as Docker containers.
         """
-        vm_ip, token = await self._reserve_overlay_ip(task_id)
+        vm_ip, token = await self._reserve_overlay_ip()
         tap_name = _tap_name(task_id)
         mac = _generate_mac(task_id)
         bridge = RunnerOverlayManager.BRIDGE_NAME  # "kohaku-overlay"
@@ -329,7 +329,7 @@ class VMNetworkManager:
             reservation_token=token,
         )
 
-    async def _reserve_overlay_ip(self, task_id: int) -> tuple[str, str]:
+    async def _reserve_overlay_ip(self) -> tuple[str, str]:
         """Reserve IP from host's IPReservationManager via HTTP API."""
         hostname = await asyncio.to_thread(socket.gethostname)
         host_url = config.get_host_url()

@@ -339,7 +339,7 @@ class RunnerOverlayManager:
         # Host IP on this runner's subnet (e.g., 10.1.0.254)
         # Route overlay network via this gateway (host will route to other runners)
         host_gateway = config.host_ip_on_runner_subnet
-        self._ensure_overlay_routes(ipr, bridge_idx, host_gateway, config)
+        self._ensure_overlay_routes(ipr, host_gateway, config)
 
         # For non-masquerade networks (public IP), set up policy routing
         # so ALL outbound traffic from this subnet goes via host (VXLAN → WireGuard)
@@ -352,7 +352,7 @@ class RunnerOverlayManager:
         logger.info(f"Network setup complete: {self.VXLAN_NAME} -> {self.BRIDGE_NAME}")
 
     def _ensure_overlay_routes(
-        self, ipr, bridge_idx: int, host_gateway: str, config: OverlayConfig
+        self, ipr, host_gateway: str, config: OverlayConfig
     ) -> None:
         """
         Ensure routes exist for cross-runner communication.

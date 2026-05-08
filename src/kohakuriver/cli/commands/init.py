@@ -359,12 +359,12 @@ def init_config(
                 if config_type == "host":
                     console.print(f"  kohakuriver.host --config {path}")
                     console.print(
-                        f"  [dim]Or auto-loaded if at ~/.kohakuriver/host_config.py[/dim]"
+                        "  [dim]Or auto-loaded if at ~/.kohakuriver/host_config.py[/dim]"
                     )
                 elif config_type == "runner":
                     console.print(f"  kohakuriver.runner --config {path}")
                     console.print(
-                        f"  [dim]Or auto-loaded if at ~/.kohakuriver/runner_config.py[/dim]"
+                        "  [dim]Or auto-loaded if at ~/.kohakuriver/runner_config.py[/dim]"
                     )
     else:
         # Show instructions
@@ -425,11 +425,9 @@ def _resolve_service_paths(
 
 
 def _generate_service_file(
-    service_name: str,
     description: str,
     exec_command: str,
     working_dir: str,
-    python_path: str,
     env_path: str,
     after_units: list[str] | None = None,
     wants_units: list[str] | None = None,
@@ -438,11 +436,9 @@ def _generate_service_file(
     """Generate a systemd unit file content string.
 
     Args:
-        service_name: Name of the service (for logging only).
         description: Description field for the [Unit] section.
         exec_command: The full ExecStart command string.
         working_dir: Absolute path for WorkingDirectory.
-        python_path: Absolute path to the Python interpreter.
         env_path: PATH value for the Environment directive (empty to omit).
         after_units: List of units for After= directive. Defaults to ["network.target"].
         wants_units: List of units for Wants= directive. Defaults to none.
@@ -625,11 +621,9 @@ def init_service(
             f"{resolved_python_path} -m kohakuriver.cli.host --config {config_path}"
         )
         service_content = _generate_service_file(
-            service_name="kohakuriver-host",
             description="KohakuRiver Host Server",
             exec_command=exec_command,
             working_dir=resolved_working_dir,
-            python_path=resolved_python_path,
             env_path=env_path,
         )
 
@@ -651,11 +645,9 @@ def init_service(
             f"{resolved_python_path} -m kohakuriver.cli.runner --config {config_path}"
         )
         service_content = _generate_service_file(
-            service_name="kohakuriver-runner",
             description="KohakuRiver Runner Agent",
             exec_command=exec_command,
             working_dir=resolved_working_dir,
-            python_path=resolved_python_path,
             env_path=env_path,
             after_units=["network.target", "docker.service"],
             wants_units=["docker.service"],

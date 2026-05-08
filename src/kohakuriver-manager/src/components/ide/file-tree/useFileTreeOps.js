@@ -184,6 +184,7 @@ export function useFileTreeOps(fs, sections, directoryCache, loadSection) {
       await navigator.clipboard.writeText(path)
       ElMessage.success('Path copied to clipboard')
     } catch (e) {
+      console.error('Failed to copy path', e)
       ElMessage.error('Failed to copy path')
     }
   }

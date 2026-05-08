@@ -30,6 +30,8 @@ app = typer.Typer(help="QEMU/KVM management commands")
 image_app = typer.Typer(help="VM base image management")
 app.add_typer(image_app, name="image")
 
+UNKNOWN_ERROR = "Unknown error"
+
 
 @app.command("check")
 def check():
@@ -47,7 +49,7 @@ def check():
     table.add_row(
         "KVM",
         _status(kvm_ok),
-        "/dev/kvm accessible" if kvm_ok else (kvm_err or "Unknown error"),
+        "/dev/kvm accessible" if kvm_ok else (kvm_err or UNKNOWN_ERROR),
     )
 
     # CPU Virtualization
@@ -62,7 +64,7 @@ def check():
             virt_type = "detected"
         cpu_detail = f"{virt_type} detected"
     else:
-        cpu_detail = cpu_err or "Unknown error"
+        cpu_detail = cpu_err or UNKNOWN_ERROR
     table.add_row("CPU Virt", _status(cpu_ok), cpu_detail)
 
     # QEMU
@@ -81,7 +83,7 @@ def check():
         except Exception:
             qemu_detail = "qemu-system-x86_64 found"
     else:
-        qemu_detail = qemu_err or "Unknown error"
+        qemu_detail = qemu_err or UNKNOWN_ERROR
     table.add_row("QEMU", _status(qemu_ok), qemu_detail)
 
     # OVMF
@@ -117,7 +119,7 @@ def check():
         group_count = len(list(iommu_groups.iterdir())) if iommu_groups.exists() else 0
         iommu_detail = f"{group_count} groups"
     else:
-        iommu_detail = iommu_err or "Unknown error"
+        iommu_detail = iommu_err or UNKNOWN_ERROR
     table.add_row("IOMMU", _status(iommu_ok), iommu_detail)
 
     # VFIO Modules
@@ -125,7 +127,7 @@ def check():
     if vfio_ok:
         vfio_detail = "vfio, vfio_pci, vfio_iommu_type1"
     else:
-        vfio_detail = vfio_err or "Unknown error"
+        vfio_detail = vfio_err or UNKNOWN_ERROR
     table.add_row("VFIO Modules", _status(vfio_ok), vfio_detail)
 
     # ACS Override

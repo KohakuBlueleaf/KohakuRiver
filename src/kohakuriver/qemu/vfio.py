@@ -142,7 +142,8 @@ async def bind_to_vfio(pci_address: str) -> None:
             logger.info(f"{pci_address} already bound to vfio-pci")
             return
 
-        vendor, device = _get_device_ids(pci_address)
+        # Verify device IDs are readable (raises VFIOBindError if not).
+        _get_device_ids(pci_address)
 
         # Unbind from current driver
         if current:

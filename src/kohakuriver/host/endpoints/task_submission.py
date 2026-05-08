@@ -303,13 +303,13 @@ async def _process_target(
         return {"error": "Invalid target format"}
 
     # Validate node
-    node = _validate_node(target_hostname, target_str)
+    node = _validate_node(target_hostname)
     if isinstance(node, str):
         return {"error": node}
 
     # Validate NUMA and resources
     validation_error = _validate_node_resources(
-        node, target_str, target_numa_id, target_gpus, req
+        node, target_numa_id, target_gpus, req
     )
     if validation_error:
         return {"error": validation_error}
@@ -400,7 +400,7 @@ def _parse_target_string(target_str: str) -> tuple[str | None, int | None]:
     return hostname, numa_id
 
 
-def _validate_node(hostname: str, target_str: str) -> Node | str:
+def _validate_node(hostname: str) -> Node | str:
     """Validate node exists and is online. Returns Node or error string."""
     node = Node.get_or_none(Node.hostname == hostname)
 
@@ -417,7 +417,6 @@ def _validate_node(hostname: str, target_str: str) -> Node | str:
 
 def _validate_node_resources(
     node: Node,
-    target_str: str,
     target_numa_id: int | None,
     target_gpus: list[int],
     req: TaskSubmission,

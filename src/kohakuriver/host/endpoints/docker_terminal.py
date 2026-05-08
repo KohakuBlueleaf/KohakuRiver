@@ -71,8 +71,8 @@ async def _detect_shell(container) -> str | None:
     """Detect available shell in container. Returns shell path or None."""
     for shell in ["/bin/bash", "/bin/sh"]:
         try:
-            exit_code, _ = container.exec_run(
-                cmd=f"which {shell}", demux=False, stream=False
+            exit_code, _ = await asyncio.to_thread(
+                container.exec_run, cmd=f"which {shell}", demux=False, stream=False
             )
             if exit_code == 0:
                 return shell

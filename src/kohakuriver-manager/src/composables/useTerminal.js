@@ -64,7 +64,7 @@ export function useTerminal() {
           terminal.value?.write(`\r\n\x1b[31mError: ${msg.data}\x1b[0m\r\n`)
           error.value = msg.data
         }
-      } catch (e) {
+      } catch {
         // Plain text output
         terminal.value?.write(event.data)
       }
@@ -116,7 +116,7 @@ export function useTerminal() {
         } else if (msg.type === 'error') {
           terminal.value?.write(`\r\n\x1b[31mError: ${msg.data}\x1b[0m\r\n`)
         }
-      } catch (e) {
+      } catch {
         terminal.value?.write(event.data)
       }
     }

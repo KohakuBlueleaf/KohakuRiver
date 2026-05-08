@@ -334,7 +334,7 @@ async def _run_terminal_session(task_id: str):
             ]
 
             # Wait for any task to complete (connection closed, etc.)
-            done, pending = await asyncio.wait(
+            _, pending = await asyncio.wait(
                 tasks, return_when=asyncio.FIRST_COMPLETED
             )
 

@@ -324,9 +324,8 @@ class TUIApp(TUIActions):
                     # Read key with proper escape sequence handling
                     key = self.input_reader.read_key(timeout=0.1)
 
-                    if key:
-                        if not self.handle_key(key):
-                            break
+                    if key and not self.handle_key(key):
+                        break
 
                     # Auto-refresh data
                     if time.time() - last_fetch > self.refresh_rate:

@@ -391,7 +391,7 @@ export function useFileSystem() {
    */
   async function saveActiveFile() {
     const file = ideStore.activeFile
-    if (!file || !file.isDirty) return null
+    if (!file?.isDirty) return null
 
     return writeFile(file.path, file.content, { encoding: file.encoding })
   }

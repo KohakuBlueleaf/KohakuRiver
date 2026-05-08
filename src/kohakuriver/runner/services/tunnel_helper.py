@@ -60,7 +60,6 @@ def get_tunnel_env_vars(container_id: str) -> dict[str, str]:
 
 def wrap_command_with_tunnel(
     shell_cmd: str,
-    container_id: str,
     use_exec: bool = True,
 ) -> str:
     """
@@ -72,7 +71,6 @@ def wrap_command_with_tunnel(
 
     Args:
         shell_cmd: Original shell command to run.
-        container_id: Container name/ID for tunnel identification.
         use_exec: Whether to use exec for the main command (tasks=True, VPS=False).
 
     Returns:

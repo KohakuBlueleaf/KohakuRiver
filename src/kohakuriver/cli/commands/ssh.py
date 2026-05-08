@@ -201,11 +201,11 @@ def ssh_config(
                 [
                     f"Host kohakuriver-vps-{task_id}",
                     f"    # Use: hakuriver ssh connect {task_id}",
-                    f"    HostName 127.0.0.1",
-                    f"    User root",
+                    "    HostName 127.0.0.1",
+                    "    User root",
                     f"    IdentityFile {default_key}",
-                    f"    StrictHostKeyChecking no",
-                    f"    UserKnownHostsFile /dev/null",
+                    "    StrictHostKeyChecking no",
+                    "    UserKnownHostsFile /dev/null",
                     "",
                 ]
             )

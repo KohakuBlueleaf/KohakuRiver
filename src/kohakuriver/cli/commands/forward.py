@@ -281,7 +281,7 @@ class TunnelForwarder:
         if not header:
             return
 
-        msg_type, proto, client_id, port = header
+        msg_type, _, client_id, _ = header
         payload = get_payload(data)
 
         if msg_type == MSG_CONNECTED:
@@ -293,7 +293,7 @@ class TunnelForwarder:
             )
             conn = self._connections.get(client_id)
             if conn:
-                reader, writer = conn
+                _, writer = conn
                 try:
                     writer.write(payload)
                     await writer.drain()
@@ -379,7 +379,7 @@ async def _run_tcp_forwarder(
                     f"[cyan]→ Sending {len(data)} bytes to tunnel (client_id={client_id})[/cyan]"
                 )
                 if not await forwarder.send_data(client_id, data):
-                    console.print(f"[red]Failed to send data to tunnel[/red]")
+                    console.print("[red]Failed to send data to tunnel[/red]")
                     break
         except Exception as e:
             console.print(f"[dim]Connection {client_id} error: {e}[/dim]")
@@ -404,7 +404,7 @@ async def _run_tcp_forwarder(
         serve_task = asyncio.create_task(server.serve_forever())
 
         try:
-            done, pending = await asyncio.wait(
+            await asyncio.wait(
                 [receive_task, serve_task],
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -463,7 +463,7 @@ async def _run_udp_forwarder(
         if not header:
             return
 
-        msg_type, proto, client_id, port = header
+        msg_type, _, client_id, _ = header
         payload = get_payload(data)
 
         if msg_type == MSG_DATA and transport:
@@ -474,7 +474,7 @@ async def _run_udp_forwarder(
                     break
         elif msg_type == MSG_CLOSE:
             # Remove client mapping
-            for addr, cid in list(udp_clients.items()):
+            for addr, cid in udp_clients.items():
                 if cid == client_id:
                     del udp_clients[addr]
                     console.print(
@@ -487,7 +487,7 @@ async def _run_udp_forwarder(
     forwarder._handle_message = udp_handle_message
 
     # Create UDP endpoint
-    transport, protocol = await loop.create_datagram_endpoint(
+    transport, _ = await loop.create_datagram_endpoint(
         UDPProtocol,
         local_addr=(local_host, local_port),
     )

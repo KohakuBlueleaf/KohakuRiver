@@ -82,6 +82,7 @@ async function handleKill(taskId) {
     await tasksStore.killTask(taskId)
     notify.success('Task kill requested')
   } catch (e) {
+    console.error('Failed to kill task', e)
     notify.error('Failed to kill task')
   }
 }
@@ -91,6 +92,7 @@ async function handleRestart(taskId) {
     await tasksStore.restartTask(taskId)
     notify.success('Task restart requested')
   } catch (e) {
+    console.error('Failed to restart task', e)
     notify.error('Failed to restart task')
   }
 }
@@ -100,6 +102,7 @@ async function handlePause(taskId) {
     await tasksStore.pauseTask(taskId)
     notify.success('Task paused')
   } catch (e) {
+    console.error('Failed to pause task', e)
     notify.error('Failed to pause task')
   }
 }
@@ -109,6 +112,7 @@ async function handleResume(taskId) {
     await tasksStore.resumeTask(taskId)
     notify.success('Task resumed')
   } catch (e) {
+    console.error('Failed to resume task', e)
     notify.error('Failed to resume task')
   }
 }
@@ -121,6 +125,7 @@ async function handleDelete(taskId) {
       detailDialogVisible.value = false
     }
   } catch (e) {
+    console.error('Failed to delete task', e)
     notify.error('Failed to delete task')
   }
 }

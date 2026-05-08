@@ -28,6 +28,9 @@ from kohakuriver.utils.logger import format_traceback, get_logger
 
 logger = get_logger(__name__)
 
+# Strong-ref set for fire-and-forget background tasks (prevents GC).
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
 
 def _resolve_gpu_pci_addresses(
     gpu_ids: list[int],
@@ -201,14 +204,11 @@ async def _cloud_init_watchdog(
     task_id: int,
     qemu_manager,
     has_gpu: bool,
-    timeout_minutes: int = 10,
 ) -> None:
     """Watch for cloud-init completion and fail the task if it times out.
 
-    For GPU VMs the default timeout is 15 minutes (driver install is slow);
-    for non-GPU VMs it is 5 minutes. The caller can override via
-    *timeout_minutes*, but the has_gpu flag sets the actual timeout used
-    internally (15 min vs 5 min), matching the original behaviour.
+    For GPU VMs the timeout is 15 minutes (driver install is slow);
+    for non-GPU VMs it is 5 minutes.
     """
     timeout = 900 if has_gpu else 300  # 15 min for GPU, 5 min otherwise
     try:
@@ -229,7 +229,7 @@ async def _cloud_init_watchdog(
                 )
             )
     except asyncio.CancelledError:
-        pass
+        raise
     except Exception as e:
         logger.warning(f"VM VPS {task_id}: cloud-init watchdog error: {e}")
 
@@ -259,8 +259,6 @@ async def create_vm_vps(
     NVIDIA driver install, etc.). It is marked "running" only when the
     VM agent phones home, which is the last step in cloud-init runcmd.
     """
-    start_time = datetime.datetime.now()
-
     # Report pending status
     await report_status_to_host(
         TaskStatusUpdate(
@@ -322,7 +320,7 @@ async def create_vm_vps(
         )
 
         # Create VM
-        vm = await qemu.create_vm(options)
+        await qemu.create_vm(options)
 
         # Start SSH port proxy (so host SSH proxy can reach VM)
         if ssh_port:
@@ -360,7 +358,9 @@ async def create_vm_vps(
         )
 
         # Spawn background watchdog for cloud-init timeout
-        asyncio.create_task(_cloud_init_watchdog(task_id, qemu, has_gpu))
+        watchdog = asyncio.create_task(_cloud_init_watchdog(task_id, qemu, has_gpu))
+        _BACKGROUND_TASKS.add(watchdog)
+        watchdog.add_done_callback(_BACKGROUND_TASKS.discard)
 
         return {
             "success": True,
@@ -449,7 +449,9 @@ async def restart_vm_vps(task_id: int) -> bool:
         logger.info(f"VM VPS {task_id}: restarted, waiting for VM agent to come back")
 
         # Spawn background watchdog to verify VM comes back
-        asyncio.create_task(_reboot_watchdog(task_id, qemu, old_heartbeat))
+        watchdog = asyncio.create_task(_reboot_watchdog(task_id, qemu, old_heartbeat))
+        _BACKGROUND_TASKS.add(watchdog)
+        watchdog.add_done_callback(_BACKGROUND_TASKS.discard)
 
         return True
     except Exception as e:
@@ -496,12 +498,12 @@ async def _reboot_watchdog(
                 f"{timeout_seconds}s after reboot"
             )
     except asyncio.CancelledError:
-        pass
+        raise
     except Exception as e:
         logger.warning(f"VM VPS {task_id}: reboot watchdog error: {e}")
 
 
-async def get_vm_status(task_id: int) -> dict | None:
+def get_vm_status(task_id: int) -> dict | None:
     """Get VM status."""
     qemu = get_qemu_manager()
     vm = qemu.get_vm(task_id)

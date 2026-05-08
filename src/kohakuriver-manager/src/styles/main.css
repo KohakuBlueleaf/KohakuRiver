@@ -35,10 +35,28 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-/* Dark mode base */
+/* Dark mode base + Element Plus overrides */
 html.dark,
 .dark {
   color-scheme: dark;
+
+  /* Custom background colors */
+  --el-bg-color: #1f2937;
+  --el-bg-color-page: #111827;
+  --el-bg-color-overlay: #1f2937;
+
+  /* Custom fill colors for buttons */
+  --el-fill-color: #4b5563;
+  --el-fill-color-light: #374151;
+  --el-fill-color-lighter: #1f2937;
+  --el-fill-color-dark: #6b7280;
+  --el-fill-color-darker: #9ca3af;
+
+  /* Border colors */
+  --el-border-color: #374151;
+  --el-border-color-light: #4b5563;
+  --el-border-color-lighter: #6b7280;
+  --el-border-color-dark: #1f2937;
 }
 
 /* Scrollbar styling */
@@ -73,27 +91,6 @@ html.dark ::-webkit-scrollbar-thumb:hover,
 /* ============================================
    Element Plus Dark Mode Overrides
    ============================================ */
-
-html.dark,
-.dark {
-  /* Custom background colors */
-  --el-bg-color: #1f2937;
-  --el-bg-color-page: #111827;
-  --el-bg-color-overlay: #1f2937;
-
-  /* Custom fill colors for buttons */
-  --el-fill-color: #4b5563;
-  --el-fill-color-light: #374151;
-  --el-fill-color-lighter: #1f2937;
-  --el-fill-color-dark: #6b7280;
-  --el-fill-color-darker: #9ca3af;
-
-  /* Border colors */
-  --el-border-color: #374151;
-  --el-border-color-light: #4b5563;
-  --el-border-color-lighter: #6b7280;
-  --el-border-color-dark: #1f2937;
-}
 
 html.dark .el-card,
 .dark .el-card {

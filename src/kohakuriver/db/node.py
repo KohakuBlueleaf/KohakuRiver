@@ -104,7 +104,7 @@ class Node(BaseModel):
         try:
             data = json.loads(self.numa_topology)
             return {int(k): v for k, v in data.items()}
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             return None
 
     def set_numa_topology(self, topology: dict[int, list[int]] | None) -> None:

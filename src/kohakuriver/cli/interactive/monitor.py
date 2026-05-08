@@ -82,7 +82,7 @@ def follow_task_logs(
     """Follow task logs in real-time."""
     last_length = 0
 
-    with Live(console=console, auto_refresh=False) as live:
+    with Live(console=console, auto_refresh=False):
         while True:
             task = client.get_task_status(task_id)
 

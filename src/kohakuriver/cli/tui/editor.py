@@ -471,18 +471,9 @@ class EditorPane(Widget):
 
     def _update_tab_label(self, path: str) -> None:
         """Update tab label to show dirty indicator."""
-        if path not in self._open_files:
-            return
-
-        file = self._open_files[path]
-        tab_id = self._path_to_id(path)
-
-        try:
-            tabs = self.query_one("#editor-tabs", TabbedContent)
-            # Textual's TabbedContent doesn't have a direct way to update labels
-            # The dirty state will be reflected in status bar instead
-        except Exception:
-            pass
+        # Textual's TabbedContent doesn't have a direct way to update labels.
+        # The dirty state is reflected in the status bar instead.
+        return
 
     def get_active_file(self) -> OpenFile | None:
         """Get currently active file."""

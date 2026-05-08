@@ -476,7 +476,7 @@ async def _watch_vm_with_inotify(
                             }
                         )
             except asyncio.CancelledError:
-                pass
+                raise
             except Exception as e:
                 if not stop_event.is_set():
                     logger.error(f"[FS Watch] VM inotify read error: {e}")

@@ -261,7 +261,7 @@ async def _send_heartbeat_to_host(
 
     except httpx.HTTPStatusError as e:
         logger.warning(
-            f"Host rejected heartbeat: {e.response.status_code} - " f"{e.response.text}"
+            f"Host rejected heartbeat: {e.response.status_code} - {e.response.text}"
         )
         if e.response.status_code == 404:
             logger.warning("Node seems unregistered, attempting to re-register...")
@@ -284,7 +284,6 @@ async def _send_heartbeat_to_host(
 
 async def send_heartbeat(
     hostname: str,
-    numa_topology: dict | None,
     task_store: TaskStateStore,
     register_callback: Callable,
 ):
@@ -295,7 +294,6 @@ async def send_heartbeat(
 
     Args:
         hostname: This runner's hostname.
-        numa_topology: Detected NUMA topology.
         task_store: Task state store for running tasks.
         register_callback: Callback to re-register if needed.
     """

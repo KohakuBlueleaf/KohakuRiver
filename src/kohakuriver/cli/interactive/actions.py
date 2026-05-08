@@ -16,6 +16,8 @@ from kohakuriver.cli import client
 from kohakuriver.cli.interactive.renderers import View
 from kohakuriver.cli.output import format_bytes
 
+CANCELLED_MSG = "\n[yellow]Cancelled.[/yellow]"
+
 
 class TUIActions:
     """Mixin providing action methods for TUIApp.
@@ -56,7 +58,7 @@ class TUIActions:
                     )
                     result[field_name] = value
                 except KeyboardInterrupt:
-                    self.console.print("\n[yellow]Cancelled.[/yellow]")
+                    self.console.print(CANCELLED_MSG)
                     return None
 
             return result
@@ -158,7 +160,7 @@ class TUIActions:
                 try:
                     mode = Prompt.ask("Selection mode", choices=["1", "2"], default="1")
                 except KeyboardInterrupt:
-                    self.console.print("\n[yellow]Cancelled.[/yellow]")
+                    self.console.print(CANCELLED_MSG)
                     return
             else:
                 mode = "1"
@@ -193,7 +195,7 @@ class TUIActions:
                     default="generate",
                 )
             except KeyboardInterrupt:
-                self.console.print("\n[yellow]Cancelled.[/yellow]")
+                self.console.print(CANCELLED_MSG)
                 return
 
             # Handle SSH key upload
@@ -217,7 +219,7 @@ class TUIActions:
                     self.console.print("[yellow]Cancelled.[/yellow]")
                     return
             except KeyboardInterrupt:
-                self.console.print("\n[yellow]Cancelled.[/yellow]")
+                self.console.print(CANCELLED_MSG)
                 return
 
             # Create VPS
@@ -259,7 +261,7 @@ class TUIActions:
             )
             selected_node = nodes_with_gpus[int(node_choice) - 1]
         except (KeyboardInterrupt, ValueError, IndexError):
-            self.console.print("\n[yellow]Cancelled.[/yellow]")
+            self.console.print(CANCELLED_MSG)
             return None, None
 
         target = selected_node.get("hostname")
@@ -305,7 +307,7 @@ class TUIActions:
                 )
                 gpu_ids = [int(gpu_id_list[0])] if gpu_id_list else [0]
         except KeyboardInterrupt:
-            self.console.print("\n[yellow]Cancelled.[/yellow]")
+            self.console.print(CANCELLED_MSG)
             return None, None
 
         return target, gpu_ids
@@ -334,7 +336,7 @@ class TUIActions:
                         # Treat as hostname
                         return node_choice if node_choice else None
             except KeyboardInterrupt:
-                self.console.print("\n[yellow]Cancelled.[/yellow]")
+                self.console.print(CANCELLED_MSG)
                 return False
         else:
             self.console.print("  [dim]No online nodes available.[/dim]")

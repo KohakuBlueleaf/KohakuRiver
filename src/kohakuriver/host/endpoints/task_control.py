@@ -60,9 +60,8 @@ async def request_kill_task(
         raise HTTPException(status_code=404, detail="Task not found.")
 
     # Check access: users can kill own tasks, operators+ can kill any
-    if current_user.role == UserRole.USER:
-        if task.owner_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Access denied to this task")
+    if current_user.role == UserRole.USER and task.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied to this task")
 
     killable_states = ["pending", "assigning", "running", "paused"]
     if task.status not in killable_states:
@@ -118,9 +117,8 @@ async def send_command_to_task(
         raise HTTPException(status_code=404, detail="Task not found.")
 
     # Check access: users can control own tasks, operators+ can control any
-    if current_user.role == UserRole.USER:
-        if task.owner_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Access denied to this task")
+    if current_user.role == UserRole.USER and task.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied to this task")
 
     if not task.assigned_node:
         raise HTTPException(status_code=400, detail="Task has no assigned node.")
@@ -220,9 +218,8 @@ async def _get_task_output(
         raise HTTPException(status_code=404, detail="Task not found.")
 
     # Check access: users can view own task logs, viewers+ can view any
-    if current_user.role == UserRole.USER:
-        if task.owner_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Access denied to this task")
+    if current_user.role == UserRole.USER and task.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied to this task")
 
     if task.task_type == "vps":
         raise HTTPException(

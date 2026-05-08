@@ -122,7 +122,6 @@ async def _create_docker_vps(request: VPSCreateRequest):
         registry_image=request.registry_image,
         ssh_key_mode=ssh_key_mode,
         ssh_public_key=request.ssh_public_key,
-        ssh_port=request.ssh_port,
         task_store=task_store,
         reserved_ip=request.reserved_ip,
         network_name=request.network_name,
@@ -214,7 +213,7 @@ async def pause_vps_endpoint(task_id: int):
             detail=f"VPS {task_id} not found.",
         )
 
-    success = await pause_vps(task_id, task_store)
+    success = await pause_vps(task_id)
     if not success:
         raise HTTPException(
             status_code=500,
@@ -236,7 +235,7 @@ async def resume_vps_endpoint(task_id: int):
             detail=f"VPS {task_id} not found.",
         )
 
-    success = await resume_vps(task_id, task_store)
+    success = await resume_vps(task_id)
     if not success:
         raise HTTPException(
             status_code=500,
@@ -318,7 +317,7 @@ async def delete_snapshot_endpoint(task_id: int, timestamp: int):
     if not success:
         raise HTTPException(
             status_code=404,
-            detail=f"Snapshot not found or failed to delete.",
+            detail="Snapshot not found or failed to delete.",
         )
 
     return {"message": f"Snapshot {timestamp} deleted for VPS {task_id}"}
@@ -362,7 +361,7 @@ async def get_latest_snapshot_endpoint(task_id: int):
 @router.get("/vps/{task_id}/vm-status")
 async def vm_status_endpoint(task_id: int):
     """Get VM status."""
-    status = await get_vm_status(task_id)
+    status = get_vm_status(task_id)
     if not status:
         raise HTTPException(status_code=404, detail=f"VM {task_id} not found.")
     return status
@@ -452,7 +451,7 @@ def _scan_instance_dir(instances_dir: str, task_store) -> dict:
                 os.kill(pid, 0)
                 qemu_running = True
                 qemu_pid = pid
-            except (ValueError, OSError, ProcessLookupError):
+            except (ValueError, OSError):
                 pass
 
         # Also check QMP socket existence
@@ -523,7 +522,7 @@ async def delete_vm_instance(task_id: int, force: bool = False):
             pid = await asyncio.to_thread(_read_pidfile)
             os.kill(pid, 0)
             qemu_running = True
-        except (ValueError, OSError, ProcessLookupError):
+        except (ValueError, OSError):
             pass
 
     if qemu_running and not force:

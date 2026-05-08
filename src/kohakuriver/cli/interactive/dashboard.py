@@ -114,7 +114,7 @@ def run_dashboard(refresh_rate: float = 2.0) -> None:
     """Run the live dashboard."""
     layout = create_dashboard_layout()
 
-    with Live(layout, console=console, refresh_per_second=2, screen=True) as live:
+    with Live(layout, console=console, refresh_per_second=2, screen=True):
         while True:
             try:
                 # Update header

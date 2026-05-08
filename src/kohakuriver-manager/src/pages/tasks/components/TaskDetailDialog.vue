@@ -52,6 +52,7 @@ async function loadLogs(type) {
     const content = await tasksStore.getTaskLogs(props.task.task_id, type, 1000)
     logContent.value = content || '(empty)'
   } catch (e) {
+    console.error('Failed to load task logs', e)
     logContent.value = 'Failed to load logs'
   } finally {
     logLoading.value = false

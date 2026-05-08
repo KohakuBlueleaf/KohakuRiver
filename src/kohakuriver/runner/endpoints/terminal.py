@@ -156,8 +156,10 @@ async def _handle_vm_terminal(websocket: WebSocket, task_id: int, vm_ip: str) ->
             if initial_data.get("type") == "resize":
                 term_width = initial_data.get("cols", 80)
                 term_height = initial_data.get("rows", 24)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"VM {task_id}: initial resize message not received: {e}")
 
         # Open interactive shell session
         process = await conn.create_process(
@@ -223,7 +225,7 @@ async def _run_vm_terminal_io(
                     WebSocketOutputMessage(type="output", data=data).model_dump()
                 )
         except asyncio.CancelledError:
-            pass
+            raise
         except Exception as e:
             if not stop_event.is_set():
                 logger.info(f"SSH output error for VM {task_id}: {e}")
@@ -247,7 +249,7 @@ async def _run_vm_terminal_io(
         except WebSocketDisconnect:
             logger.info(f"WebSocket disconnected (input) for VM {task_id}")
         except asyncio.CancelledError:
-            pass
+            raise
         except Exception as e:
             if not stop_event.is_set():
                 logger.error(f"Error in VM input handler for task {task_id}: {e}")
@@ -276,8 +278,8 @@ async def _detect_shell(container) -> str | None:
     """Detect available shell in container. Returns shell path or None."""
     for shell in ["/bin/bash", "/bin/sh"]:
         try:
-            exit_code, _ = container.exec_run(
-                cmd=f"which {shell}", demux=False, stream=False
+            exit_code, _ = await asyncio.to_thread(
+                container.exec_run, cmd=f"which {shell}", demux=False, stream=False
             )
             if exit_code == 0:
                 return shell

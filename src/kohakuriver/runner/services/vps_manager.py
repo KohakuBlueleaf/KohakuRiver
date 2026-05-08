@@ -288,7 +288,7 @@ async def stop_vps(
         if should_snapshot:
             logger.info(f"[VPS Stop] Creating snapshot before stopping VPS {task_id}")
             snapshot_tag = create_snapshot_func(
-                task_id, message=f"Auto-snapshot on stop"
+                task_id, message="Auto-snapshot on stop"
             )
             if snapshot_tag:
                 logger.info(f"[VPS Stop] Created snapshot: {snapshot_tag}")
@@ -338,16 +338,12 @@ async def stop_vps(
         return False
 
 
-async def pause_vps(
-    task_id: int,
-    task_store: TaskStateStore,
-) -> bool:
+async def pause_vps(task_id: int) -> bool:
     """
     Pause a running VPS.
 
     Args:
         task_id: VPS task ID to pause.
-        task_store: Task state store.
 
     Returns:
         True if pause was successful, False otherwise.
@@ -378,16 +374,12 @@ async def pause_vps(
         return False
 
 
-async def resume_vps(
-    task_id: int,
-    task_store: TaskStateStore,
-) -> bool:
+async def resume_vps(task_id: int) -> bool:
     """
     Resume a paused VPS.
 
     Args:
         task_id: VPS task ID to resume.
-        task_store: Task state store.
 
     Returns:
         True if resume was successful, False otherwise.

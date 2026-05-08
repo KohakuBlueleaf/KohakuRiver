@@ -78,7 +78,7 @@ class Task(BaseModel):
     # Approval (for user role tasks)
     # -------------------------------------------------------------------------
 
-    # null = auto-approved (operator/admin), 'pending', 'approved', 'rejected'
+    # Possible values: null (auto-approved by operator/admin), pending, approved, rejected.
     approval_status = peewee.CharField(null=True, index=True)
     approved_by_id = peewee.IntegerField(null=True)  # References User.id
     approved_at = peewee.DateTimeField(null=True)

@@ -274,7 +274,7 @@ async def logout(
         # Delete session from database
         deleted = Session.delete().where(Session.session_id == session_id).execute()
         if deleted:
-            logger.debug(f"Session destroyed on logout")
+            logger.debug("Session destroyed on logout")
 
     # Clear cookie
     _clear_session_cookie(response)

@@ -453,7 +453,7 @@ async def create_tarball(
     try:
         logger.info(f"Creating tarball from environment '{env_name}'")
 
-        actual_name, tarball_path = await asyncio.to_thread(
+        _, tarball_path = await asyncio.to_thread(
             _do_create_tarball,
             env_name,
             config.get_container_dir(),

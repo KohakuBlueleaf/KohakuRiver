@@ -417,7 +417,7 @@ async def startup_check(task_store: TaskStateStore):
                     )
 
                 # Report running status to host (host may have marked as "lost" during downtime)
-                recovery_message = f"VPS recovered after runner restart" + (
+                recovery_message = "VPS recovered after runner restart" + (
                     "" if ssh_port > 0 else " (TTY-only, no SSH)"
                 )
                 logger.info(
@@ -464,7 +464,7 @@ async def startup_check(task_store: TaskStateStore):
                     numa_node=None,
                 )
 
-                recovery_message = f"VPS recovered after runner restart" + (
+                recovery_message = "VPS recovered after runner restart" + (
                     "" if ssh_port > 0 else " (TTY-only, no SSH)"
                 )
                 await report_status_to_host(

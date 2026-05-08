@@ -291,7 +291,7 @@ def build_user_data(config: CloudInitConfig) -> str:
             },
             {
                 "path": "/etc/ssh/sshd_config.d/99-kohakuriver.conf",
-                "content": ("PermitRootLogin yes\n" "PasswordAuthentication yes\n"),
+                "content": "PermitRootLogin yes\nPasswordAuthentication yes\n",
             },
             {
                 "path": "/etc/systemd/system/kohakuriver-vm-agent.service",

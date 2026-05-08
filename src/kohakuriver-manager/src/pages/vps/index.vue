@@ -61,6 +61,7 @@ async function handleStop(taskId) {
     await vpsStore.stopVps(taskId)
     notify.success('VPS stop requested')
   } catch (e) {
+    console.error('Failed to stop VPS', e)
     notify.error('Failed to stop VPS')
   }
 }
@@ -70,6 +71,7 @@ async function handleRestart(taskId) {
     await vpsStore.restartVps(taskId)
     notify.success('VPS restart requested')
   } catch (e) {
+    console.error('Failed to restart VPS', e)
     notify.error('Failed to restart VPS')
   }
 }
@@ -79,6 +81,7 @@ async function handlePause(taskId) {
     await vpsStore.pauseVps(taskId)
     notify.success('VPS paused')
   } catch (e) {
+    console.error('Failed to pause VPS', e)
     notify.error('Failed to pause VPS')
   }
 }
@@ -88,6 +91,7 @@ async function handleResume(taskId) {
     await vpsStore.resumeVps(taskId)
     notify.success('VPS resumed')
   } catch (e) {
+    console.error('Failed to resume VPS', e)
     notify.error('Failed to resume VPS')
   }
 }
@@ -117,7 +121,7 @@ async function copyToClipboard(text, successMsg) {
   try {
     await navigator.clipboard.writeText(text)
     notify.success(successMsg)
-  } catch (err) {
+  } catch {
     // Fallback for non-secure contexts
     const textarea = document.createElement('textarea')
     textarea.value = text

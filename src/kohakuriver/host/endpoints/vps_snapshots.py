@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-async def _get_vps_runner_url(task_id: int) -> tuple[Task, str]:
+def _get_vps_runner_url(task_id: int) -> tuple[Task, str]:
     """
     Get the runner URL for a VPS task.
 
@@ -59,7 +59,7 @@ async def list_vps_snapshots(task_id: int):
     """
     logger.info(f"Listing snapshots for VPS {task_id}")
 
-    task, runner_url = await _get_vps_runner_url(task_id)
+    _, runner_url = _get_vps_runner_url(task_id)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -92,7 +92,7 @@ async def create_vps_snapshot(task_id: int, message: str = None):
     """
     logger.info(f"Creating snapshot for VPS {task_id}")
 
-    task, runner_url = await _get_vps_runner_url(task_id)
+    task, runner_url = _get_vps_runner_url(task_id)
 
     # Check if VPS is running
     if task.status != "running":
@@ -133,7 +133,7 @@ async def delete_vps_snapshot(task_id: int, timestamp: int):
     """
     logger.info(f"Deleting snapshot {timestamp} for VPS {task_id}")
 
-    task, runner_url = await _get_vps_runner_url(task_id)
+    _, runner_url = _get_vps_runner_url(task_id)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -165,7 +165,7 @@ async def delete_all_vps_snapshots(task_id: int):
     """
     logger.info(f"Deleting all snapshots for VPS {task_id}")
 
-    task, runner_url = await _get_vps_runner_url(task_id)
+    _, runner_url = _get_vps_runner_url(task_id)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -197,7 +197,7 @@ async def get_latest_vps_snapshot(task_id: int):
     """
     logger.info(f"Getting latest snapshot for VPS {task_id}")
 
-    task, runner_url = await _get_vps_runner_url(task_id)
+    _, runner_url = _get_vps_runner_url(task_id)
 
     try:
         async with httpx.AsyncClient() as client:

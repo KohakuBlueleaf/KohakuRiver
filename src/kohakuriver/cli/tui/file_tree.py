@@ -419,7 +419,7 @@ class FileTreeWidget(Tree[FileEntry]):
         # Add entries
         for entry in entries:
             label = self._create_label(entry, is_expanded=False)
-            child = node.add(
+            node.add(
                 label,
                 data=entry,
                 expand=False,
@@ -468,16 +468,15 @@ class FileTreeWidget(Tree[FileEntry]):
 
     def action_select_node(self) -> None:
         """Action: select/open current node."""
-        if self.cursor_node:
-            if self.cursor_node.data:
-                if self.cursor_node.data.is_dir:
-                    self.cursor_node.toggle()
-                else:
-                    self.post_message(
-                        self.FileSelected(
-                            self.cursor_node.data.path, self.cursor_node.data.name
-                        )
+        if self.cursor_node and self.cursor_node.data:
+            if self.cursor_node.data.is_dir:
+                self.cursor_node.toggle()
+            else:
+                self.post_message(
+                    self.FileSelected(
+                        self.cursor_node.data.path, self.cursor_node.data.name
                     )
+                )
 
     async def action_refresh(self) -> None:
         """Action: refresh current directory."""

@@ -54,7 +54,7 @@ async def execute_task_endpoint(
         logger.error(f"Local temp directory '{config.LOCAL_TEMP_DIR}' not found.")
         raise HTTPException(
             status_code=500,
-            detail=f"Configuration error: LOCAL_TEMP_DIR missing on node.",
+            detail="Configuration error: LOCAL_TEMP_DIR missing on node.",
         )
 
     logger.info(
@@ -129,7 +129,7 @@ async def pause_task_endpoint(request: TaskControlRequest):
             detail=f"Task {task_id} not found.",
         )
 
-    success = pause_task(task_id, container_name, task_store)
+    success = pause_task(task_id, container_name)
     if not success:
         raise HTTPException(
             status_code=500,
@@ -155,7 +155,7 @@ async def resume_task_endpoint(request: TaskControlRequest):
             detail=f"Task {task_id} not found.",
         )
 
-    success = resume_task(task_id, container_name, task_store)
+    success = resume_task(task_id, container_name)
     if not success:
         raise HTTPException(
             status_code=500,

@@ -28,7 +28,8 @@ export const useIdeStore = defineStore('ide', () => {
   const fileTree = ref({}) // { path: { name, type, children?, loaded?, loading? } }
   const loadingPaths = ref(new Set())
   const selectedPath = ref(null)
-  const selectedFileInfo = ref(null) // { path, name, type, size }
+  /** @type {import('vue').Ref<{path: string, name: string, type: string, size: number} | null>} */
+  const selectedFileInfo = ref(null)
 
   // ==========================================================================
   // Open Files State

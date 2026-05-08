@@ -51,7 +51,7 @@ task_store: TaskStateStore | None = None
 async def lifespan(app: FastAPI):
     await startup_event()
     yield
-    await shutdown_event()
+    shutdown_event()
 
 
 # FastAPI app
@@ -339,7 +339,6 @@ async def startup_event():
         heartbeat_task = asyncio.create_task(
             send_heartbeat(
                 hostname=hostname,
-                numa_topology=numa_topology,
                 task_store=task_store,
                 register_callback=register_callback,
             )
@@ -498,7 +497,7 @@ async def _setup_overlay_network(overlay_info: dict) -> None:
         logger.warning("Containers will use default kohakuriver-net network")
 
 
-async def shutdown_event():
+def shutdown_event():
     """Clean shutdown."""
     logger.info("Runner shutting down.")
 

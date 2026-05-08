@@ -112,9 +112,9 @@ def _cleanup_orphaned_pending_tasks() -> None:
     now = datetime.datetime.now()
 
     # Case 1: Pending tasks assigned to offline nodes
-    offline_nodes = set(
+    offline_nodes = {
         n.hostname for n in Node.select(Node.hostname).where(Node.status == "offline")
-    )
+    }
 
     if offline_nodes:
         stale_assigned: list[Task] = list(

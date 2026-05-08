@@ -78,13 +78,13 @@ class ContainerTunnel:
             self._next_client_id += 1
             return client_id
 
-    async def register_user_connection(
+    def register_user_connection(
         self, client_id: int, user_ws: WebSocket
     ) -> None:
         """Register a user's WebSocket for receiving data."""
         self._user_connections[client_id] = user_ws
 
-    async def unregister_user_connection(self, client_id: int) -> None:
+    def unregister_user_connection(self, client_id: int) -> None:
         """Unregister a user's WebSocket."""
         self._user_connections.pop(client_id, None)
 
@@ -357,11 +357,11 @@ async def _handle_pf_message(
             logger.info(f"[Forward] CONNECT client_id={client_id} -> port={msg_port}")
 
             # Forward to container tunnel
-            logger.info(f"[Forward] Sending CONNECT to container tunnel...")
+            logger.info("[Forward] Sending CONNECT to container tunnel...")
             success = await tunnel.send_to_container(data)
             logger.info(f"[Forward] CONNECT send_to_container result: {success}")
             if not success:
-                logger.error(f"[Forward] Failed to send CONNECT to container")
+                logger.error("[Forward] Failed to send CONNECT to container")
                 error_msg = build_message(
                     MSG_ERROR, proto, client_id, 0, b"Tunnel send failed"
                 )
@@ -369,11 +369,11 @@ async def _handle_pf_message(
                 active_clients.discard(client_id)
             else:
                 logger.info(
-                    f"[Forward] CONNECT sent to container, registering user connection"
+                    "[Forward] CONNECT sent to container, registering user connection"
                 )
 
             # Register this websocket to receive responses for this client_id
-            await tunnel.register_user_connection(client_id, websocket)
+            tunnel.register_user_connection(client_id, websocket)
 
         case proto_mod.MSG_DATA:
             # Data from CLI to container
@@ -395,7 +395,7 @@ async def _handle_pf_message(
             # Close request from CLI
             logger.info(f"[Forward] CLOSE client_id={client_id}")
             active_clients.discard(client_id)
-            await tunnel.unregister_user_connection(client_id)
+            tunnel.unregister_user_connection(client_id)
             await tunnel.send_to_container(data)
 
         case _:
@@ -503,7 +503,7 @@ async def handle_port_forward(
         for client_id in active_clients:
             close_msg = build_message(MSG_CLOSE, proto, client_id)
             await tunnel.send_to_container(close_msg)
-            await tunnel.unregister_user_connection(client_id)
+            tunnel.unregister_user_connection(client_id)
 
         logger.info(f"[Forward] Session closed (container={container_id})")
 
@@ -677,7 +677,7 @@ async def _handle_vm_connect(
     logger.info(f"[VM Forward] TCP connected for client_id={client_id}")
 
 
-async def _cleanup_vm_connections(
+def _cleanup_vm_connections(
     active_connections: dict[
         int, tuple[asyncio.StreamReader, asyncio.StreamWriter, asyncio.Task]
     ],
@@ -863,5 +863,5 @@ async def _handle_vm_port_forward(
     except Exception as e:
         logger.error(f"[VM Forward] Error: {e}")
     finally:
-        await _cleanup_vm_connections(active_connections, stop_event)
+        _cleanup_vm_connections(active_connections, stop_event)
         logger.info(f"[VM Forward] Session closed (VM {task_id})")

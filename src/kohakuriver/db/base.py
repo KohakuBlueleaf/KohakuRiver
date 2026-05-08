@@ -72,7 +72,7 @@ def initialize_database(db_path: str) -> None:
         db.create_tables([Node, Task] + AUTH_TABLES, safe=True)
 
         # Run migrations for new columns
-        _run_migrations(Task)
+        _run_migrations()
         _run_node_migrations()
 
         logger.info(f"Database initialized: {db_path}")
@@ -87,7 +87,7 @@ def initialize_database(db_path: str) -> None:
         raise
 
 
-def _run_migrations(Task) -> None:
+def _run_migrations() -> None:
     """Add any missing columns to existing tables."""
     # Check if table exists first
     cursor = db.execute_sql(

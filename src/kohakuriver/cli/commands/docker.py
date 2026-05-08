@@ -37,6 +37,8 @@ from kohakuriver.cli.output import console, format_bytes, print_error, print_suc
 
 app = typer.Typer(help="Docker/container management commands")
 
+CANCELLED_MSG = "[dim]Cancelled.[/dim]"
+
 # Subcommand groups
 container_app = typer.Typer(help="Host container management")
 tar_app = typer.Typer(help="Container tarball management")
@@ -80,7 +82,7 @@ def delete_image(
         if not force:
             confirm = typer.confirm(f"Delete image '{name}'?")
             if not confirm:
-                console.print("[dim]Cancelled.[/dim]")
+                console.print(CANCELLED_MSG)
                 return
 
         result = client.delete_docker_image(name)
@@ -119,11 +121,12 @@ def list_containers():
 
         for c in containers:
             status = c.get("status", "unknown")
-            status_style = (
-                "green"
-                if status == "running"
-                else "yellow" if status == "exited" else "dim"
-            )
+            if status == "running":
+                status_style = "green"
+            elif status == "exited":
+                status_style = "yellow"
+            else:
+                status_style = "dim"
 
             # Show env_name (without prefix) as the primary name
             env_name = c.get("env_name", c.get("name", ""))
@@ -137,7 +140,7 @@ def list_containers():
 
         console.print(table)
         console.print(
-            f"\n[dim]Use environment name (first column) for commands like 'shell', 'tar create', etc.[/dim]"
+            "\n[dim]Use environment name (first column) for commands like 'shell', 'tar create', etc.[/dim]"
         )
 
     except client.APIError as e:
@@ -158,11 +161,11 @@ def create_container(
 
         if result.get("message") or result.get("container_id"):
             print_success(f"Container '{name}' created successfully.")
-            console.print(f"\n[bold]Next steps:[/bold]")
-            console.print(f"  1. Enter the container:")
+            console.print("\n[bold]Next steps:[/bold]")
+            console.print("  1. Enter the container:")
             console.print(f"     [cyan]hakuriver docker container shell {name}[/cyan]")
-            console.print(f"  2. Install your packages and configure the environment")
-            console.print(f"  3. Create tarball for distribution:")
+            console.print("  2. Install your packages and configure the environment")
+            console.print("  3. Create tarball for distribution:")
             console.print(f"     [cyan]hakuriver docker tar create {name}[/cyan]")
         else:
             print_error(f"Failed to create container: {result}")
@@ -185,7 +188,7 @@ def delete_container(
         if not force:
             confirm = typer.confirm(f"Delete container '{name}'?")
             if not confirm:
-                console.print("[dim]Cancelled.[/dim]")
+                console.print(CANCELLED_MSG)
                 return
 
         result = client.delete_host_container(name)
@@ -267,7 +270,7 @@ def container_shell(
             raise typer.Exit(1)
 
         if container.get("status") != "running":
-            console.print(f"[dim]Starting container...[/dim]")
+            console.print("[dim]Starting container...[/dim]")
             client.start_host_container(name)
 
         # Connect via WebSocket
@@ -359,7 +362,7 @@ async def _run_terminal_tasks(websocket, resize_queue: asyncio.Queue):
         asyncio.create_task(_send_resize_events(websocket, resize_queue)),
     ]
 
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
     for task in pending:
         task.cancel()
@@ -500,7 +503,7 @@ def create_tarball(
             print_success(f"Tarball created from container '{container_name}'.")
             if result.get("tarball_path"):
                 console.print(f"[dim]Path: {result['tarball_path']}[/dim]")
-            console.print(f"\n[bold]Usage:[/bold]")
+            console.print("\n[bold]Usage:[/bold]")
             console.print(f"  Use with tasks: --container {container_name}")
         else:
             print_error(f"Failed to create tarball: {result}")
@@ -523,7 +526,7 @@ def delete_tarball(
         if not force:
             confirm = typer.confirm(f"Delete tarball '{name}' (all versions)?")
             if not confirm:
-                console.print("[dim]Cancelled.[/dim]")
+                console.print(CANCELLED_MSG)
                 return
 
         result = client.delete_tarball(name)
@@ -560,11 +563,11 @@ def migrate_container_cmd(
 
         if result.get("message"):
             print_success(result["message"])
-            console.print(f"\n[bold]Container renamed:[/bold]")
+            console.print("\n[bold]Container renamed:[/bold]")
             console.print(f"  Old: {result.get('old_name')}")
             console.print(f"  New: {result.get('new_name')}")
-            console.print(f"\n[bold]Next steps:[/bold]")
-            console.print(f"  - List containers: hakuriver docker container list")
+            console.print("\n[bold]Next steps:[/bold]")
+            console.print("  - List containers: hakuriver docker container list")
             console.print(
                 f"  - Shell into container: hakuriver docker container shell {result.get('env_name')}"
             )

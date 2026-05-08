@@ -221,7 +221,7 @@ async def write_file(
             "-c",
             f'echo "{b64_content}" | base64 -d > {escaped_path}',
         ]
-        exit_code, stdout, stderr = await exec_fn(write_cmd)
+        exit_code, _, stderr = await exec_fn(write_cmd)
 
         if exit_code != 0:
             if "Permission denied" in stderr:
@@ -245,7 +245,7 @@ async def create_directory(
         flags = "-p" if request.parents else ""
         cmd = ["mkdir", flags, path] if flags else ["mkdir", path]
 
-        exit_code, stdout, stderr = await exec_fn(cmd)
+        exit_code, _, stderr = await exec_fn(cmd)
 
         if exit_code != 0:
             if "Permission denied" in stderr:
@@ -282,7 +282,7 @@ async def rename_item(
                 )
 
         cmd = ["mv", source, destination]
-        exit_code, stdout, stderr = await exec_fn(cmd)
+        exit_code, _, stderr = await exec_fn(cmd)
 
         if exit_code != 0:
             if "No such file or directory" in stderr:
@@ -316,7 +316,7 @@ async def delete_item(
         else:
             cmd = ["rm", "-f", path]
 
-        exit_code, stdout, stderr = await exec_fn(cmd)
+        exit_code, _, stderr = await exec_fn(cmd)
 
         if exit_code != 0:
             if "No such file or directory" in stderr:
@@ -371,7 +371,7 @@ async def stat_file(
         size = int(parts[1]) if parts[1] else 0
         mtime_unix = int(parts[2]) if parts[2] else 0
         owner = parts[3]
-        # group = parts[4]
+        # parts[4] is the group, intentionally unused.
         permissions_octal = parts[5]
 
         # Map file type

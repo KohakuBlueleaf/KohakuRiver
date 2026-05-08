@@ -218,7 +218,7 @@ def _build_vps_docker_command(
 
     # Wrap with tunnel-client startup if available
     # VPS uses use_exec=False since the main process (sshd or tail) stays running
-    setup_cmd = wrap_command_with_tunnel(setup_cmd, container_name, use_exec=False)
+    setup_cmd = wrap_command_with_tunnel(setup_cmd, use_exec=False)
 
     # Add image and command
     docker_cmd.append(docker_image_tag)
@@ -292,7 +292,6 @@ async def _find_ssh_port(
 async def _report_vps_failure(
     task_id: int,
     error_message: str,
-    start_time: datetime.datetime | None = None,
     exit_code: int | None = None,
 ) -> dict:
     """
@@ -301,7 +300,6 @@ async def _report_vps_failure(
     Args:
         task_id: Task ID for this VPS.
         error_message: Human-readable error description.
-        start_time: Optional start time (unused currently, reserved for future metrics).
         exit_code: Optional process exit code to include in the status update.
 
     Returns:
@@ -450,7 +448,6 @@ async def create_vps(
     container_name: str,
     ssh_key_mode: str,
     ssh_public_key: str | None,
-    ssh_port: int,
     task_store: TaskStateStore,
     restore_from_snapshot: bool | None = None,
     reserved_ip: str | None = None,
@@ -470,7 +467,6 @@ async def create_vps(
         container_name: Base container image name.
         ssh_key_mode: SSH key mode ("none", "upload", or "generate").
         ssh_public_key: SSH public key for access (None for "none" mode).
-        ssh_port: SSH port to expose.
         task_store: Task state store.
         restore_from_snapshot: Whether to restore from latest snapshot if available.
                               If None, uses config.AUTO_RESTORE_ON_CREATE.
@@ -518,7 +514,7 @@ async def create_vps(
         task_id, container_name, registry_image, snapshot_tag
     )
     if not image_ok:
-        return await _report_vps_failure(task_id, image_error, start_time)
+        return await _report_vps_failure(task_id, image_error)
 
     # =========================================================================
     # Step 3: Build mount directories
@@ -592,7 +588,7 @@ async def create_vps(
             )
             logger.error(f"VPS {task_id}: {error_message}")
             return await _report_vps_failure(
-                task_id, error_message, start_time, exit_code=exit_code
+                task_id, error_message, exit_code=exit_code
             )
 
         container_name_full = vps_container_name(task_id)
@@ -642,4 +638,4 @@ async def create_vps(
         error_message = f"VPS creation failed: {e}"
         logger.error(error_message)
         logger.debug(format_traceback(e))
-        return await _report_vps_failure(task_id, error_message, start_time)
+        return await _report_vps_failure(task_id, error_message)

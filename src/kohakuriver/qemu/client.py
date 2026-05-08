@@ -606,7 +606,7 @@ class QEMUManager:
         try:
             with open(cmd_file) as f:
                 return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError):
             return []
 
     def _build_qemu_command(

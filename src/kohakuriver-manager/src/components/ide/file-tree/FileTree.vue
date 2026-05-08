@@ -12,7 +12,7 @@
 
 import { useIdeStore } from '@/stores/ide'
 import { useFileSystem } from '@/composables/useFileSystem'
-import { useFileWatcher, FileChangeEvent } from '@/composables/useFileWatcher'
+import { useFileWatcher } from '@/composables/useFileWatcher'
 import { useFileTreeOps } from './useFileTreeOps'
 import FileTreeNode from './FileTreeNode.vue'
 
@@ -242,6 +242,7 @@ async function ensureDirectoryLoaded(path) {
     await loadDirectory(path)
     return true
   } catch (e) {
+    console.error('Failed to load directory', path, e)
     return false
   }
 }

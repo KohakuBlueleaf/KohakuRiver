@@ -152,7 +152,7 @@ async def task_terminal_proxy_endpoint(
                 logger.debug(f"Runner to client error for task {task_id}: {e}")
 
         # Run both forwarding tasks concurrently
-        done, pending = await asyncio.wait(
+        _, pending = await asyncio.wait(
             [
                 asyncio.create_task(client_to_runner()),
                 asyncio.create_task(runner_to_client()),

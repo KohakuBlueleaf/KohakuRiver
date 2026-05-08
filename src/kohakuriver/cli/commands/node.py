@@ -14,6 +14,8 @@ from kohakuriver.cli.output import console, print_error
 
 app = typer.Typer(help="Node management commands")
 
+NO_NODES_MSG = "[yellow]No nodes found.[/yellow]"
+
 
 @app.command("list")
 def list_nodes(
@@ -30,7 +32,7 @@ def list_nodes(
             nodes = [n for n in nodes if n.get("status") == status]
 
         if not nodes:
-            console.print("[yellow]No nodes found.[/yellow]")
+            console.print(NO_NODES_MSG)
             return
 
         table = format_node_table(nodes)
@@ -80,7 +82,7 @@ def node_health(
         else:
             nodes = client.get_nodes()
             if not nodes:
-                console.print("[yellow]No nodes found.[/yellow]")
+                console.print(NO_NODES_MSG)
                 return
 
             # Show cluster summary
@@ -119,7 +121,7 @@ def cluster_summary():
         nodes = client.get_nodes()
 
         if not nodes:
-            console.print("[yellow]No nodes found.[/yellow]")
+            console.print(NO_NODES_MSG)
             return
 
         panel = format_cluster_summary(nodes)
@@ -300,7 +302,7 @@ def ip_reserve(
     try:
         result = client.reserve_ip(runner, ip=ip, ttl=ttl)
 
-        console.print(f"[green]IP reserved successfully![/green]")
+        console.print("[green]IP reserved successfully![/green]")
         console.print(f"  IP: [cyan]{result.get('ip')}[/cyan]")
         console.print(f"  Runner: [cyan]{result.get('runner')}[/cyan]")
         console.print(f"  Token: [yellow]{result.get('token')}[/yellow]")

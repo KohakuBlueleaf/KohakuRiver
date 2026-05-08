@@ -284,7 +284,6 @@ def _create_vps_task_record(
     node: Node,
     container_name: str | None,
     vps_backend: str,
-    ssh_key_mode: str,
     current_user: User,
 ) -> Task:
     """
@@ -297,7 +296,6 @@ def _create_vps_task_record(
         node: Assigned compute node.
         container_name: Docker container base image name (None if registry_image is used).
         vps_backend: "docker" or "qemu".
-        ssh_key_mode: SSH key mode.
         current_user: The authenticated user submitting the VPS.
 
     Returns:
@@ -457,7 +455,6 @@ async def submit_vps(
         node=node,
         container_name=container_name,
         vps_backend=vps_backend,
-        ssh_key_mode=ssh_key_mode,
         current_user=current_user,
     )
 
@@ -561,7 +558,7 @@ async def stop_vps(
         node = Node.get_or_none(Node.hostname == task.assigned_node)
         if node and node.status == "online":
             logger.info(
-                f"Requesting stop from runner {node.hostname} " f"for VPS {task_id}"
+                f"Requesting stop from runner {node.hostname} for VPS {task_id}"
             )
             stop_task = asyncio.create_task(send_vps_stop_to_runner(node.url, task_id))
             background_tasks.add(stop_task)

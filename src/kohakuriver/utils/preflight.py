@@ -27,7 +27,6 @@ def check_native_extensions() -> None:
     )
 
     if result.returncode != 0:
-        sig = -result.returncode if result.returncode < 0 else result.returncode
         hints = []
 
         # exit code 132 = 128 + 4 (SIGILL), also check raw signal number

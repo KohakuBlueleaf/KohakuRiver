@@ -55,7 +55,7 @@ def get_node_available_gpus(node: Node) -> set[int]:
     """
     # Get all GPU indices from node info
     gpu_info = node.get_gpu_info()
-    all_gpu_ids = set(gpu.get("gpu_id", i) for i, gpu in enumerate(gpu_info))
+    all_gpu_ids = {gpu.get("gpu_id", i) for i, gpu in enumerate(gpu_info)}
 
     # Get GPUs in use by running tasks
     running_tasks = Task.select().where(
@@ -98,7 +98,8 @@ def get_node_available_memory(node: Node) -> int:
     )
     reserved = running_memory or 0
 
-    # Available = total - max(reserved, currently_used)
+    # Available memory leaves the larger of reservations vs current usage in place,
+    # whichever bites first.
     currently_used = node.memory_used_bytes or 0
     total = node.memory_total_bytes or 0
 

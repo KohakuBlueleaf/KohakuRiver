@@ -26,8 +26,11 @@ def create_vps(
     target: str | None = None,
     container_name: str | None = None,
     registry_image: str | None = None,
-    privileged: bool | None = None,
-    additional_mounts: list[str] | None = None,
+    # TODO: privileged/additional_mounts are accepted by the CLI flag but the
+    # host-side VPSSubmission model does not declare them, so they are silently
+    # dropped. Wire through models/requests.py and vps_lifecycle.py to fix.
+    privileged: bool | None = None,  # noqa: ARG001
+    additional_mounts: list[str] | None = None,  # noqa: ARG001
     gpu_ids: list[int] | None = None,
     vps_backend: str = "docker",
     vm_image: str | None = None,

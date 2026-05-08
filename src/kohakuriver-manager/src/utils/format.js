@@ -110,7 +110,7 @@ export function formatRequiredGpus(requiredGpus) {
     const allGpuIds = requiredGpus.flat()
     if (allGpuIds.length === 0) return '-'
     return allGpuIds.join(', ')
-  } catch (e) {
+  } catch {
     return '-'
   }
 }

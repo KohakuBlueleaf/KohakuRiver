@@ -22,6 +22,8 @@ from kohakuriver.cli.output import console, print_error, print_success
 
 app = typer.Typer(name="auth", help="Authentication commands")
 
+NOT_LOGGED_IN_MSG = "Not logged in. Use 'kohakuriver auth login' first."
+
 
 # =============================================================================
 # Token Storage
@@ -258,7 +260,7 @@ def status():
 
     if not auth or not auth.get("token"):
         console.print("[yellow]Not logged in[/yellow]")
-        console.print(f"[dim]Use 'kohakuriver auth login' to authenticate[/dim]")
+        console.print("[dim]Use 'kohakuriver auth login' to authenticate[/dim]")
         return
 
     # Verify token is still valid
@@ -272,7 +274,7 @@ def status():
         response.raise_for_status()
         user_info = response.json()
 
-        console.print(f"[green]Logged in[/green]")
+        console.print("[green]Logged in[/green]")
         console.print(f"  Username: {user_info['username']}")
         console.print(f"  Role: {user_info['role']}")
         if auth.get("token_name"):
@@ -284,7 +286,7 @@ def status():
             console.print(
                 f"[dim]Stored credentials for: {auth.get('username', 'unknown')}[/dim]"
             )
-            console.print(f"[dim]Use 'kohakuriver auth login' to re-authenticate[/dim]")
+            console.print("[dim]Use 'kohakuriver auth login' to re-authenticate[/dim]")
         elif e.response.status_code == 503:
             console.print("[yellow]Authentication not enabled on server[/yellow]")
         else:
@@ -316,7 +318,7 @@ def token_list():
     """List your API tokens."""
     auth = _load_auth()
     if not auth.get("token"):
-        print_error("Not logged in. Use 'kohakuriver auth login' first.")
+        print_error(NOT_LOGGED_IN_MSG)
         raise typer.Exit(1)
 
     try:
@@ -364,7 +366,7 @@ def token_create(
     """Create a new API token."""
     auth = _load_auth()
     if not auth.get("token"):
-        print_error("Not logged in. Use 'kohakuriver auth login' first.")
+        print_error(NOT_LOGGED_IN_MSG)
         raise typer.Exit(1)
 
     try:
@@ -400,7 +402,7 @@ def token_revoke(
     """Revoke an API token."""
     auth = _load_auth()
     if not auth.get("token"):
-        print_error("Not logged in. Use 'kohakuriver auth login' first.")
+        print_error(NOT_LOGGED_IN_MSG)
         raise typer.Exit(1)
 
     try:

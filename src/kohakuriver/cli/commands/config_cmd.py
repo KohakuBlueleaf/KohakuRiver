@@ -123,7 +123,7 @@ complete -c kohakuriver -f -a "(env _KOHAKURIVER_COMPLETE=complete_fish kohakuri
             elif shell == "zsh":
                 console.print(f"  Add to ~/.zshrc: source {output_path}")
             elif shell == "fish":
-                console.print(f"  Copy to: ~/.config/fish/completions/kohakuriver.fish")
+                console.print("  Copy to: ~/.config/fish/completions/kohakuriver.fish")
         else:
             console.print(completion_script)
 
