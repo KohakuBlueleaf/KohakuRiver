@@ -10,7 +10,6 @@ This module provides the ContainerManagerMixin class with methods for:
 
 from docker.errors import APIError, ContainerError, ImageNotFound, NotFound
 from docker.models.containers import Container
-from docker.models.images import Image
 from docker.types import DeviceRequest, Mount
 
 from kohakuriver.docker.exceptions import (

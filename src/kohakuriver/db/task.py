@@ -15,7 +15,6 @@ from kohakuriver.db.auth import User
 from kohakuriver.db.base import BaseModel
 from kohakuriver.models.enums import TaskStatus, TaskType
 
-
 # =============================================================================
 # Task Model
 # =============================================================================
@@ -118,7 +117,9 @@ class Task(BaseModel):
     # Network
     # -------------------------------------------------------------------------
 
-    network_name = peewee.CharField(null=True)  # Overlay network name (e.g., "private", "public")
+    network_name = peewee.CharField(
+        null=True
+    )  # Overlay network name (e.g., "private", "public")
 
     # -------------------------------------------------------------------------
     # Output Paths

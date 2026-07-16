@@ -15,7 +15,6 @@ from typing import Annotated
 from fastapi import (
     APIRouter,
     Cookie,
-    Depends,
     HTTPException,
     Query,
     Request,

@@ -28,7 +28,6 @@ from websockets.exceptions import (
 from kohakuriver.cli import client, config as cli_config
 from kohakuriver.cli.output import console, print_error
 
-
 # =============================================================================
 # Platform Detection
 # =============================================================================
@@ -334,9 +333,7 @@ async def _run_terminal_session(task_id: str):
             ]
 
             # Wait for any task to complete (connection closed, etc.)
-            _, pending = await asyncio.wait(
-                tasks, return_when=asyncio.FIRST_COMPLETED
-            )
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
             # Cancel remaining tasks
             for task in pending:

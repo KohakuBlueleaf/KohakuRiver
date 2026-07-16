@@ -14,10 +14,9 @@ Layout Modes:
 3. Stacked: File | Editor (top) / Terminal (bottom)
 """
 
-import asyncio
 from enum import Enum
 
-from textual import on, work
+from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
@@ -36,7 +35,6 @@ from textual.widgets import (
 from kohakuriver.cli.tui.file_tree import FileTreeWidget
 from kohakuriver.cli.tui.editor import EditorPane
 from kohakuriver.cli.tui.terminal import TerminalWidget
-
 
 # =============================================================================
 # Layout Mode

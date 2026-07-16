@@ -388,9 +388,7 @@ class RunnerOverlayManager:
             # Route may already exist
             logger.debug(f"Overlay route handling: {e}")
 
-    def _setup_policy_routing(
-        self, config: OverlayConfig, host_gateway: str
-    ) -> None:
+    def _setup_policy_routing(self, config: OverlayConfig, host_gateway: str) -> None:
         """
         Set up policy routing for non-masquerade (public IP) networks.
 
@@ -412,14 +410,17 @@ class RunnerOverlayManager:
         try:
             # Add default route in the policy table
             route_cmd = [
-                "ip", "route", "replace", "default",
-                "via", host_gateway,
-                "table", str(table_id),
+                "ip",
+                "route",
+                "replace",
+                "default",
+                "via",
+                host_gateway,
+                "table",
+                str(table_id),
             ]
             subprocess.run(route_cmd, check=True, capture_output=True)
-            logger.info(
-                f"Policy routing table {table_id}: default via {host_gateway}"
-            )
+            logger.info(f"Policy routing table {table_id}: default via {host_gateway}")
 
             # Add ip rule: traffic FROM this subnet uses our table
             # Check if rule already exists
@@ -427,18 +428,20 @@ class RunnerOverlayManager:
             result = subprocess.run(check_cmd, capture_output=True, text=True)
             if f"lookup {table_id}" not in result.stdout:
                 rule_cmd = [
-                    "ip", "rule", "add",
-                    "from", overlay_cidr,
-                    "table", str(table_id),
+                    "ip",
+                    "rule",
+                    "add",
+                    "from",
+                    overlay_cidr,
+                    "table",
+                    str(table_id),
                 ]
                 subprocess.run(rule_cmd, check=True, capture_output=True)
                 logger.info(
                     f"Policy routing rule: from {overlay_cidr} lookup table {table_id}"
                 )
             else:
-                logger.debug(
-                    f"Policy routing rule already exists for {overlay_cidr}"
-                )
+                logger.debug(f"Policy routing rule already exists for {overlay_cidr}")
 
         except subprocess.CalledProcessError as e:
             logger.error(
@@ -532,9 +535,7 @@ class RunnerOverlayManager:
                     subprocess.run(
                         ["iptables"] + nat_rule, check=True, capture_output=True
                     )
-                    logger.info(
-                        "Added NAT masquerade rule for external network access"
-                    )
+                    logger.info("Added NAT masquerade rule for external network access")
                 except subprocess.CalledProcessError as e:
                     logger.warning(f"Failed to add NAT masquerade rule: {e}")
         else:

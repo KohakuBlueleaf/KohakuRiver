@@ -13,7 +13,6 @@ import peewee
 from kohakuriver.db.base import BaseModel
 from kohakuriver.models.enums import NodeStatus
 
-
 # =============================================================================
 # Node Model
 # =============================================================================

@@ -559,9 +559,7 @@ async def _attach_additional_networks(
         if not net:
             continue
         net_docker_name = config.get_container_network(net)
-        connect_cmd = [
-            "docker", "network", "connect", net_docker_name, container_name
-        ]
+        connect_cmd = ["docker", "network", "connect", net_docker_name, container_name]
 
         # Retry up to 3 times with 0.5s delay (container may be initializing)
         for attempt in range(3):
@@ -587,9 +585,7 @@ async def _attach_additional_networks(
                 )
                 break
             except Exception as e:
-                logger.error(
-                    f"[Task {task_id}] Exception connecting to '{net}': {e}"
-                )
+                logger.error(f"[Task {task_id}] Exception connecting to '{net}': {e}")
                 break
 
 

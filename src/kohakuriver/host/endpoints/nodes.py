@@ -7,7 +7,6 @@ Provides the core functionality for cluster node lifecycle management.
 
 import datetime
 import json
-import re
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Path, Query
@@ -480,7 +479,11 @@ async def get_overlay_status():
 
     multi_manager = get_overlay_manager()
     if not multi_manager:
-        return {"enabled": True, "error": "Overlay manager not initialized", "networks": []}
+        return {
+            "enabled": True,
+            "error": "Overlay manager not initialized",
+            "networks": [],
+        }
 
     allocations = await multi_manager.get_all_allocations()
     stats = await multi_manager.get_stats()
@@ -492,7 +495,9 @@ async def get_overlay_status():
         "enabled": True,
         "networks": multi_manager.network_names,
         "subnet_config": config.OVERLAY_SUBNET if default_mgr else "",
-        "host_ip": f"{default_mgr.host_ip}/{default_mgr.host_prefix}" if default_mgr else "",
+        "host_ip": (
+            f"{default_mgr.host_ip}/{default_mgr.host_prefix}" if default_mgr else ""
+        ),
         "allocations": [
             {
                 "runner_name": a.runner_name,

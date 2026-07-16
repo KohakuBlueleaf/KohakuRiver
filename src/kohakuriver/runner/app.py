@@ -47,6 +47,7 @@ background_tasks: set[asyncio.Task] = set()
 numa_topology: dict | None = None
 task_store: TaskStateStore | None = None
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await startup_event()
@@ -449,9 +450,7 @@ async def _setup_overlay_network(overlay_info: dict) -> None:
                 overlay_network_cidr=net_info.get(
                     "overlay_network_cidr", "10.128.0.0/12"
                 ),
-                host_ip_on_runner_subnet=net_info.get(
-                    "host_ip_on_runner_subnet", ""
-                ),
+                host_ip_on_runner_subnet=net_info.get("host_ip_on_runner_subnet", ""),
                 network_name=net_name,
                 masquerade=net_info.get("masquerade", True),
             )
@@ -523,8 +522,6 @@ def shutdown_event():
                 f"Leaving {len(tracked_tasks)} containers running. "
                 "They will be recovered or cleaned up on next startup."
             )
-
-
 
 
 def run():

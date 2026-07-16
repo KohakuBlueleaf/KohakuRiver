@@ -294,9 +294,7 @@ class IPReservationManager:
 
             manager = self._get_manager_for_network(network_name)
             if not manager:
-                logger.warning(
-                    f"Cannot reserve IP: network '{network_name}' not found"
-                )
+                logger.warning(f"Cannot reserve IP: network '{network_name}' not found")
                 return None
 
             # Verify runner exists
@@ -391,9 +389,7 @@ class IPReservationManager:
 
             # Check if already used
             if reservation.is_used():
-                logger.warning(
-                    f"Reservation for {reservation.ip} is already in use"
-                )
+                logger.warning(f"Reservation for {reservation.ip} is already in use")
                 return None
 
             return reservation
@@ -649,9 +645,7 @@ class IPReservationManager:
                 and not r.is_expired()
                 and not r.is_used()
             )
-            used_count = len(
-                self._used_ips.get((runner_name, network_name), set())
-            )
+            used_count = len(self._used_ips.get((runner_name, network_name), set()))
             available_count = total - reserved_count - used_count
 
             return {

@@ -29,7 +29,6 @@ from loguru import logger as _loguru_logger
 
 from kohakuriver.models.enums import LogLevel
 
-
 # =============================================================================
 # Format Configuration
 # =============================================================================
@@ -72,6 +71,19 @@ def _name_patcher(record: dict) -> None:
 # =============================================================================
 # Standard Library Interception
 # =============================================================================
+
+# Third-party loggers pinned to a floor level regardless of app log level.
+# pyroute2 is the critical one: it logs every netlink message (each interface
+# a ~2 KB nested dict), so one get_links() at DEBUG floods the journal.
+NOISY_LIBRARY_LEVELS: dict[str, int] = {
+    "pyroute2": logging.WARNING,
+    "docker": logging.WARNING,
+    "urllib3": logging.WARNING,
+    "httpx": logging.WARNING,
+    "httpcore": logging.WARNING,
+    "asyncssh": logging.INFO,
+    "asyncio": logging.WARNING,
+}
 
 
 class InterceptHandler(logging.Handler):
@@ -144,6 +156,9 @@ def intercept_standard_logging(silence_peewee: bool = True) -> None:
     else:
         peewee_logger.handlers = [InterceptHandler()]
         peewee_logger.propagate = False
+
+    for noisy_name, min_level in NOISY_LIBRARY_LEVELS.items():
+        logging.getLogger(noisy_name).setLevel(min_level)
 
 
 # =============================================================================

@@ -275,6 +275,163 @@ def overlay_cleanup(
         raise typer.Exit(1)
 
 
+@app.command("overlay-inspect")
+def overlay_inspect(
+    ping: Annotated[
+        bool,
+        typer.Option("--ping", "-p", help="Ping each VXLAN peer (underlay + overlay)"),
+    ] = False,
+    timeout: Annotated[
+        int,
+        typer.Option("--timeout", "-t", help="Per-ping timeout in seconds"),
+    ] = 1,
+):
+    """Show KohakuRiver overlay state on THIS machine (host or runner).
+
+    Reads interfaces and Docker networks directly via pyroute2 / the Docker SDK
+    — does NOT call the host API, so it reflects actual kernel/Docker state.
+    Pairs with [cyan]overlay[/cyan] (the host's tracked allocations) to spot drift.
+
+    With [cyan]--ping[/cyan], also pings each VXLAN tunnel's peer: the remote
+    physical IP (underlay) and the peer overlay gateway over the tunnel itself.
+    """
+    from rich.table import Table
+
+    from kohakuriver.utils.overlay_local import (
+        check_overlay_connectivity,
+        inspect_overlay_docker_networks,
+        inspect_overlay_interfaces,
+    )
+
+    interfaces = inspect_overlay_interfaces()
+    if interfaces:
+        table = Table(title="Overlay Interfaces (local)")
+        table.add_column("Name", style="cyan")
+        table.add_column("Kind")
+        table.add_column("State")
+        table.add_column("MTU", justify="right")
+        table.add_column("Addresses")
+        table.add_column("VXLAN (vni/remote:port)")
+        for i in interfaces:
+            state = "[green]up[/green]" if i["up"] else "[yellow]down[/yellow]"
+            if i["vni"] is not None:
+                vxlan = f"{i['vni']} / {i['remote'] or '-'}:{i['port'] or '-'}"
+            else:
+                vxlan = "-"
+            table.add_row(
+                i["name"],
+                i["kind"] or "-",
+                state,
+                str(i["mtu"] or "-"),
+                ", ".join(i["addrs"]) or "-",
+                vxlan,
+            )
+        console.print(table)
+    else:
+        console.print("[dim]No KohakuRiver overlay interfaces on this machine.[/dim]")
+
+    networks = inspect_overlay_docker_networks()
+    if networks:
+        table = Table(title="Overlay Docker Networks (local)")
+        table.add_column("Name", style="cyan")
+        table.add_column("Driver")
+        table.add_column("Subnet")
+        table.add_column("Gateway")
+        table.add_column("Bridge")
+        table.add_column("Containers", justify="right")
+        for n in networks:
+            table.add_row(
+                n["name"],
+                n["driver"] or "-",
+                n["subnet"] or "-",
+                n["gateway"] or "-",
+                n["bridge"] or "-",
+                str(n["containers"]),
+            )
+        console.print(table)
+    else:
+        console.print("[dim]No KohakuRiver Docker networks on this machine.[/dim]")
+
+    if ping:
+        checks = check_overlay_connectivity(timeout=timeout)
+        if checks:
+            table = Table(title="Overlay Peer Connectivity (local)")
+            table.add_column("Egress", style="cyan")
+            table.add_column("Overlay Target")
+            table.add_column("Result")
+            for c in checks:
+                result = (
+                    "[green]reachable[/green]" if c["ok"] else "[red]unreachable[/red]"
+                )
+                table.add_row(c["interface"], c["target"], result)
+            console.print(table)
+        else:
+            console.print("[dim]No overlay peers to ping.[/dim]")
+
+
+@app.command("overlay-reset")
+def overlay_reset(
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Skip confirmation"),
+    ] = False,
+    keep_docker: Annotated[
+        bool,
+        typer.Option("--keep-docker", help="Keep Docker overlay networks"),
+    ] = False,
+):
+    """Locally wipe ALL overlay interfaces on THIS machine (host or runner).
+
+    Runs directly via pyroute2 — does NOT call the host API, so it works even
+    when the service is stopped or wedged. Use it to recover from stale VXLAN
+    devices ('File exists' on allocation): stop the kohakuriver service, run
+    this, then restart. Requires root.
+    """
+    import os
+
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        print_error("overlay-reset deletes network interfaces and must run as root.")
+        console.print("Try: [cyan]sudo kohakuriver node overlay-reset[/cyan]")
+        raise typer.Exit(1)
+
+    if not force:
+        console.print(
+            "[yellow]Warning:[/yellow] removes every KohakuRiver overlay interface "
+            "([cyan]vxkr*[/cyan], [cyan]vxlan*[/cyan], [cyan]kohaku-*[/cyan]) on this machine."
+        )
+        console.print(
+            "Stop the kohakuriver service first. Containers/VMs lose overlay connectivity."
+        )
+        if not typer.confirm("Reset overlay on this machine?"):
+            console.print("[dim]Cancelled.[/dim]")
+            raise typer.Exit(0)
+
+    from kohakuriver.utils.overlay_local import (
+        reset_overlay_docker_networks,
+        reset_overlay_interfaces,
+    )
+
+    removed = reset_overlay_interfaces()
+    if removed:
+        console.print(
+            f"[green]Removed {len(removed)} interface(s):[/green] {', '.join(removed)}"
+        )
+    else:
+        console.print("[dim]No overlay interfaces found.[/dim]")
+
+    if not keep_docker:
+        nets = reset_overlay_docker_networks()
+        if nets:
+            console.print(
+                f"[green]Removed {len(nets)} Docker overlay network(s):[/green] "
+                f"{', '.join(nets)}"
+            )
+
+    console.print(
+        "[green]Overlay reset complete.[/green] Restart the kohakuriver service to rebuild."
+    )
+
+
 # =============================================================================
 # IP Reservation Commands
 # =============================================================================

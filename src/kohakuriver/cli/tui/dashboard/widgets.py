@@ -6,11 +6,10 @@ from datetime import datetime
 
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
-from textual.widgets import Static, Label, DataTable
+from textual.widgets import Static
 
-from kohakuriver.cli.tui.dashboard.styles import get_status_style, format_bytes
+from kohakuriver.cli.tui.dashboard.styles import get_status_style
 
 
 class HeaderBar(Widget):

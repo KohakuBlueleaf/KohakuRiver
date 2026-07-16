@@ -5,18 +5,16 @@ Screen components for the TUI Dashboard.
 import json
 
 from rich.text import Text
-from textual import on, work
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, ScrollableContainer
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Static, DataTable, Label, TabbedContent, TabPane
+from textual.widgets import Static, DataTable
 
-from kohakuriver.cli.tui.dashboard.styles import get_status_style, format_bytes
+from kohakuriver.cli.tui.dashboard.styles import format_bytes
 from kohakuriver.cli.tui.dashboard.widgets import (
-    HeaderBar,
-    FooterBar,
     SummaryCard,
     create_status_text,
     truncate_id,

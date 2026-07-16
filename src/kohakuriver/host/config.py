@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 
 from kohakuriver.models.enums import LogLevel
 
-
 # =============================================================================
 # Configuration Dataclass
 # =============================================================================

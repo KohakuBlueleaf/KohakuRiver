@@ -78,9 +78,7 @@ class ContainerTunnel:
             self._next_client_id += 1
             return client_id
 
-    def register_user_connection(
-        self, client_id: int, user_ws: WebSocket
-    ) -> None:
+    def register_user_connection(self, client_id: int, user_ws: WebSocket) -> None:
         """Register a user's WebSocket for receiving data."""
         self._user_connections[client_id] = user_ws
 
@@ -127,7 +125,7 @@ class ContainerTunnel:
             MSG_PONG: "PONG",
         }
         msg_name = msg_type_names.get(header.msg_type, f"UNKNOWN({header.msg_type})")
-        logger.info(
+        logger.debug(
             f"[Tunnel {self.container_id}] Container→Runner: {msg_name} "
             f"client_id={header.client_id} port={header.port} payload_len={len(payload)}"
         )
@@ -152,7 +150,7 @@ class ContainerTunnel:
     async def _on_connected(self, header, full_message: bytes) -> None:
         """Handle CONNECTED message - forward to user."""
         proto_name = "UDP" if header.proto == PROTO_UDP else "TCP"
-        logger.info(
+        logger.debug(
             f"[Tunnel {self.container_id}] Client {header.client_id} connected ({proto_name}), forwarding to user"
         )
         user_ws = self._user_connections.get(header.client_id)
@@ -174,7 +172,7 @@ class ContainerTunnel:
             return
         try:
             payload_len = len(full_message) - HEADER_SIZE
-            logger.info(
+            logger.debug(
                 f"[Tunnel {self.container_id}] Forwarding {payload_len} bytes to user for client_id={header.client_id}"
             )
             await user_ws.send_bytes(full_message)
@@ -185,7 +183,7 @@ class ContainerTunnel:
 
     async def _on_close(self, header, full_message: bytes) -> None:
         """Handle CLOSE message - forward to user and clean up."""
-        logger.info(
+        logger.debug(
             f"[Tunnel {self.container_id}] Client {header.client_id} closed by container"
         )
         user_ws = self._user_connections.pop(header.client_id, None)
@@ -354,12 +352,11 @@ async def _handle_pf_message(
         case proto_mod.MSG_CONNECT:
             # New connection request from CLI
             active_clients.add(client_id)
-            logger.info(f"[Forward] CONNECT client_id={client_id} -> port={msg_port}")
+            logger.debug(f"[Forward] CONNECT client_id={client_id} -> port={msg_port}")
 
             # Forward to container tunnel
-            logger.info("[Forward] Sending CONNECT to container tunnel...")
             success = await tunnel.send_to_container(data)
-            logger.info(f"[Forward] CONNECT send_to_container result: {success}")
+            logger.debug(f"[Forward] CONNECT send_to_container result: {success}")
             if not success:
                 logger.error("[Forward] Failed to send CONNECT to container")
                 error_msg = build_message(
@@ -367,10 +364,6 @@ async def _handle_pf_message(
                 )
                 await websocket.send_bytes(error_msg)
                 active_clients.discard(client_id)
-            else:
-                logger.info(
-                    "[Forward] CONNECT sent to container, registering user connection"
-                )
 
             # Register this websocket to receive responses for this client_id
             tunnel.register_user_connection(client_id, websocket)
@@ -381,11 +374,11 @@ async def _handle_pf_message(
                 logger.warning(f"[Forward] DATA for unknown client_id={client_id}")
                 return
 
-            logger.info(
+            logger.debug(
                 f"[Forward] Forwarding {len(payload)} bytes to container tunnel for client_id={client_id}"
             )
             success = await tunnel.send_to_container(data)
-            logger.info(f"[Forward] send_to_container result: {success}")
+            logger.debug(f"[Forward] send_to_container result: {success}")
             if not success:
                 logger.warning(
                     f"[Forward] Failed to send DATA for client_id={client_id}"
@@ -393,7 +386,7 @@ async def _handle_pf_message(
 
         case proto_mod.MSG_CLOSE:
             # Close request from CLI
-            logger.info(f"[Forward] CLOSE client_id={client_id}")
+            logger.debug(f"[Forward] CLOSE client_id={client_id}")
             active_clients.discard(client_id)
             tunnel.unregister_user_connection(client_id)
             await tunnel.send_to_container(data)
@@ -446,7 +439,7 @@ async def handle_port_forward(
         await websocket.close(code=1011)
         return
 
-    logger.info(f"[Forward] Found tunnel for container={container_id}")
+    logger.debug(f"[Forward] Found tunnel for container={container_id}")
 
     # Track active client IDs for this session
     active_clients: set[int] = set()
@@ -454,7 +447,7 @@ async def handle_port_forward(
     try:
         # Send CONNECTED to confirm tunnel is available
         await websocket.send_text("CONNECTED")
-        logger.info(f"[Forward] Session established for {container_id}:{port}")
+        logger.debug(f"[Forward] Session established for {container_id}:{port}")
 
         # Message type names for logging
         msg_type_names = {
@@ -478,7 +471,7 @@ async def handle_port_forward(
             payload = get_payload(data)
 
             msg_name = msg_type_names.get(msg_type, f"UNKNOWN({msg_type})")
-            logger.info(
+            logger.debug(
                 f"[Forward] Host→Runner: {msg_name} client_id={header.client_id} "
                 f"port={header.port} payload_len={len(payload)}"
             )
@@ -637,7 +630,7 @@ async def _handle_vm_connect(
         active_connections: Shared dict tracking all active TCP connections
         stop_event: Event signalling that the session is shutting down
     """
-    logger.info(f"[VM Forward] CONNECT client_id={client_id} -> {vm_ip}:{msg_port}")
+    logger.debug(f"[VM Forward] CONNECT client_id={client_id} -> {vm_ip}:{msg_port}")
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(vm_ip, msg_port),
@@ -674,7 +667,7 @@ async def _handle_vm_connect(
     # Send CONNECTED back
     connected_msg = build_message(MSG_CONNECTED, proto, client_id, msg_port)
     await websocket.send_bytes(connected_msg)
-    logger.info(f"[VM Forward] TCP connected for client_id={client_id}")
+    logger.debug(f"[VM Forward] TCP connected for client_id={client_id}")
 
 
 def _cleanup_vm_connections(
@@ -773,7 +766,7 @@ async def _handle_vm_pf_message(
 
         case proto_mod.MSG_CLOSE:
             # Close TCP connection
-            logger.info(f"[VM Forward] CLOSE client_id={client_id}")
+            logger.debug(f"[VM Forward] CLOSE client_id={client_id}")
             conn = active_connections.pop(client_id, None)
             if conn:
                 _, writer, read_task = conn
@@ -832,7 +825,7 @@ async def _handle_vm_port_forward(
     try:
         # Send CONNECTED to confirm VM is available
         await websocket.send_text("CONNECTED")
-        logger.info(f"[VM Forward] Session established for VM {task_id}:{port}")
+        logger.debug(f"[VM Forward] Session established for VM {task_id}:{port}")
 
         while True:
             data = await websocket.receive_bytes()

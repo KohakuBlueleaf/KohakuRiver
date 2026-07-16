@@ -53,6 +53,7 @@ logger = get_logger(__name__)
 # Background tasks tracking
 background_tasks: set[asyncio.Task] = set()
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await startup_event()
@@ -201,8 +202,6 @@ async def shutdown_event():
     logger.info("Host server shut down complete")
 
 
-
-
 # =============================================================================
 # Startup Helpers
 # =============================================================================
@@ -285,9 +284,7 @@ async def _initialize_overlay_network():
         set_ip_reservation_manager(ip_reservation_manager)
 
         network_names = multi_manager.network_names
-        logger.info(
-            f"Overlay network(s) initialized: {network_names}"
-        )
+        logger.info(f"Overlay network(s) initialized: {network_names}")
     except Exception as e:
         logger.error(f"Failed to initialize overlay network: {e}")
         logger.warning("Overlay network disabled due to initialization failure")
@@ -296,11 +293,6 @@ async def _initialize_overlay_network():
 
 
 # Re-export from state module for backwards compatibility
-from kohakuriver.host.state import (
-    get_overlay_manager,
-    get_ip_reservation_manager,
-)  # noqa: E402,F401
-
 
 # =============================================================================
 # Container Management Helpers

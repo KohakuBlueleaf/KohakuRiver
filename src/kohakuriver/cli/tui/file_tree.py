@@ -19,7 +19,6 @@ from textual.message import Message
 from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
 
-
 # =============================================================================
 # File Icons
 # =============================================================================

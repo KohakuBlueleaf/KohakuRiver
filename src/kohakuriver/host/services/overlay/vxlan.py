@@ -61,7 +61,11 @@ def create_vxlan_sync(
                 existing_local = vxlan_data.get_attr("IFLA_VXLAN_LOCAL")
 
         # Check if config matches (VNI, remote, and local IP)
-        if existing_vni == vni and existing_remote == physical_ip and existing_local == local_ip:
+        if (
+            existing_vni == vni
+            and existing_remote == physical_ip
+            and existing_local == local_ip
+        ):
             # Case 2: Correct config - ensure IP assigned and up
             logger.info(
                 f"VXLAN {device_name} already exists with correct config, reusing"

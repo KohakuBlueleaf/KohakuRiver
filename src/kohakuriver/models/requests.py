@@ -19,7 +19,6 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, PlainSerializer
 
-
 # =============================================================================
 # Custom Types
 # =============================================================================

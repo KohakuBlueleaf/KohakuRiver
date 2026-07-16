@@ -180,7 +180,7 @@ async def _proxy_cli_to_runner(
                 }
                 msg_name = msg_names.get(msg_type, f"TYPE_{msg_type}")
                 payload_len = len(data) - HEADER_SIZE
-                logger.info(
+                logger.debug(
                     f"[ForwardProxy] CLI→Runner: {msg_name} client_id={client_id} payload={payload_len}b"
                 )
             await runner_ws.send(data)
@@ -221,12 +221,12 @@ async def _proxy_runner_to_cli(
                     }
                     msg_name = msg_names.get(msg_type, f"TYPE_{msg_type}")
                     payload_len = len(msg) - HEADER_SIZE
-                    logger.info(
+                    logger.debug(
                         f"[ForwardProxy] Runner→CLI: {msg_name} client_id={client_id} payload={payload_len}b"
                     )
                 await websocket.send_bytes(msg)
             else:
-                logger.info(f"[ForwardProxy] Runner→CLI: text={msg}")
+                logger.debug(f"[ForwardProxy] Runner→CLI: text={msg}")
                 await websocket.send_text(msg)
     except websockets.exceptions.ConnectionClosed:
         logger.debug(f"[ForwardProxy] Runner closed (task={task_id})")

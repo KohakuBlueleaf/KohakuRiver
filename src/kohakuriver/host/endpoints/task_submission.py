@@ -308,9 +308,7 @@ async def _process_target(
         return {"error": node}
 
     # Validate NUMA and resources
-    validation_error = _validate_node_resources(
-        node, target_numa_id, target_gpus, req
-    )
+    validation_error = _validate_node_resources(node, target_numa_id, target_gpus, req)
     if validation_error:
         return {"error": validation_error}
 

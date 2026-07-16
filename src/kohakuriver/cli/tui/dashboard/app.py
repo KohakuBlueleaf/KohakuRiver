@@ -8,7 +8,6 @@ Cross-platform cluster management TUI with:
 - Detail screens
 """
 
-import asyncio
 import os
 from datetime import datetime
 from enum import Enum
@@ -17,7 +16,6 @@ import httpx
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
 from textual.widgets import Static, TabbedContent, TabPane, Footer
 
 from kohakuriver.cli.tui.dashboard.screens import (
@@ -34,9 +32,8 @@ from kohakuriver.cli.tui.dashboard.modals import (
     CreateTaskModal,
     CreateVPSModal,
     CreateContainerModal,
-    ConfirmModal,
 )
-from kohakuriver.cli.tui.dashboard.widgets import HeaderBar, FooterBar
+from kohakuriver.cli.tui.dashboard.widgets import HeaderBar
 
 
 class View(Enum):

@@ -4,13 +4,11 @@ Modal dialogs for creating tasks, VPS, and containers.
 
 import os
 import shlex
-from typing import Any
 
-from textual import on, work
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, Grid
-from textual.message import Message
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -20,10 +18,8 @@ from textual.widgets import (
     Static,
     RadioButton,
     RadioSet,
-    Checkbox,
 )
 
-from kohakuriver.cli.tui.dashboard.styles import format_bytes
 
 
 class CreateTaskModal(ModalScreen[dict | None]):

@@ -10,8 +10,6 @@ import shlex
 from collections.abc import Awaitable, Callable
 
 import docker
-from docker.errors import APIError as DockerAPIError
-from docker.errors import NotFound as DockerNotFound
 from fastapi import (
     WebSocket,
     WebSocketDisconnect,

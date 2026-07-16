@@ -599,7 +599,11 @@ async def create_vps(
                 continue
             net_docker_name = config.get_container_network(net)
             connect_cmd = [
-                "docker", "network", "connect", net_docker_name, container_name_full
+                "docker",
+                "network",
+                "connect",
+                net_docker_name,
+                container_name_full,
             ]
             try:
                 proc = await asyncio.create_subprocess_exec(

@@ -16,7 +16,6 @@ from kohakuvault import KVault
 
 from kohakuriver.exceptions import StorageError
 
-
 # =============================================================================
 # Base Storage Class
 # =============================================================================

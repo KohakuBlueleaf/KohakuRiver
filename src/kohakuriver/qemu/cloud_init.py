@@ -38,8 +38,7 @@ class CloudInitConfig:
 
 
 # Embedded VM agent script (runs inside VM, reports status to runner)
-VM_AGENT_SCRIPT = textwrap.dedent(
-    '''\
+VM_AGENT_SCRIPT = textwrap.dedent('''\
     #!/usr/bin/env python3
     """KohakuRiver VM Agent - Status reporter for VPS VMs."""
 
@@ -228,8 +227,7 @@ VM_AGENT_SCRIPT = textwrap.dedent(
 
     if __name__ == "__main__":
         exit(main() or 0)
-'''
-)
+''')
 
 
 def build_meta_data(config: CloudInitConfig) -> str:
@@ -295,8 +293,7 @@ def build_user_data(config: CloudInitConfig) -> str:
             },
             {
                 "path": "/etc/systemd/system/kohakuriver-vm-agent.service",
-                "content": textwrap.dedent(
-                    f"""\
+                "content": textwrap.dedent(f"""\
                     [Unit]
                     Description=KohakuRiver VM Agent
                     After=network-online.target
@@ -313,8 +310,7 @@ def build_user_data(config: CloudInitConfig) -> str:
 
                     [Install]
                     WantedBy=multi-user.target
-                """
-                ),
+                """),
             },
         ],
         "package_update": True,

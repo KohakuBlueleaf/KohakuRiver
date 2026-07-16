@@ -7,7 +7,6 @@ for consistent status tracking, categorization, and configuration options.
 
 from enum import Enum
 
-
 # =============================================================================
 # Task-Related Enums
 # =============================================================================

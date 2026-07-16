@@ -13,14 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
-from textual import on, work
+from textual import on
 from textual.binding import Binding
-from textual.containers import Horizontal
 from textual.message import Message
-from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Static, TextArea, TabbedContent, TabPane, Button, Label
-
+from textual.widgets import Static, TextArea, TabbedContent, TabPane
 
 # =============================================================================
 # Language Detection

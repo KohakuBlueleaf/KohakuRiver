@@ -10,7 +10,6 @@ import subprocess
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
-from rich.text import Text
 
 from kohakuriver.cli import client
 from kohakuriver.cli.interactive.renderers import View

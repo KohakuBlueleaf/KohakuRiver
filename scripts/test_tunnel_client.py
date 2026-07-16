@@ -24,12 +24,8 @@ Requirements:
 import argparse
 import asyncio
 import os
-import signal
-import socket
-import struct
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 try:
@@ -44,7 +40,6 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from kohakuriver.tunnel.protocol import (
-    HEADER_SIZE,
     MSG_CLOSE,
     MSG_CONNECT,
     MSG_CONNECTED,
@@ -214,7 +209,7 @@ class MockTunnelServer:
         """Handle a tunnel protocol message."""
         header = parse_header(data)
         if not header:
-            log_warn(f"Tunnel: Invalid message (too short)")
+            log_warn("Tunnel: Invalid message (too short)")
             return
 
         payload = get_payload(data)
@@ -388,7 +383,7 @@ async def run_tests(tunnel_client_path: Path) -> bool:
 
     if tunnel_process.poll() is not None:
         stdout, stderr = tunnel_process.communicate()
-        log_fail(f"Tunnel-client exited prematurely!")
+        log_fail("Tunnel-client exited prematurely!")
         log_info(f"stdout: {stdout.decode()}")
         log_info(f"stderr: {stderr.decode()}")
         await echo_server.stop()
